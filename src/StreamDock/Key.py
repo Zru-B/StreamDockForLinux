@@ -11,10 +11,9 @@ class Key:
 
     # Mapping from hardware key numbers to logical key numbers
     KEY_MAPPING = {
-        1: 11, 2: 12, 3: 13, 4: 14,
-        5: 15, 6: 6, 7: 7, 8: 8,
-        9: 9, 10: 10, 11: 1, 12: 2,
-        13: 3, 14: 4, 15: 5
+        1: 11,  2: 12,  3: 13,  4: 14,  5: 15,
+        6:  6,  7:  7,  8:  8,  9:  9, 10: 10,
+        11: 1, 12:  2, 13:  3, 14:  4, 15:  5
     }
 
     def __init__(self, device, key_number, image_path, on_press=None, on_release=None, on_double_press=None):
