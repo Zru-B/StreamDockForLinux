@@ -168,7 +168,7 @@ class WindowMonitor:
             # Method 1: Try using qdbus6 (Plasma 6 uses Qt6)
             result = subprocess.run(
                 ['bash', '-c',
-                 'qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo 2>/dev/null || qdbus org.kde.KWin /KWin org.kde.KWin.queryWindowInfo 2>/dev/null || echo ""'],
+                 'qdbus6 org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || qdbus org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || echo ""'],
                 capture_output=True,
                 text=True,
                 timeout=1
