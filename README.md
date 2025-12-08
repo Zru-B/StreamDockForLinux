@@ -160,66 +160,28 @@ lsusb | grep -i hotspot
 ```
 
 You should see output like:
+```shell
+Bus 001 Device 005: ID 6603:1006 HOTSPOTEKUSB HOTSPOTEKUSB HID DEMO
 ```
-Bus 001 Device 005: ID 65e3:1006 HOTSPOTEKUSB HOTSPOTEKUSB HID DEMO
-```
+Note the ID format: `6603:1006` (Vendor:Product)
 
-Note the ID format: `65e3:1006` (Vendor:Product)
 
 #### 2. Create udev Rule
 
-Create a new udev rule file:
-
-```bash
-sudo nano /etc/udev/rules.d/99-streamdock.rules
-```
-
-Add the following content (replace VID `6603` and PID `1006` with your device IDs if different):
-
-```
-# StreamDock Device Access Rules
-# Prevents the device from being used as a keyboard/mouse by the system
-# Only allows the StreamDock application to access it via hidraw
-
-# Match the StreamDock device - Allow USB access
-SUBSYSTEM=="usb", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", MODE="0666", GROUP="plugdev"
-
-# Allow hidraw access for interface 0 only (for StreamDock application)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", MODE="0666", GROUP="plugdev"
-
-# CRITICAL: Prevent ALL interfaces from being recognized as input devices
-# This must come BEFORE the device is processed by input subsystem
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", ENV{ID_INPUT}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_MOUSE}="0", ENV{ID_INPUT_TABLET}="0", ENV{ID_INPUT_TOUCHPAD}="0", ENV{ID_INPUT_JOYSTICK}="0"
-
-# Tell libinput to completely ignore this device
-SUBSYSTEM=="input", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", ENV{ID_INPUT}="0", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG-="uaccess"
-
-# Prevent udev from creating ANY input event devices for this device
-KERNEL=="event*", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", MODE="0000", GROUP="root"
-
-# Block all HID interfaces except hidraw (prevents keyboard/mouse driver binding)
-SUBSYSTEM=="hid", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", ENV{HID_NAME}="StreamDock", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/hid/drivers/hid-generic/unbind || true'"
-```
+Copy the udev rule file from this package to your system's udev rules directory (`/etc/udev/rules.d/`)
+Make sure to replace VID and PID values with your actual device IDs, as found in step 1.
 
 **⚠️ CRITICAL:** These udev rules are **essential** to prevent the Mouse Keys problem. The StreamDock device has multiple HID interfaces, and without these rules:
 - Some interfaces will be recognized as keyboard/mouse devices
 - Your keyboard will randomly control the mouse pointer (+ cursor)
 - The Mouse Keys accessibility feature will be triggered during device re-initialization
 
-The rules above:
+The purpose of these rules are:
 1. Allow hidraw access for the StreamDock application
 2. **Prevent ALL input device creation** (no event devices)
 3. **Force libinput to ignore** the device completely  
 4. **Unbind HID drivers** from all device interfaces
 
-**Common Device IDs:**
-- VID: `6603` (26115 decimal) - HOTSPOTEKUSB / Mirabox
-- PID: `1006` (4102 decimal) - Common StreamDock model (293v3)
-
-**To find your device IDs:**
-```bash
-lsusb | grep -i hotspot
-```
 
 #### 3. Add User to plugdev Group
 
@@ -244,7 +206,7 @@ ls -l /dev/hidraw* | grep hotspot
 
 You should see permissions like `crw-rw-rw-` indicating the device is accessible.
 
-**Note:** You may need to log out and log back in for group changes to take effect.
+**Note:** You may need to log out and log back in (or restart) for the group changes to take effect.
 
 ### Virtual Keyboard Setup (Recommended)
 
