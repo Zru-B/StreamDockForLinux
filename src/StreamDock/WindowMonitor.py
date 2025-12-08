@@ -418,7 +418,7 @@ class WindowMonitor:
                     window_id = f"{window_info['title']}|{window_info['class']}"
                     
                     if window_id != self.current_window:
-                        logger.info(f"Window changed: {window_id}. Identified by: {self.current_window_method}")
+                        logger.info(f"Window changed: {window_info['class']}. Identified by: {self.current_window_method}")
                         self.current_window = window_id
                         self._check_rules(window_info)
                 
