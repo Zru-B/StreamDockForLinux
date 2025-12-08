@@ -5,25 +5,46 @@ from .StreamDock import StreamDock
 
 logger = logging.getLogger(__name__)
 
+
 class DummyTransport:
-    def open(self, path): pass
-    def disconnected(self): pass
-    def keyClear(self, index): pass
-    def keyAllClear(self): pass
-    def wakeScreen(self): pass
-    def refresh(self): pass
-    def read_(self, length): return None
-    def screen_On(self): return None
-    def setBrightness(self, percent): pass
+    def open(self, path):
+        pass
+
+    def disconnected(self):
+        pass
+
+    def keyClear(self, index):
+        pass
+
+    def keyAllClear(self):
+        pass
+
+    def wakeScreen(self):
+        pass
+
+    def refresh(self):
+        pass
+
+    def read_(self, length):
+        return None
+
+    def screen_On(self):
+        return None
+
+    def setBrightness(self, percent):
+        pass
+
     def enumerate(self, vid=0, pid=0):
-        return [{'path': "DUMMY_DEVICE", 'vendor_id': 0, 'product_id': 0}]
+        return [{"path": "DUMMY_DEVICE", "vendor_id": 0, "product_id": 0}]
+
 
 class DummyStreamDock(StreamDock):
     """
     Represents a dummy StreamDock device for testing/debugging without hardware.
     """
+
     KEY_MAP = True
-    
+
     def __init__(self, transport=None, devInfo=None):
         # If transport is not provided, create a dummy one
         if transport is None:
@@ -31,12 +52,8 @@ class DummyStreamDock(StreamDock):
 
         # Mock devInfo if not provided
         if devInfo is None:
-            devInfo = {
-                'vendor_id': 0,
-                'product_id': 0,
-                'path': "DUMMY_DEVICE"
-            }
-            
+            devInfo = {"vendor_id": 0, "product_id": 0, "path": "DUMMY_DEVICE"}
+
         super().__init__(transport, devInfo)
         logger.info("[DummyStreamDock] Initialize")
 
@@ -51,7 +68,7 @@ class DummyStreamDock(StreamDock):
     def close(self):
         logger.info("[DummyStreamDock] Close device")
         super().close()
-        
+
     def _read(self):
         logger.debug("[DummyStreamDock] Start reader thread")
         while self.run_read_thread:
@@ -82,16 +99,16 @@ class DummyStreamDock(StreamDock):
 
     def key_image_format(self):
         return {
-            'size': (112, 112),
-            'format': "JPEG",
-            'rotation': 180,
-            'flip': (False, False)
+            "size": (112, 112),
+            "format": "JPEG",
+            "rotation": 180,
+            "flip": (False, False),
         }
-    
+
     def touchscreen_image_format(self):
         return {
-            'size': (800, 480),
-            'format': "JPEG",
-            'rotation': 180,
-            'flip': (False, False)
+            "size": (800, 480),
+            "format": "JPEG",
+            "rotation": 180,
+            "flip": (False, False),
         }

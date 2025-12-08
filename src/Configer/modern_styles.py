@@ -5,47 +5,39 @@ Modern UI Styles for StreamDock Configuration Editor
 # Modern Color Palette - Dark Mode
 COLORS = {
     # Primary colors
-    'primary': '#3B82F6',          # Blue
-    'primary_hover': '#60A5FA',    # Lighter blue for dark mode
-    'primary_dark': '#1E40AF',
-    
+    "primary": "#3B82F6",  # Blue
+    "primary_hover": "#60A5FA",  # Lighter blue for dark mode
+    "primary_dark": "#1E40AF",
     # Secondary colors
-    'secondary': '#8B5CF6',        # Purple
-    'secondary_hover': '#A78BFA',
-    
+    "secondary": "#8B5CF6",  # Purple
+    "secondary_hover": "#A78BFA",
     # Success/Add
-    'success': '#10B981',          # Green
-    'success_hover': '#34D399',
-    
+    "success": "#10B981",  # Green
+    "success_hover": "#34D399",
     # Danger/Delete
-    'danger': '#EF4444',           # Red
-    'danger_hover': '#F87171',
-    
+    "danger": "#EF4444",  # Red
+    "danger_hover": "#F87171",
     # Warning
-    'warning': '#F59E0B',          # Orange
-    'warning_hover': '#FBBF24',
-    
+    "warning": "#F59E0B",  # Orange
+    "warning_hover": "#FBBF24",
     # Info/Edit
-    'info': '#06B6D4',             # Cyan
-    'info_hover': '#22D3EE',
-    
+    "info": "#06B6D4",  # Cyan
+    "info_hover": "#22D3EE",
     # Neutral colors - Dark Mode
-    'bg_primary': '#0F1419',       # Very dark (main background)
-    'bg_secondary': '#1A1F26',     # Dark (cards)
-    'bg_tertiary': '#252A31',      # Medium dark (inputs, squares)
-    'bg_hover': '#2D333B',         # Hover state
-    'bg_light': '#1A1F26',         # Slightly lighter dark
-    'bg_card': '#1A1F26',          # Dark cards
-    
+    "bg_primary": "#0F1419",  # Very dark (main background)
+    "bg_secondary": "#1A1F26",  # Dark (cards)
+    "bg_tertiary": "#252A31",  # Medium dark (inputs, squares)
+    "bg_hover": "#2D333B",  # Hover state
+    "bg_light": "#1A1F26",  # Slightly lighter dark
+    "bg_card": "#1A1F26",  # Dark cards
     # Text colors - Dark Mode
-    'text_primary': '#E6EDF3',     # Light text
-    'text_secondary': '#8B949E',   # Gray text
-    'text_light': '#E6EDF3',       # Light text
-    'text_dark': '#111827',        # Dark text (for light backgrounds)
-    
+    "text_primary": "#E6EDF3",  # Light text
+    "text_secondary": "#8B949E",  # Gray text
+    "text_light": "#E6EDF3",  # Light text
+    "text_dark": "#111827",  # Dark text (for light backgrounds)
     # Border colors - Dark Mode
-    'border': '#30363D',           # Dark border
-    'border_focus': '#3B82F6',     # Blue focus
+    "border": "#30363D",  # Dark border
+    "border_focus": "#3B82F6",  # Blue focus
 }
 
 # Modern stylesheet - Dark Mode
@@ -431,9 +423,11 @@ QToolTip {{
 }}
 """
 
+
 def get_stylesheet():
     """Get the modern stylesheet"""
     return MODERN_STYLESHEET
+
 
 def get_colors():
     """Get the color palette"""

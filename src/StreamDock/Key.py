@@ -11,12 +11,32 @@ class Key:
 
     # Mapping from hardware key numbers to logical key numbers
     KEY_MAPPING = {
-        1: 11,  2: 12,  3: 13,  4: 14,  5: 15,
-        6:  6,  7:  7,  8:  8,  9:  9, 10: 10,
-        11: 1, 12:  2, 13:  3, 14:  4, 15:  5
+        1: 11,
+        2: 12,
+        3: 13,
+        4: 14,
+        5: 15,
+        6: 6,
+        7: 7,
+        8: 8,
+        9: 9,
+        10: 10,
+        11: 1,
+        12: 2,
+        13: 3,
+        14: 4,
+        15: 5,
     }
 
-    def __init__(self, device, key_number, image_path, on_press=None, on_release=None, on_double_press=None):
+    def __init__(
+        self,
+        device,
+        key_number,
+        image_path,
+        on_press=None,
+        on_release=None,
+        on_double_press=None,
+    ):
         """
         Initialize and configure a key on the StreamDock device.
 
@@ -45,7 +65,9 @@ class Key:
         # Convert actions to callback functions
         self.on_press = self._create_callback(on_press) if on_press else None
         self.on_release = self._create_callback(on_release) if on_release else None
-        self.on_double_press = self._create_callback(on_double_press) if on_double_press else None
+        self.on_double_press = (
+            self._create_callback(on_double_press) if on_double_press else None
+        )
 
         # Get the logical key number for callback registration
         self.logical_key = self.KEY_MAPPING.get(key_number, key_number)
@@ -63,15 +85,21 @@ class Key:
 
         # If it's a list of actions, create a callback that executes them
         if isinstance(actions_or_callback, list):
+
             def action_callback(device, key):
-                execute_actions(actions_or_callback, device=device, key_number=self.key_number)
+                execute_actions(
+                    actions_or_callback, device=device, key_number=self.key_number
+                )
 
             return action_callback
 
         # If it's a single action tuple, wrap it in a list
         if isinstance(actions_or_callback, tuple):
+
             def action_callback(device, key):
-                execute_actions([actions_or_callback], device=device, key_number=self.key_number)
+                execute_actions(
+                    [actions_or_callback], device=device, key_number=self.key_number
+                )
 
             return action_callback
 
@@ -83,12 +111,16 @@ class Key:
         self.device.set_key_image(self.key_number, self.image_path)
 
         # Register callbacks if provided
-        if self.on_press is not None or self.on_release is not None or self.on_double_press is not None:
+        if (
+            self.on_press is not None
+            or self.on_release is not None
+            or self.on_double_press is not None
+        ):
             self.device.set_per_key_callback(
                 self.logical_key,
                 on_press=self.on_press,
                 on_release=self.on_release,
-                on_double_press=self.on_double_press
+                on_double_press=self.on_double_press,
             )
 
     def update_image(self, new_image_path):
@@ -115,13 +147,15 @@ class Key:
         # Convert actions to callback functions
         self.on_press = self._create_callback(on_press) if on_press else None
         self.on_release = self._create_callback(on_release) if on_release else None
-        self.on_double_press = self._create_callback(on_double_press) if on_double_press else None
+        self.on_double_press = (
+            self._create_callback(on_double_press) if on_double_press else None
+        )
 
         self.device.set_per_key_callback(
             self.logical_key,
             on_press=self.on_press,
             on_release=self.on_release,
-            on_double_press=self.on_double_press
+            on_double_press=self.on_double_press,
         )
 
     def update_device(self, new_device):
@@ -133,10 +167,14 @@ class Key:
         """
         self.device = new_device
         # Re-register callbacks on the new device
-        if self.on_press is not None or self.on_release is not None or self.on_double_press is not None:
+        if (
+            self.on_press is not None
+            or self.on_release is not None
+            or self.on_double_press is not None
+        ):
             self.device.set_per_key_callback(
                 self.logical_key,
                 on_press=self.on_press,
                 on_release=self.on_release,
-                on_double_press=self.on_double_press
+                on_double_press=self.on_double_press,
             )

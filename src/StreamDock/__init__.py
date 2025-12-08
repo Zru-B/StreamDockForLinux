@@ -4,4 +4,11 @@ from .Key import Key
 from .Layout import Layout
 from .WindowMonitor import WindowMonitor
 
-__all__ = ['Key', 'Layout', 'ActionType', 'WindowMonitor', 'ConfigLoader', 'ConfigValidationError']
+__all__ = [
+    "Key",
+    "Layout",
+    "ActionType",
+    "WindowMonitor",
+    "ConfigLoader",
+    "ConfigValidationError",
+]

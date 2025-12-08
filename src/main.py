@@ -17,15 +17,23 @@ from StreamDock.WindowMonitor import WindowMonitor
 
 def parse_arguments():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description='StreamDock Linux Driver')
-    parser.add_argument('config', nargs='?', default=None, help='Path to configuration file')
-    parser.add_argument('--no-device', action='store_true', help='Run without a physical device (debug mode)')
+    parser = argparse.ArgumentParser(description="StreamDock Linux Driver")
+    parser.add_argument(
+        "config", nargs="?", default=None, help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--no-device",
+        action="store_true",
+        help="Run without a physical device (debug mode)",
+    )
     return parser.parse_args()
 
 
 def main():
     """Main application entry point."""
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     args = parse_arguments()
@@ -36,8 +44,8 @@ def main():
     else:
         # Use config.yml in the same directory as the script
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_file = os.path.join(script_dir, 'config.yml')
-    
+        config_file = os.path.join(script_dir, "config.yml")
+
     # Load configuration
     try:
         config_loader = ConfigLoader(config_file)
@@ -58,9 +66,9 @@ def main():
     logger.info("Application started")
     logger.debug(f"Configuration loaded from: {config_file}")
     logger.debug(f"Log level set to: {config_loader.log_level}")
-    
+
     streamdocks = []
-    
+
     if args.no_device:
         logger.info("Running in NO-DEVICE mode")
         from StreamDock.Devices.DummyStreamDock import DummyStreamDock
@@ -74,17 +82,19 @@ def main():
         logger.debug("Initializing DeviceManager")
         deviceManager = DeviceManager()
         streamdocks = deviceManager.enumerate()
-        
+
         # Start listening thread
         logger.debug("Starting device listener thread")
         t = threading.Thread(target=deviceManager.listen)
         t.daemon = True
         t.start()
-        
+
         if len(streamdocks) == 0:
-            logger.error("No Stream Dock devices found. Please connect a device and try again.")
+            logger.error(
+                "No Stream Dock devices found. Please connect a device and try again."
+            )
             sys.exit(1)
-    
+
     for device in streamdocks:
         logger.info(f"Opening device: {device.id()}")
         device.open()
@@ -95,34 +105,40 @@ def main():
         # Initialize window monitor
         logger.debug("Initializing WindowMonitor")
         window_monitor = WindowMonitor(poll_interval=0.5)
-        
+
         # Apply configuration to device
         try:
             default_layout, all_layouts = config_loader.apply(device, window_monitor)
-            logger.debug(f"Device configuration applied. Default layout: {default_layout}")
-            
+            logger.debug(
+                f"Device configuration applied. Default layout: {default_layout}"
+            )
+
             # Initialize lock monitor (from config setting) with default layout, all layouts, and window monitor
             logger.debug("Initializing LockMonitor")
             lock_monitor = LockMonitor(
-                device, 
-                enabled=config_loader.lock_monitor_enabled, 
+                device,
+                enabled=config_loader.lock_monitor_enabled,
                 current_layout=default_layout,
                 all_layouts=all_layouts,
-                window_monitor=window_monitor if config_loader.config.get('windows_rules') else None
+                window_monitor=(
+                    window_monitor
+                    if config_loader.config.get("windows_rules")
+                    else None
+                ),
             )
-            
+
             # Apply the default layout
             default_layout.apply()
-            
+
             # Start window monitoring if rules were configured
-            if config_loader.config.get('windows_rules'):
+            if config_loader.config.get("windows_rules"):
                 logger.info("Starting WindowMonitor")
                 window_monitor.start()
-            
+
             # Start lock monitoring
             logger.info("Starting LockMonitor")
             lock_monitor.start()
-            
+
         except ConfigValidationError as e:
             logger.error(f"Error applying configuration: {e}")
             device.close()
@@ -131,7 +147,7 @@ def main():
             logger.exception("Error applying configuration")
             device.close()
             sys.exit(1)
-        
+
         # Keep the program running to process key events
         logger.info("StreamDock is ready. Press Ctrl+C to exit.")
         try:
@@ -139,10 +155,11 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
-            if config_loader.config.get('windows_rules'):
+            if config_loader.config.get("windows_rules"):
                 window_monitor.stop()
             lock_monitor.stop()
             device.close()
+
 
 if __name__ == "__main__":
     main()

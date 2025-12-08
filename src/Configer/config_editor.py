@@ -18,14 +18,14 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("StreamDock Configuration Editor")
     app.setOrganizationName("StreamDock")
-    
+
     window = ConfigEditorMainWindow()
-    
+
     # If a config file is provided as argument, load it
     if len(sys.argv) > 1:
         config_file = sys.argv[1]
         window.load_config(config_file)
-    
+
     window.show()
     sys.exit(app.exec())
 

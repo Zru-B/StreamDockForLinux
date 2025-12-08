@@ -13,15 +13,29 @@ class TransportError(Exception):
             return f"[Error Code {self.code}] {super().__str__()}"
         return super().__str__()
 
+
 KEY_MAPPING = {
-    1: 11,  2: 12,  3: 13,  4: 14,  5: 15,
-    6:  6,  7:  7,  8:  8,  9:  9, 10: 10,
-    11: 1, 12:  2, 13:  3, 14:  4, 15:  5
+    1: 11,
+    2: 12,
+    3: 13,
+    4: 14,
+    5: 15,
+    6: 6,
+    7: 7,
+    8: 8,
+    9: 9,
+    10: 10,
+    11: 1,
+    12: 2,
+    13: 3,
+    14: 4,
+    15: 5,
 }
 
 # Default double-press detection interval (in seconds)
 # This can be overridden via configuration
 DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
+
 
 class StreamDock(ABC):
     """
@@ -50,33 +64,36 @@ class StreamDock(ABC):
     DECK_TYPE = ""
     DECK_VISUAL = False
     DECK_TOUCH = False
-    
-    transport=None
-    screenlicent=None
-    __metaclass__ = ABCMeta    
+
+    transport = None
+    screenlicent = None
+    __metaclass__ = ABCMeta
     __seconds = 300
-    def __init__(self,transport1,devInfo):
-        self.transport=transport1
-        self.vendor_id=devInfo['vendor_id']
-        self.product_id=devInfo['product_id']
-        self.path=devInfo['path']
+
+    def __init__(self, transport1, devInfo):
+        self.transport = transport1
+        self.vendor_id = devInfo["vendor_id"]
+        self.product_id = devInfo["product_id"]
+        self.path = devInfo["path"]
 
         self.read_thread = None
         self.run_read_thread = False
 
         self.key_callback = None
         self.per_key_callbacks = {}  # Dictionary to store per-key callbacks
-        
+
         # Double-press detection tracking
         self.last_release_time = {}  # Track last release time for each key
         self.pending_single_press = {}  # Track pending single press events
         self.pending_single_release = {}  # Track pending single release events
         self.double_press_detected = {}  # Track which keys had double-press detected
-        self.release_skip_count = {}  # Track how many releases to skip after double-press
-        
+        self.release_skip_count = (
+            {}
+        )  # Track how many releases to skip after double-press
+
         # Double-press interval (can be configured)
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
-        
+
     def __del__(self):
         """
         Delete handler for the StreamDock, automatically closing the transport
@@ -89,7 +106,7 @@ class StreamDock(ABC):
 
         try:
             self.close()
-        except (TransportError):
+        except TransportError:
             pass
 
     def __enter__(self):
@@ -107,15 +124,15 @@ class StreamDock(ABC):
         the deck.
         """
         self.update_lock.release()
-    
+
     def key(self, k):
-        if (self.KEY_MAP):
+        if self.KEY_MAP:
             return KEY_MAPPING[k]
         else:
             return k
 
     def open(self):
-        self.transport.open(bytes(self.path,'utf-8'))
+        self.transport.open(bytes(self.path, "utf-8"))
         self._setup_reader(self._read)
 
     def init(self):
@@ -164,11 +181,13 @@ class StreamDock(ABC):
             try:
                 data = self.read()
                 if data != None and len(data) >= 11:
-                    if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
-                        if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
+                    if data[:3].decode("utf-8", errors="ignore") == "ACK" and data[
+                        5:7
+                    ].decode("utf-8", errors="ignore"):
+                        if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0F:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
                             logger.info(f"Key {key_num} pressed")
-                        elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
+                        elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0F:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
                             logger.info(f"Key {key_num} released")
             except Exception as e:
@@ -176,20 +195,20 @@ class StreamDock(ABC):
                 break
 
     def screen_Off(self):
-        res=self.transport.screen_Off()   
+        res = self.transport.screen_Off()
         self.reset_Countdown(self.__seconds)
         return res
 
     def screen_On(self):
-        return self.transport.screen_On()  
+        return self.transport.screen_On()
 
-    def set_seconds(self,data):
-        self.__seconds=data
+    def set_seconds(self, data):
+        self.__seconds = data
         self.reset_Countdown(self.__seconds)
 
-    def reset_Countdown(self,data):
+    def reset_Countdown(self, data):
         self.screenlicent.cancel()
-        self.screenlicent=threading.Timer(data,self.screen_Off) 
+        self.screenlicent = threading.Timer(data, self.screen_Off)
         self.screenlicent.start()
 
     @abstractmethod
@@ -331,7 +350,9 @@ class StreamDock(ABC):
 
         self.set_touchscreen_callback(callback)
 
-    def set_per_key_callback(self, key, on_press=None, on_release=None, on_double_press=None):
+    def set_per_key_callback(
+        self, key, on_press=None, on_release=None, on_double_press=None
+    ):
         """
         Sets the callback functions for a specific key on the StreamDock.
         You can register separate callbacks for press, release, and double-press events.
@@ -350,35 +371,41 @@ class StreamDock(ABC):
                                          Signature: callback(device, key)
         """
         self.per_key_callbacks[key] = {
-            'on_press': on_press,
-            'on_release': on_release,
-            'on_double_press': on_double_press
+            "on_press": on_press,
+            "on_release": on_release,
+            "on_double_press": on_double_press,
         }
 
     def clear_key_callback(self, key):
         """
         Clears all callback functions for a specific key on the StreamDock.
-        
+
         :param int key: The key number to clear callbacks for.
         """
         if key in self.per_key_callbacks:
             del self.per_key_callbacks[key]
-        
+
         # Clean up any pending timers for this key
-        if key in self.pending_single_press and self.pending_single_press[key] is not None:
+        if (
+            key in self.pending_single_press
+            and self.pending_single_press[key] is not None
+        ):
             self.pending_single_press[key].cancel()
             del self.pending_single_press[key]
-        
-        if key in self.pending_single_release and self.pending_single_release[key] is not None:
+
+        if (
+            key in self.pending_single_release
+            and self.pending_single_release[key] is not None
+        ):
             self.pending_single_release[key].cancel()
             del self.pending_single_release[key]
-        
+
         if key in self.last_release_time:
             del self.last_release_time[key]
-        
+
         if key in self.double_press_detected:
             del self.double_press_detected[key]
-        
+
         if key in self.release_skip_count:
             del self.release_skip_count[key]
 
@@ -390,11 +417,11 @@ class StreamDock(ABC):
         for key in list(self.pending_single_press.keys()):
             if self.pending_single_press[key] is not None:
                 self.pending_single_press[key].cancel()
-        
+
         for key in list(self.pending_single_release.keys()):
             if self.pending_single_release[key] is not None:
                 self.pending_single_release[key].cancel()
-        
+
         # Clear all callback and tracking dictionaries
         self.per_key_callbacks.clear()
         self.pending_single_press.clear()
@@ -406,92 +433,128 @@ class StreamDock(ABC):
     def _read(self):
         while self.run_read_thread:
             try:
-                arr=self.read()
+                arr = self.read()
                 if len(arr) >= 10:
-                    if arr[9]!=0xFF:
+                    if arr[9] != 0xFF:
                         k = KEY_MAPPING[arr[9]]
                         new = arr[10]
                         if new == 0x02:
                             new = 0
                         if new == 0x01:
                             new = 1
-                        
+
                         # Call global callback if set (in separate thread to avoid blocking)
                         if self.key_callback is not None:
+
                             def execute_global_callback():
                                 self.key_callback(self, k, new)
-                            
-                            global_callback_thread = threading.Thread(target=execute_global_callback)
+
+                            global_callback_thread = threading.Thread(
+                                target=execute_global_callback
+                            )
                             global_callback_thread.daemon = True
                             global_callback_thread.start()
-                        
+
                         # Handle per-key callbacks with double-press detection
                         if k in self.per_key_callbacks:
                             callbacks = self.per_key_callbacks[k]
-                            
+
                             # Check if this key has double-press callback enabled
-                            has_double_press = callbacks.get('on_double_press') is not None
-                            
+                            has_double_press = (
+                                callbacks.get("on_double_press") is not None
+                            )
+
                             # Handle key press (new == 1)
                             if new == 1:
                                 # Only use double-press detection if on_double_press is set
                                 if has_double_press:
                                     current_time = time.time()
-                                    
+
                                     # Check if this is a double-press (press within interval after last release)
                                     if k in self.last_release_time:
-                                        time_since_last_release = current_time - self.last_release_time[k]
-                                        
-                                        if time_since_last_release <= self.double_press_interval:
+                                        time_since_last_release = (
+                                            current_time - self.last_release_time[k]
+                                        )
+
+                                        if (
+                                            time_since_last_release
+                                            <= self.double_press_interval
+                                        ):
                                             # Double-press detected!
                                             # Cancel any pending single press callback from first press
-                                            if k in self.pending_single_press and self.pending_single_press[k] is not None:
+                                            if (
+                                                k in self.pending_single_press
+                                                and self.pending_single_press[k]
+                                                is not None
+                                            ):
                                                 self.pending_single_press[k].cancel()
                                                 self.pending_single_press[k] = None
-                                            
+
                                             # Cancel any pending single release callback from first press
-                                            if k in self.pending_single_release and self.pending_single_release[k] is not None:
+                                            if (
+                                                k in self.pending_single_release
+                                                and self.pending_single_release[k]
+                                                is not None
+                                            ):
                                                 self.pending_single_release[k].cancel()
                                                 self.pending_single_release[k] = None
-                                            
+
                                             # Call double-press callback in a separate thread to avoid blocking reader
                                             def execute_double_press():
-                                                callbacks['on_double_press'](self, k)
-                                            
-                                            double_press_thread = threading.Thread(target=execute_double_press)
+                                                callbacks["on_double_press"](self, k)
+
+                                            double_press_thread = threading.Thread(
+                                                target=execute_double_press
+                                            )
                                             double_press_thread.daemon = True
                                             double_press_thread.start()
-                                            
+
                                             # Clear the last release time to prevent triple-press from being detected as another double-press
                                             del self.last_release_time[k]
-                                            self.release_skip_count[k] = 1  # Skip the next release (from the second press)
+                                            self.release_skip_count[k] = (
+                                                1  # Skip the next release (from the second press)
+                                            )
                                             continue
-                                    
+
                                     # Not a double-press (yet) - delay on_press callback to wait for potential double-press
-                                    if callbacks.get('on_press'):
+                                    if callbacks.get("on_press"):
+
                                         def delayed_press_callback():
                                             # Fire the callback only if it wasn't cancelled
-                                            if k in self.pending_single_press and self.pending_single_press[k] is not None:
-                                                callbacks['on_press'](self, k)
+                                            if (
+                                                k in self.pending_single_press
+                                                and self.pending_single_press[k]
+                                                is not None
+                                            ):
+                                                callbacks["on_press"](self, k)
                                                 self.pending_single_press[k] = None
-                                        
-                                        timer = threading.Timer(self.double_press_interval + 0.01, delayed_press_callback)
+
+                                        timer = threading.Timer(
+                                            self.double_press_interval + 0.01,
+                                            delayed_press_callback,
+                                        )
                                         self.pending_single_press[k] = timer
                                         timer.start()
                                 else:
                                     # No double-press callback, use immediate on_press in separate thread
-                                    if callbacks.get('on_press'):
+                                    if callbacks.get("on_press"):
+
                                         def execute_press():
-                                            callbacks['on_press'](self, k)
-                                        
-                                        press_thread = threading.Thread(target=execute_press)
+                                            callbacks["on_press"](self, k)
+
+                                        press_thread = threading.Thread(
+                                            target=execute_press
+                                        )
                                         press_thread.daemon = True
                                         press_thread.start()
-                            
+
                             # Handle key release (new == 0)
                             elif new == 0:
                                 # Check if we need to skip this release due to double-press
-                                if k in self.release_skip_count and self.release_skip_count[k] > 0:
+                                if (
+                                    k in self.release_skip_count
+                                    and self.release_skip_count[k] > 0
+                                ):
                                     # Decrement the skip counter
                                     self.release_skip_count[k] -= 1
                                     # Clean up if all releases have been skipped
@@ -502,29 +565,40 @@ class StreamDock(ABC):
                                             del self.double_press_detected[k]
                                     # Skip on_release callback entirely
                                     continue
-                                
+
                                 # Record release time for double-press detection
                                 if has_double_press:
                                     self.last_release_time[k] = time.time()
-                                    
+
                                     # Delay on_release callback to wait for potential double-press
-                                    if callbacks.get('on_release'):
+                                    if callbacks.get("on_release"):
+
                                         def delayed_release_callback():
                                             # Fire the callback only if it wasn't cancelled
-                                            if k in self.pending_single_release and self.pending_single_release[k] is not None:
-                                                callbacks['on_release'](self, k)
+                                            if (
+                                                k in self.pending_single_release
+                                                and self.pending_single_release[k]
+                                                is not None
+                                            ):
+                                                callbacks["on_release"](self, k)
                                                 self.pending_single_release[k] = None
-                                        
-                                        timer = threading.Timer(self.double_press_interval + 0.01, delayed_release_callback)
+
+                                        timer = threading.Timer(
+                                            self.double_press_interval + 0.01,
+                                            delayed_release_callback,
+                                        )
                                         self.pending_single_release[k] = timer
                                         timer.start()
                                 else:
                                     # No double-press callback, use immediate on_release in separate thread
-                                    if callbacks.get('on_release'):
+                                    if callbacks.get("on_release"):
+
                                         def execute_release():
-                                            callbacks['on_release'](self, k)
-                                        
-                                        release_thread = threading.Thread(target=execute_release)
+                                            callbacks["on_release"](self, k)
+
+                                        release_thread = threading.Thread(
+                                            target=execute_release
+                                        )
                                         release_thread.daemon = True
                                         release_thread.start()
                 del arr

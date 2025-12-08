@@ -31,7 +31,9 @@ class Layout:
         # Total operations (keys + clears) must be at least 1 and at most 15
         total_operations = len(keys) + len(self.clear_keys)
         if total_operations < 1 or total_operations > 15:
-            raise ValueError("Layout must contain between 1 and 15 total operations (keys + clears)")
+            raise ValueError(
+                "Layout must contain between 1 and 15 total operations (keys + clears)"
+            )
 
     def apply(self):
         """
@@ -51,6 +53,7 @@ class Layout:
             # Get the logical key number for callback clearing
             logical_key = key_number  # Will be mapped in clear_key_callback if needed
             from .Key import Key
+
             logical_key = Key.KEY_MAPPING.get(key_number, key_number)
             self.device.clear_key_callback(logical_key)
 
@@ -73,7 +76,9 @@ class Layout:
                 return key
         return None
 
-    def update_key(self, key_number, new_image=None, new_on_press=None, new_on_release=None):
+    def update_key(
+        self, key_number, new_image=None, new_on_press=None, new_on_release=None
+    ):
         """
         Update a specific key in the layout.
 
