@@ -175,15 +175,21 @@ class WindowMonitor:
             )
             
             if result.returncode == 0 and result.stdout.strip():
-                window_title = result.stdout.strip()
-                window_class = self._extract_app_from_title(window_title)
-                
-                return {
-                    'title': window_title,
-                    'class': window_class,
-                    'raw': window_title,
-                    'method': 'kwin_plasma6'
-                }
+                # Check if the output is actually an error message
+                raw_output = result.stdout.strip()
+                if "Error" in raw_output or "No such method" in raw_output:
+                    # Fall through to next method
+                    pass
+                else:
+                    window_title = raw_output
+                    window_class = self._extract_app_from_title(window_title)
+                    
+                    return {
+                        'title': window_title,
+                        'class': window_class,
+                        'raw': window_title,
+                        'method': 'kwin_plasma6'
+                    }
             
             # Method 2: Try using busctl to query KWin
             result = subprocess.run(
