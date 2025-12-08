@@ -3,15 +3,16 @@
 StreamDock main application with YAML configuration support.
 """
 import argparse
-from StreamDock.DeviceManager import DeviceManager
-from StreamDock.WindowMonitor import WindowMonitor
-from StreamDock.LockMonitor import LockMonitor
-from StreamDock.ConfigLoader import ConfigLoader, ConfigValidationError
 import logging
+import os
+import sys
 import threading
 import time
-import sys
-import os
+
+from StreamDock.ConfigLoader import ConfigLoader, ConfigValidationError
+from StreamDock.DeviceManager import DeviceManager
+from StreamDock.LockMonitor import LockMonitor
+from StreamDock.WindowMonitor import WindowMonitor
 
 
 def parse_arguments():
@@ -63,6 +64,7 @@ def main():
     if args.no_device:
         logger.info("Running in NO-DEVICE mode")
         from StreamDock.Devices.DummyStreamDock import DummyStreamDock
+
         # Create a dummy device
         dummy_device = DummyStreamDock()
         streamdocks.append(dummy_device)

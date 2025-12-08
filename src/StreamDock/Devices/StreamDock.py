@@ -1,6 +1,7 @@
 import threading
-from abc import ABC, ABCMeta, abstractmethod
 import time
+from abc import ABC, ABCMeta, abstractmethod
+
 
 class TransportError(Exception):
     def __init__(self, message, code=None):

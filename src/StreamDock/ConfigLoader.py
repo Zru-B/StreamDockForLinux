@@ -27,12 +27,14 @@ streamdock:
       layout: "LayoutName"
       match_field: "class"  # optional: class, title, raw
 """
-import yaml
-import os
 import logging
+import os
+
+import yaml
+
+from .Actions import ActionType
 from .Key import Key
 from .Layout import Layout
-from .Actions import ActionType
 
 
 class ConfigValidationError(Exception):
@@ -448,8 +450,9 @@ class ConfigLoader:
     
     def _create_keys(self, device):
         """Create Key definitions from configuration."""
-        from .ImageHelpers.PILHelper import create_text_image
         import tempfile
+
+        from .ImageHelpers.PILHelper import create_text_image
         
         keys_config = self.config['keys']
         

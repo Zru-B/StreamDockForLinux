@@ -1,5 +1,7 @@
-import pyudev
 import logging
+
+import pyudev
+
 from .ProductIDs import g_products
 from .Transport.LibUSBHIDAPI import LibUSBHIDAPI
 

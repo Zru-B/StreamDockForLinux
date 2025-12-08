@@ -3,17 +3,18 @@
 Main window for StreamDock Configuration Editor
 """
 
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                              QGridLayout, QPushButton, QFileDialog, QMessageBox,
-                              QInputDialog, QMenuBar, QMenu, QLabel, QSpinBox,
-                              QCheckBox, QGroupBox, QFormLayout, QDialog)
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QAction, QKeySequence, QCursor
-from config_editor_models import StreamDockConfig, KeyDefinition, Layout, WindowRule
-from config_editor_widgets import KeySquare, LayoutListWidget, WindowRulesWidget
-from config_editor_dialogs import KeyEditorDialog, ManageKeysDialog, WindowRuleDialog, LayoutEditorDialog, AdvancedSettingsDialog
-from modern_styles import get_stylesheet, get_colors
 from pathlib import Path
+
+from config_editor_dialogs import (AdvancedSettingsDialog, KeyEditorDialog, LayoutEditorDialog, ManageKeysDialog,
+                                   WindowRuleDialog)
+from config_editor_models import KeyDefinition, Layout, StreamDockConfig, WindowRule
+from config_editor_widgets import KeySquare, LayoutListWidget, WindowRulesWidget
+from modern_styles import get_colors, get_stylesheet
+from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtGui import QAction, QCursor, QKeySequence
+from PyQt6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+                             QInputDialog, QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox, QPushButton, QSpinBox,
+                             QVBoxLayout, QWidget)
 
 
 class KeySelectionDialog(QMessageBox):

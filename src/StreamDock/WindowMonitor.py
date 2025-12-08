@@ -1,12 +1,12 @@
 """
 Window monitoring for KDE Plasma Wayland to detect active window and trigger layout changes.
 """
+import logging
+import re
+import shutil
 import subprocess
 import threading
 import time
-import re
-import shutil
-import logging
 
 logger = logging.getLogger(__name__)
 

@@ -2,9 +2,9 @@
 Lock/Unlock monitor for KDE Plasma and other desktop environments.
 Automatically turns off StreamDock device screen when computer is locked.
 """
+import logging
 import threading
 import time
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class LockMonitor:
         """Main monitoring loop using D-Bus."""
         try:
             from gi.repository import GLib
-            
+
             # Initialize D-Bus main loop
             self.DBusGMainLoop(set_as_default=True)
             bus = self.dbus.SessionBus()

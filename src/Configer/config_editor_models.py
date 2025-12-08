@@ -4,9 +4,10 @@ Data models for StreamDock Configuration Editor
 Handles configuration data structures and YAML I/O
 """
 
-import yaml
-from typing import Dict, List, Optional, Any
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
 
 
 class KeyDefinition:

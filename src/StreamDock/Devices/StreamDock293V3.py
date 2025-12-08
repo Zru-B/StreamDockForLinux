@@ -2,8 +2,8 @@ import ctypes
 import random
 import logging
 
-from .StreamDock import StreamDock
 from ..ImageHelpers.PILHelper import *
+from .StreamDock import StreamDock
 
 
 class StreamDock293V3(StreamDock):
