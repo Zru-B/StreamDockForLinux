@@ -1,63 +1,105 @@
-# StreamDock - Linux Stream Dock Controller
+# StreamDock - A Linux Controller for Stream Dock Devices
 
-A powerful, customizable Stream Dock 293v3 controller for Linux with YAML configuration, context-aware layout switching, keyboard automation, D-Bus integration, lock monitoring, and window monitoring.
+![StreamDock](https://img.shields.io/badge/Platform-Linux-blue)
+![Python](https://img.shields.io/badge/Python-3.10+-yellow)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+A powerful and customizable controller for the Stream Dock 293v3 on Linux, featuring a YAML-based configuration, context-aware layout switching, keyboard automation, D-Bus integration, and more.
 
 ## Features
 
-- 🎯 **YAML Configuration** - Define your entire setup in a simple config file
-- 🪟 **Context-Aware Layouts** - Automatically switch layouts based on focused window
-- 🔒 **Lock Monitor** - Automatically turn off device when computer is locked
-- ⌨️ **Keyboard Automation** - Execute commands, type text, simulate shortcuts (Virtual Keyboard & xdotool)
-- 🎵 **Media Controls** - Control Spotify, VLC, and other MPRIS-compatible players
-- 🔊 **Volume Control** - Adjust system volume with PulseAudio integration
-- 🎨 **Dynamic Key Images** - Change key images on press/release
-- 🖼️ **SVG Support** - Use vector graphics for crisp, scalable icons
-- 📝 **Text-Based Keys** - Create keys from text without image files
-- 💡 **Brightness Control** - Adjust device brightness on-the-fly
-- 🔄 **Layout Management** - Multiple layouts with easy switching
-- 🐧 **Linux Native** - Built for Linux (X11 & Wayland support)
+- 🎯 **Declarative YAML Config:** Define your entire setup in a simple, human-readable configuration file.
+- 🪟 **Context-Aware Layouts:** Automatically switch button layouts based on the currently focused application.
+- 🔒 **Lock Monitor:** Automatically turns off the device screen when you lock your computer and wakes it on unlock.
+- ⌨️ **Keyboard Automation:** Execute commands, type text, and simulate shortcuts (Virtual Keyboard & xdotool) to create complex macros.
+- 🎵 **Media Controls:** Native control for Spotify, VLC, and other MPRIS-compatible media players.
+- 🔊 **Volume Control:** Adjust system volume using built-in PulseAudio/PipeWire integration.
+- 🎨 **Dynamic Keys:** Change key images and text on the fly in response to press/release actions.
+- 🖼️ **SVG Support:** Use vector graphics for crisp, scalable icons
+- 📝 **Text-Based Keys:** Create keys from text without image files
+- 💡 **Brightness Control:** Adjust device brightness on-the-fly
+- 🔄 **Layout Management:** Multiple layouts with easy switching
+- 🐧 **Linux Native:** Built for Linux (X11 & Wayland support)
 
 ---
 
 ## Table of Contents
 
-1. [Installation](#installation)
-   - [System Dependencies](#system-dependencies)
-   - [Python Dependencies](#python-dependencies)
-   - [Virtual Environment Setup](#virtual-environment-setup)
-2. [Device Setup](#device-setup)
-   - [udev Rules](#udev-rules)
-3. [Configuration](#configuration)
-   - [Basic Structure](#basic-structure)
-   - [Settings](#settings)
-   - [Keys](#keys)
-   - [Layouts](#layouts)
-   - [Window Rules](#window-rules)
-4. [Actions Reference](#actions-reference)
-5. [Running the Application](#running-the-application)
-6. [Examples](#examples)
+1. [Prerequisites](#prerequisites)
+2. [Quick Start](#quick-start)
+3. [Installation](#installation)
+4. [Device Setup (udev)](#device-setup-udev-rules)
+5. [Configuration](#configuration)
+6. [Running the Application](#running-the-application)
 7. [Troubleshooting](#troubleshooting)
+8. [Advanced Features](#advanced-features)
+9. [Contributing](#contributing)
+10. [License](#license)
+
+---
+
+## Prerequisites
+
+Before you begin, ensure you have the following:
+
+- **Hardware:** A StreamDock 293v3 device.
+- **Operating System:** Linux (tested on Arch Linux with KDE Plasma 6).
+- **Python:** Python 3.10+
+- **System Libraries:** `hidapi`, `libusb`, and `pkg-config`.
+
+For specific features, you may need:
+- **Keyboard Automation:** `xdotool` (for X11) or `kdotool` (for KDE Wayland).
+- **Audio Control:** `pulseaudio-utils`.
+- **Lock Monitor:** `python-dbus` and `python-gobject`.
+- **SVG Icons:** `librsvg`.
+
+---
+
+## Quick Start
+
+For those who are impatient to get started:
+
+1.  **Install Dependencies & Set Permissions:**
+    ```bash
+    # Install system packages (see detailed Installation section for your distro)
+    # Set up udev rules (see Device Setup section below - this is critical!)
+    # Install Python packages
+    pip install -r requirements.txt
+    ```
+
+2.  **Edit Configuration:**
+    - Open `src/config.yml` and customize it to your needs. At a minimum, review the default key assignments.
+
+3.  **Run the Application:**
+    ```bash
+    cd src
+    python3 main.py
+    ```
 
 ---
 
 ## Installation
 
-### System Dependencies
+### 1. System Dependencies
 
-#### Arch Linux
+Install the required system packages for your distribution.
+
+<details>
+<summary><strong>🔵 Arch Linux</strong></summary>
 
 ```bash
 # Required packages
 sudo pacman -S python python-pip hidapi libusb
 
-# For keyboard automation (X11)
-sudo pacman -S xdotool
+# For keyboard automation
+sudo pacman -S xdotool      # (X11)
+yay -S kdotool-git         # (Wayland/KDE)
 
-# For keyboard automation (Wayland/KDE)
-yay -S kdotool-git
-
-# For audio control
+# For audio/media control
 sudo pacman -S pulseaudio-utils
+
+# For SVG icon support
+sudo pacman -S librsvg
 
 # For lock monitor (optional)
 sudo pacman -S python-dbus python-gobject
@@ -66,33 +108,38 @@ sudo pacman -S python-dbus python-gobject
 # No system packages needed (uses python-evdev)
 # But requires udev rule setup (see Device Setup)
 ```
+</details>
 
-#### Debian / Ubuntu
+<details>
+<summary><strong>🟠 Debian / Ubuntu</strong></summary>
 
 ```bash
 # Core dependencies
 sudo apt install python3-pip libhidapi-hidraw0 libusb-1.0-0 pkg-config gobject-introspection libgirepository-2.0-dev libcairo2-dev
 
-# For keyboard automation (X11)
-sudo apt install xdotool
+# For keyboard automation
+sudo apt install xdotool # (X11)
+# For Wayland/KDE, download kdotool from https://github.com/jinliu/kdotool/releases
 
-# For keyboard automation (Wayland/KDE)
-## Download it from https://github.com/jinliu/kdotool/releases and extract the binary to a location in your path.
-
-# For audio control
+# For audio/media control
 sudo apt install pulseaudio-utils
+
+# For SVG icon support
+sudo apt install librsvg2-bin
 
 # For lock monitor (optional)
 sudo apt install python3-dbus python3-gi
 ```
+</details>
 
+### 2. Python Dependencies
 
-### Python Dependencies
-
-Install required Python packages:
+Using a virtual environment is highly recommended.
 
 ```bash
-pip install -r requirements.txt
+# 1. Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate
 ```
 
 Or manually:
@@ -133,57 +180,33 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the application
-cd src
-python main.py
-
-# When done, deactivate
-deactivate
+# To deactivate when you are done
+# deactivate
 ```
 
-**Note:** You may need to install some system packages even when using a virtual environment (like `hidapi`, `libusb`, system D-Bus libraries).
+**Note:** If you encounter issues with packages like `dbus-python` or `PyGObject`, you may need to create the virtual environment with `--system-site-packages` to ensure it can access system-level libraries.
 
 ---
 
-## Device Setup
+## Device Setup (udev rules)
 
-### udev Rules
+To access the StreamDock device without root privileges, you must set up udev rules. This is a **critical** step.
 
-To access the StreamDock device without root privileges, you need to set up udev rules.
+#### 1. Find Your Device ID
 
-#### 1. Find Your Device IDs
+Connect your StreamDock and run `lsusb | grep -i hotspot`. You should see an ID like `6603:1006`. Note your device's Vendor and Product ID.
 
-Connect your StreamDock and run:
+#### 2. Create the udev Rule File
 
-```bash
-lsusb | grep -i hotspot
-```
+Copy the `99-streamdock.rules` file from this repository to `/etc/udev/rules.d/`. If your device ID from the previous step is different, you must edit the file and replace the `VID` and `PID` values.
 
-You should see output like:
-```shell
-Bus 001 Device 005: ID 6603:1006 HOTSPOTEKUSB HOTSPOTEKUSB HID DEMO
-```
-Note the ID format: `6603:1006` (Vendor:Product)
+**⚠️ CRITICAL:** These udev rules are **essential** to prevent the "Mouse Keys" problem, where your keyboard might start controlling your mouse pointer. The purpose of these rules is to:
+1.  Allow user access to the device (`hidraw`).
+2.  **Prevent** the system from treating the device as a standard keyboard or mouse.
+3.  Force `libinput` to completely ignore the device.
+4.  Unbind the generic HID drivers that cause conflicts.
 
-
-#### 2. Create udev Rule
-
-Copy the udev rule file from this package to your system's udev rules directory (`/etc/udev/rules.d/`)
-Make sure to replace VID and PID values with your actual device IDs, as found in step 1.
-
-**⚠️ CRITICAL:** These udev rules are **essential** to prevent the Mouse Keys problem. The StreamDock device has multiple HID interfaces, and without these rules:
-- Some interfaces will be recognized as keyboard/mouse devices
-- Your keyboard will randomly control the mouse pointer (+ cursor)
-- The Mouse Keys accessibility feature will be triggered during device re-initialization
-
-The purpose of these rules are:
-1. Allow hidraw access for the StreamDock application
-2. **Prevent ALL input device creation** (no event devices)
-3. **Force libinput to ignore** the device completely  
-4. **Unbind HID drivers** from all device interfaces
-
-
-#### 3. Add User to plugdev Group
+#### 3. Add Your User to the `plugdev` Group
 
 ```bash
 sudo usermod -a -G plugdev $USER
@@ -195,18 +218,7 @@ sudo usermod -a -G plugdev $USER
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
-
-#### 5. Verify Setup
-
-Disconnect and reconnect your device, then check:
-
-```bash
-ls -l /dev/hidraw* | grep hotspot
-```
-
-You should see permissions like `crw-rw-rw-` indicating the device is accessible.
-
-**Note:** You may need to log out and log back in (or restart) for the group changes to take effect.
+Finally, unplug and reconnect your device. You may need to log out and back in for group changes to take full effect.
 
 ### Virtual Keyboard Setup (Recommended)
 
@@ -237,546 +249,95 @@ Briefly:
 
 ## Configuration
 
-StreamDock uses a YAML configuration file to define keys, layouts, and behaviors.
+StreamDock is configured via a single YAML file located at `src/config.yml`. This file defines the device settings, keys, layouts, and automation rules.
 
 ### Basic Structure
 
-Create or edit `src/config.yml`:
-
 ```yaml
 streamdock:
+  # Global device settings, all optional
   settings:
-    brightness: 15              # 0-100
-    lock_monitor: true          # Turn off when locked
+    # The physical keys' LED brightness, range from 0 to 100. Default: `50`.
+    brightness: 15
+    # Automatically turn the screen off when the computer is locked. Default: `true`.
+    lock_monitor: true
+    # THe maximal double-press time duration (in seconds), range from 0.1 to 2.0 seconds. Default: `0.3`.
+    double_press_interval: 0.6
   
+  # All available keys are defined here
   keys:
     KeyName:
       icon: "../img/icon.png"
       on_press_actions:
         - "ACTION_TYPE": "parameter"
   
+  # Layouts are collections of keys mapped to physical buttons
   layouts:
     Main:
       Default: true
       keys:
         - 1: "KeyName"
   
+  # Rules for automatic layout switching
   windows_rules:
     RuleName:
       window_name: "Firefox"
       layout: "Main"
 ```
 
-### Settings
+### `keys`
 
-Optional device settings:
+Defines all the buttons available for use in layouts. Each key must have a unique name. A key can be either image-based or text-based.
 
-```yaml
-settings:
-  brightness: 15                # Device brightness (0-100), default: 50
-  lock_monitor: true            # Auto turn off when computer locked, default: true
-  double_press_interval: 0.3    # Double-press detection time window in seconds (0-2.0), default: 0.3
-```
-
-**brightness:** Controls the LED brightness of the device.
-
-**lock_monitor:** When enabled, automatically turns off the device when you lock your computer (Super+L in KDE) and turns it back on when unlocked. Requires `dbus-python` and `PyGObject`.
-
-**double_press_interval:** Time window in seconds for detecting double-presses on keys. Lower values (e.g., 0.2) require faster double-presses. Higher values (e.g., 0.5) are more forgiving but may delay single-press actions. Valid range: 0.1-2.0 seconds. Default: 0.3 seconds (300ms).
-
-### Keys
-
-Keys are defined with unique names and can use either images or text.
-
-#### Image-Based Keys
-
+**Image-Based Key:**
 ```yaml
 keys:
   Firefox:
-    icon: "../img/firefox.png"      # Supports: PNG, JPG, GIF, SVG
-    on_press_actions:
-      - "EXECUTE_COMMAND": ["firefox"]
-```
-
-**Supported image formats:** PNG, JPG, GIF, SVG
-
-#### Text-Based Keys
-
-```yaml
-keys:
-  Settings:
-    text: "Settings"                # Text to display
-    text_color: "white"             # Optional, default: white
-    background_color: "black"       # Optional, default: black  
-    font_size: 20                   # Optional, default: 20
-    bold: true                      # Optional, default: true
-    on_press_actions:
-      - "EXECUTE_COMMAND": ["systemsettings"]
-```
-
-**Text key options:**
-- `text` (required) - Text to display
-- `text_color` (optional) - Color name or hex code (e.g., "red", "#FF0000")
-- `background_color` (optional) - Background color
-- `font_size` (optional) - Font size in pixels (1-100)
-- `bold` (optional) - Use bold font (true/false)
-
-**Note:** A key must have either `icon` OR `text`, not both.
-
-#### Action Types
-
-Keys can have three types of actions:
-- `on_press_actions` - Execute when key is pressed
-- `on_release_actions` - Execute when key is released
-- `on_double_press_actions` - Execute on double-press
-
-```yaml
-MyKey:
-  icon: "../img/icon.png"
-  on_press_actions:
-    - "EXECUTE_COMMAND": ["firefox"]
-  on_release_actions:
-    - "TYPE_TEXT": "Released"
-  on_double_press_actions:
-    - "KEY_PRESS": "CTRL+C"
-```
-
-### Layouts
-
-Layouts assign key numbers to keys. Each layout must have at least one key.
-
-**One layout MUST have `Default: true`**
-
-```yaml
-layouts:
-  Main:
-    Default: true           # Default layout
-    keys:
-      - 1: "Firefox"
-      - 2: "Chrome"
-      - 3: "Spotify"
-      - 4: null             # Empty key (cleared)
-  
-  Media:
-    keys:
-      - 1: "PlayPause"
-      - 2: "NextTrack"
-  
-  Settings:
-    clear_all: true         # Clear all icons when this layout is applied
-    keys:
-      - 1: "BackButton"
-      - 2: "BrightnessUp"
-```
-
-**Layout Options:**
-- `Default: true` - Mark this as the default layout (required for exactly one layout)
-- `clear_all: true` - Clear all icons before applying this layout (optional, default: false)
-- `keys` - List of key assignments (required)
-
-**Key numbers:** 1-15 (correspond to physical positions on device)
-
-**Empty keys:** Use `null` or `~` to explicitly clear a key position:
-
-```yaml
-- 3: null      # Cleared
-- 4: ~         # Also cleared (alternative syntax)
-```
-
-**clear_all behavior:**
-- When `clear_all: true` is set in the layout definition, all icons will be cleared **every time** this layout is applied
-- This works for:
-  - Manual layout switches via `CHANGE_LAYOUT` action
-  - Automatic switches via window rules
-  - Any other layout switching mechanism
-
-### Window Rules
-
-Automatically switch layouts based on the focused window:
-
-```yaml
-windows_rules:
-  Firefox_Rule:
-    window_name: "Firefox"      # Pattern to match
-    layout: "Browser_Layout"    # Layout to apply
-    match_field: "class"        # Optional: class, title, raw
-  
-  Kate_Rule:
-    window_name: "Kate"
-    layout: "Editor_Layout"
-```
-
-**Match fields:**
-- `class` (default) - Match against application class name
-- `title` - Match against window title
-- `raw` - Match against raw window info
-
-**Requirements:**
-- X11: Requires `xdotool`
-- Wayland/KDE: Requires `kdotool` or KWin scripting
-
----
-
-## Actions Reference
-
-### EXECUTE_COMMAND
-
-Execute a system command:
-
-```yaml
-- "EXECUTE_COMMAND": ["firefox"]
-- "EXECUTE_COMMAND": ["dolphin", "/home"]
-```
-
-**Note:** All executed commands run in **completely separate processes**, detached from the StreamDock script using `nohup` and shell backgrounding. Their output won't appear in the StreamDock console, and they continue running independently even if you stop, kill, or crash the script.
-
-### LAUNCH_APPLICATION
-
-Smart application launcher - launches an application if not running, or focuses its window if already running (run or raise behavior):
-
-```yaml
-# Simple format (command as string or list)
-- "LAUNCH_APPLICATION": "firefox"
-- "LAUNCH_APPLICATION": ["dolphin", "/home"]
-
-# Using desktop files (KDE/GNOME applications)
-- "LAUNCH_APPLICATION":
-    desktop_file: "firefox.desktop"          # Searches standard locations
-
-- "LAUNCH_APPLICATION":
-    desktop_file: "org.kde.kate"             # Auto-adds .desktop extension
-
-- "LAUNCH_APPLICATION":
-    desktop_file: "/usr/share/applications/org.kde.konsole.desktop"  # Full path
-
-# Advanced format with custom window matching
-- "LAUNCH_APPLICATION":
-    command: ["firefox"]           # Command to launch
-    class_name: "firefox"          # Window class to search (optional, defaults to command[0])
-    match_type: "contains"         # "contains" or "exact" (optional, default: "contains")
-    force_new: false               # Always launch new instance (optional, default: false)
-
-# Force new instance (always launch, never focus existing)
-- "LAUNCH_APPLICATION":
-    command: ["firefox", "--new-window"]
-    force_new: true                # Skip window detection, always launch
-```
-
-**How it works:**
-1. If `force_new: true`, always launches new instance (skips window detection)
-2. Otherwise, searches for existing windows by class name
-3. If found, focuses the window
-4. If not found, launches the application
-
-**Process Behavior:**
-- All launched applications run in **completely separate processes**, detached from the StreamDock script using `nohup`
-- Application output (stdout/stderr) does **not** appear in the StreamDock console (redirected to /dev/null)
-- Applications continue running **independently** even if you stop, kill, or crash the StreamDock script
-- Each application has its own process session and will not receive signals from the parent process
-- Uses shell backgrounding (`&`) and `nohup` for maximum reliability
-
-**Parameters:**
-- `command` (option 1) - Command to execute (string or list)
-- `desktop_file` (option 2) - Path to .desktop file or application name
-- `class_name` (optional) - Window class name to search, defaults to command[0] or from desktop file
-- `match_type` (optional) - `"contains"` (default) or `"exact"` matching
-- `force_new` (optional) - `true` to always launch new instance, `false` (default) to focus existing
-
-**Desktop file support:**
-- Searches standard locations: `/usr/share/applications/`, `~/.local/share/applications/`, flatpak dirs
-- Automatically extracts command, window class, and application name
-- Handles field codes (`%f`, `%u`, etc.) properly
-- Works with both simple names (`firefox.desktop`) and full paths
-
-**Use cases:**
-- Quickly switch to or launch your browser
-- Toggle applications without launching duplicates
-- One-button access to frequently used apps
-- Force new windows for specific scenarios (e.g., private browsing)
-- Use system-installed applications via desktop files
-
-**Examples:**
-
-```yaml
-keys:
-  # Smart launcher - focus if running
-  Firefox:
-    icon: "../img/firefox.png"
+    icon: "../img/firefox.svg" # Supports PNG, JPG, GIF, SVG
     on_press_actions:
       - "LAUNCH_APPLICATION": "firefox"
-  
-  # Using desktop file (recommended for KDE/GNOME apps)
-  Kate:
-    icon: "../img/kate.png"
-    on_press_actions:
-      - "LAUNCH_APPLICATION":
-          desktop_file: "org.kde.kate.desktop"
-  
-  # Force new instance - always opens new window
-  Firefox_Private:
-    icon: "../img/firefox_private.png"
-    on_press_actions:
-      - "LAUNCH_APPLICATION":
-          command: ["firefox", "--private-window"]
-          force_new: true
-  
-  Terminal:
-    icon: "../img/terminal.png"
-    on_press_actions:
-      - "LAUNCH_APPLICATION": "konsole"
-  
-  VSCode:
-    icon: "../img/vscode.png"
-    on_press_actions:
-      - "LAUNCH_APPLICATION":
-          command: ["code"]
-          class_name: "code"
-          match_type: "exact"
 ```
 
-### KEY_PRESS
-
-Simulate keyboard shortcuts:
-
-```yaml
-- "KEY_PRESS": "CTRL+C"
-- "KEY_PRESS": "CTRL+ALT+T"
-- "KEY_PRESS": "SUPER+L"
-```
-
-**Supported modifiers:** CTRL, ALT, SHIFT, SUPER (Windows/Meta key)
-
-### TYPE_TEXT
-
-Type text automatically:
-
-```yaml
-- "TYPE_TEXT": "user@example.com"
-```
-
-### WAIT
-
-Pause execution (in seconds):
-
-```yaml
-- "WAIT": 0.5
-- "WAIT": 2
-```
-
-### CHANGE_KEY_IMAGE
-
-Change the key's image dynamically:
-
-```yaml
-- "CHANGE_KEY_IMAGE": "../img/new_icon.png"
-```
-
-### CHANGE_LAYOUT
-
-Switch to a different layout:
-
-```yaml
-# Simple format (just switch layouts)
-- "CHANGE_LAYOUT": "Media_Layout"
-
-# Advanced format with options
-- "CHANGE_LAYOUT":
-    layout: "Media_Layout"
-    clear_all: true              # Clear all icons before applying layout (optional, default: false)
-```
-
-**Parameters:**
-- `layout` (required) - Name of the layout to switch to
-- `clear_all` (optional) - If `true`, clears all icons before applying the new layout. Useful for clean transitions between layouts with different key configurations. Default: `false`
-
-**Use cases:**
-- **Without clear_all:** Keys from previous layout remain visible if not overwritten
-- **With clear_all:** All keys are cleared first, then only new layout keys are shown
-
-**Examples:**
-
+**Text-Based Key:**
 ```yaml
 keys:
-  # Standard layout switch (keys overlay)
-  ToMedia:
-    text: "Media"
-    on_press_actions:
-      - "CHANGE_LAYOUT": "Media_Layout"
-  
-  # Clean layout switch (clear all first)
-  ToSettings:
+  Settings:
     text: "Settings"
+    text_color: "white"             # Optional
+    background_color: "black"       # Optional
+    font_size: 20                   # Optional
+    bold: true                      # Optional
     on_press_actions:
-      - "CHANGE_LAYOUT":
-          layout: "Settings_Layout"
-          clear_all: true
-  
-  # Back button that clears and returns to main
-  BackToMain:
-    text: "← Back"
-    on_press_actions:
-      - "CHANGE_LAYOUT":
-          layout: "Main"
-          clear_all: true
+      - "LAUNCH_APPLICATION": "systemsettings"
 ```
 
-### DBUS
+Keys can trigger actions on `on_press_actions`, `on_release_actions`, or `on_double_press_actions`.
 
-Send D-Bus commands for media/volume control:
+### `layouts`
+
+Layouts assign the defined keys into physical button numbers (1-15). **One layout MUST be marked as `Default: true`**.
+
+- `keys`: A list of key number to key name mappings.
+- `clear_all`: (`true`/`false`) Optional argument. If true, clears the entire board before drawing this layout's keys. Defaults to `false`
+- `Default`: (`true`/`false`) Marks the layout that is active on startup.
 
 ```yaml
-# Predefined shortcuts
-- "DBUS": {"action": "play_pause"}
-- "DBUS": {"action": "next"}
-- "DBUS": {"action": "previous"}
-- "DBUS": {"action": "volume_up"}
-- "DBUS": {"action": "volume_down"}
-- "DBUS": {"action": "mute"}
-```
-
-### DEVICE_BRIGHTNESS_UP / DOWN
-
-Adjust device brightness:
-
-```yaml
-- "DEVICE_BRIGHTNESS_UP": ""      # Increase by 10%
-- "DEVICE_BRIGHTNESS_DOWN": ""    # Decrease by 10%
-```
-
-### Multiple Actions
-
-Actions execute sequentially:
-
-```yaml
-on_press_actions:
-  - "TYPE_TEXT": "user@example.com"
-  - "WAIT": 0.2
-  - "KEY_PRESS": "CTRL+A"
-  - "KEY_PRESS": "CTRL+C"
-```
-
----
-
-## Running the Application
-
-### Quick Start
-
-```bash
-cd src
-python3 main.py
-```
-
-### With Custom Config
-
-```bash
-python3 main.py /path/to/custom_config.yml
-```
-
-### Using Virtual Environment
-
-```bash
-source venv/bin/activate
-cd src
-python3 main.py
-```
-
-### Expected Output
-
-```
-🔒 Lock monitor started
-🔒 Connected to org.freedesktop.ScreenSaver
-
-StreamDock is ready. Press Ctrl+C to exit.
-```
-
-### Exit
-
-Press `Ctrl+C` to stop the application gracefully.
-
----
-
-## Examples
-
-### Example 1: Basic Application Launcher
-
-```yaml
-streamdock:
-  settings:
-    brightness: 15
-  
-  keys:
-    Firefox:
-      icon: "../img/firefox.png"
-      on_press_actions:
-        - "EXECUTE_COMMAND": ["firefox"]
-    
-    Terminal:
-      icon: "../img/terminal.png"
-      on_press_actions:
-        - "EXECUTE_COMMAND": ["konsole"]
-  
-  layouts:
-    Main:
-      Default: true
-      keys:
-        - 1: "Firefox"
-        - 2: "Terminal"
-```
-
-### Example 2: Media Control
-
-```yaml
-keys:
-  PlayPause:
-    icon: "../img/play.png"
-    on_press_actions:
-      - "DBUS": {"action": "play_pause"}
-  
-  VolumeUp:
-    text: "Vol+"
-    text_color: "green"
-    on_press_actions:
-      - "DBUS": {"action": "volume_up"}
-```
-
-### Example 3: Text Shortcuts
-
-```yaml
-keys:
-  EmailSignature:
-    text: "Email"
-    on_press_actions:
-      - "TYPE_TEXT": "Best regards,\nJohn Doe"
-```
-
-### Example 4: Layout Switcher
-
-```yaml
-keys:
-  ToMedia:
-    text: "Media"
-    on_press_actions:
-      - "CHANGE_LAYOUT": "Media_Layout"
-  
-  ToMain:
-    text: "Main"
-    on_press_actions:
-      - "CHANGE_LAYOUT": "Main"
-
 layouts:
-  Main:
+  MainLayout:
     Default: true
     keys:
       - 1: "Firefox"
-      - 15: "ToMedia"
-  
-  Media_Layout:
-    keys:
-      - 1: "PlayPause"
-      - 15: "ToMain"
+      - 2: "Terminal"
+      - 3: null # This key will be blank
 ```
 
-### Example 5: Window Rules
+### `windows_rules`
+
+Automatically switch layouts based on the currently focused window.
+
+- `window_name`: A string or regex pattern to match.
+- `layout`: The name of the layout to apply when a match is found.
+- `match_field`: The window property to match against. Can be `class` (default), `title`, or `raw`.
 
 ```yaml
 windows_rules:
@@ -784,21 +345,104 @@ windows_rules:
     window_name: "Firefox"
     layout: "Browser_Layout"
     match_field: "class"
-  
-  Spotify_Rule:
-    window_name: "Spotify"
-    layout: "Media_Layout"
-    match_field: "class"
 ```
 
-When you focus Firefox, the Browser_Layout automatically activates. When you focus Spotify, Media_Layout activates.
+---
+
+## Actions Reference
+
+A wide variety of actions can be triggered by key presses. For a complete list and detailed explanation of each action, please see the **[Keys Actions Reference](CONFIGURATION_ACTIONS.md)**.
+
+---
+
+## Running the Application
+
+To run the application, navigate to the `src` directory and execute `main.py`.
+
+```bash
+# If using a virtual environment, make sure it's activated
+source .venv/bin/activate
+cd src
+python3 main.py
+```
+
+To use a custom configuration file:
+```bash
+python3 main.py /path/to/your/custom_config.yml
+```
+
+Press `Ctrl+C` in the terminal to stop the application gracefully.
+
+---
+
+## Examples
+
+Here are a few examples to showcase what's possible.
+
+<details>
+<summary><strong>Example 1: A simple application launcher</strong></summary>
+
+```yaml
+streamdock:
+  keys:
+    FirefoxKey:
+      icon: "../img/firefox.png"
+      on_press_actions:
+        - "LAUNCH_APPLICATION": "firefox"
+    TerminalKey:
+      icon: "../img/konsole.svg"
+      on_press_actions:
+        - "LAUNCH_APPLICATION": "konsole"
+  layouts:
+    Main:
+      Default: true
+      keys:
+        - 1: "FirefoxKey"
+        - 2: "TerminalKey"
+```
+</details>
+
+<details>
+<summary><strong>Example 2: A layout for media control</strong></summary>
+
+```yaml
+keys:
+  PlayPause:
+    icon: "../img/play.svg"
+    on_press_actions:
+      - "DBUS": {"action": "play_pause"}
+  NextTrack:
+    icon: "../img/next_song.svg"
+    on_press_actions:
+      - "DBUS": {"action": "next"}
+layouts:
+  Media:
+    keys:
+      - 7: "PrevTrack" # Assuming PrevTrack is defined elsewhere
+      - 8: "PlayPause"
+      - 9: "NextTrack"
+```
+</details>
+
+<details>
+<summary><strong>Example 3: Context-aware switching</strong></summary>
+
+```yaml
+# This rule will automatically switch to the "Media" layout
+# when a window with the class "Spotify" is focused.
+windows_rules:
+  SpotifyRule:
+    window_name: "Spotify"
+    layout: "Media"
+    match_field: "class"
+```
+</details>
 
 ---
 
 ## Troubleshooting
 
-For common issues and solutions, please see the [Troubleshooting Guide](TROUBLESHOOTING.md).
-
+For common issues, errors, and solutions, please see the **[Troubleshooting Guide](TROUBLESHOOTING.md)**.
 
 ---
 
@@ -806,45 +450,21 @@ For common issues and solutions, please see the [Troubleshooting Guide](TROUBLES
 
 ### Empty Keys in Layouts
 
-Clear specific key positions when switching layouts:
+You can explicitly clear a key position in a layout by setting its value to `null`. This is useful for creating clean visual transitions between layouts.
 
 ```yaml
 layouts:
   Minimal:
     keys:
       - 1: "Firefox"
-      - 2: null      # Cleared
-      - 3: null      # Cleared
+      - 2: null # This key will be cleared
+      - 3: null # This one too
       - 4: "Terminal"
-```
-
-Use cases:
-- Clean transitions between layouts
-- Create visual gaps
-- Temporarily disable keys
-
-### Brightness Control Keys
-
-Create keys to adjust device brightness:
-
-```yaml
-keys:
-  BrightnessUp:
-    text: "☀"
-    font_size: 30
-    on_press_actions:
-      - "DEVICE_BRIGHTNESS_UP": ""
-  
-  BrightnessDown:
-    text: "☾"
-    font_size: 30
-    on_press_actions:
-      - "DEVICE_BRIGHTNESS_DOWN": ""
 ```
 
 ### Complex Action Sequences
 
-Chain multiple actions together:
+Chain multiple actions to create powerful macros. The actions are executed in order, with `WAIT` actions used to insert delays.
 
 ```yaml
 keys:
@@ -852,8 +472,8 @@ keys:
     icon: "../img/camera.png"
     on_press_actions:
       - "KEY_PRESS": "SHIFT+PRINT"  # Take screenshot
-      - "WAIT": 0.5                  # Wait for dialog
-      - "KEY_PRESS": "RETURN"        # Confirm save
+      - "WAIT": 0.5                  # Wait for the dialog to appear
+      - "KEY_PRESS": "RETURN"        # Confirm the save action
 ```
 
 ---
@@ -866,35 +486,19 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Contributing
 
-Contributions are welcome! Feel free to:
-- Report bugs
-- Suggest features
-- Submit pull requests
-- Improve documentation
+Contributions are welcome! Feel free to open an issue or submit a pull request for:
+- Bug fixes
+- Feature suggestions
+- Documentation improvements
 
 ---
 
 ## Acknowledgments
 
-- Based on [StreamDock-Device-SDK](https://github.com/MiraboxSpace/StreamDock-Device-SDK) by MiraboxSpace (MIT License)
-- Uses `libhidapi-libusb` (system library) for USB/HID communication via ctypes
-- SVG support via `cairosvg`
-- Window monitoring via `xdotool`/`kdotool`
-- Media control via D-Bus/MPRIS
+- Uses `libhidapi-libusb` for HID communication.
+- Based on the original [StreamDock-Device-SDK](https://github.com/MiraboxSpace/StreamDock-Device-SDK) by MiraboxSpace.
+- SVG support via `cairosvg`.
 
 ---
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on the project repository.
-
-**System Requirements:**
-- Linux (Wayland)
-- Python 3.10+
-- StreamDock-compatible device
-- USB HID access
-
-**Tested On:**
-- Arch Linux + KDE Plasma 6.5
 
 **Enjoy your StreamDock! 🎉**
