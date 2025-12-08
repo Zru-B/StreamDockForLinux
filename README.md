@@ -67,6 +67,26 @@ sudo pacman -S python-dbus python-gobject
 # But requires udev rule setup (see Device Setup)
 ```
 
+#### Debian / Ubuntu
+
+```bash
+# Core dependencies
+sudo apt install python3-pip libhidapi-hidraw0 libusb-1.0-0 pkg-config gobject-introspection libgirepository-2.0-dev libcairo2-dev
+
+# For keyboard automation (X11)
+sudo apt install xdotool
+
+# For keyboard automation (Wayland/KDE)
+## Download it from https://github.com/jinliu/kdotool/releases and extract the binary to a location in your path.
+
+# For audio control
+sudo apt install pulseaudio-utils
+
+# For lock monitor (optional)
+sudo apt install python3-dbus python3-gi
+```
+
+
 ### Python Dependencies
 
 Install required Python packages:
