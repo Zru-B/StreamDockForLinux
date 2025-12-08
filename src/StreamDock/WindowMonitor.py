@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import re
+import shutil
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,41 @@ class WindowMonitor:
         self.running = False
         self.monitor_thread = None
         self.default_callback = None
+        self.kdotool_available = self._check_kdotool_availability()
+    
+    def _check_kdotool_availability(self):
+        """
+        Check if kdotool is installed and functional.
+        
+        Verifies both the existence of the executable and its ability to run
+        a simple command without crashing (which can happen on some systems due to
+        D-Bus path issues).
+        
+        :return: True if kdotool is available and working, False otherwise.
+        """
+        if shutil.which('kdotool') is None:
+            logger.warning("kdotool not found. Window detection might be less reliable on KDE Wayland.")
+            return False
+            
+        # Check if kdotool actually works (it might panic on some systems)
+        try:
+            result = subprocess.run(
+                ['kdotool', 'getactivewindow'],
+                capture_output=True,
+                text=True,
+                timeout=1
+            )
+            
+            if result.returncode != 0:
+                logger.warning(f"kdotool found but appears to be broken (returned {result.returncode}). Disabling kdotool integration.")
+                return False
+                
+            logger.info("kdotool found and functional. kdotool will be used for window detection.")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"kdotool found but execution failed: {e}. Disabling kdotool integration.")
+            return False
     
     def get_active_window_info(self):
         """
@@ -40,10 +76,11 @@ class WindowMonitor:
         # Try multiple methods in order of reliability
         
         # Method 1: Try kdotool (best for KDE Wayland)
-        window_info = self._try_kdotool()
-        if window_info:
-            self.current_window_method = 'kdotool'
-            return window_info
+        if self.kdotool_available:
+            window_info = self._try_kdotool()
+            if window_info:
+                self.current_window_method = 'kdotool'
+                return window_info
         
         # Method 2: Try KWin D-Bus scripting interface
         window_info = self._try_kwin_scripting()
