@@ -4,6 +4,9 @@ Automatically turns off StreamDock device screen when computer is locked.
 """
 import threading
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LockMonitor:
@@ -56,8 +59,8 @@ class LockMonitor:
             self.DBusGMainLoop = DBusGMainLoop
             self.dbus_available = True
         except ImportError:
-            print("Warning: python-dbus not available. Lock monitoring disabled.")
-            print("Install with: pip install dbus-python")
+            logger.warning("python-dbus not available. Lock monitoring disabled.")
+            logger.info("Install with: pip install dbus-python")
             self.dbus_available = False
             self.enabled = False
     
@@ -69,14 +72,14 @@ class LockMonitor:
         self.running = True
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
-        print("🔒 Lock monitor started")
+        logger.info("🔒 Lock monitor started")
     
     def stop(self):
         """Stop monitoring lock/unlock events."""
         self.running = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=2)
-        print("🔒 Lock monitor stopped")
+        logger.info("🔒 Lock monitor stopped")
     
     def _monitor_loop(self):
         """Main monitoring loop using D-Bus."""
@@ -104,7 +107,7 @@ class LockMonitor:
                     self._on_lock_state_changed
                 )
                 
-                print("🔒 Connected to org.freedesktop.ScreenSaver")
+                logger.info("🔒 Connected to org.freedesktop.ScreenSaver")
                 
             except self.dbus.DBusException as e:
                 # Try GNOME screen saver as fallback
@@ -123,10 +126,10 @@ class LockMonitor:
                         self._on_lock_state_changed
                     )
                     
-                    print("🔒 Connected to org.gnome.ScreenSaver")
+                    logger.info("🔒 Connected to org.gnome.ScreenSaver")
                     
                 except self.dbus.DBusException as e2:
-                    print(f"Warning: Could not connect to screen saver D-Bus service: {e2}")
+                    logger.warning(f"Could not connect to screen saver D-Bus service: {e2}")
                     return
             
             # Run the GLib main loop
@@ -139,18 +142,16 @@ class LockMonitor:
                         loop.get_context().iteration(False)
                         time.sleep(0.1)
                     except Exception as e:
-                        print(f"Error in lock monitor loop: {e}")
+                        logger.error(f"Error in lock monitor loop: {e}")
                         break
             
             run_loop()
             
         except ImportError:
-            print("Warning: GLib not available. Using polling fallback.")
+            logger.warning("GLib not available. Using polling fallback.")
             self._monitor_loop_polling(bus)
         except Exception as e:
-            print(f"Error starting lock monitor: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error starting lock monitor")
     
     def _monitor_loop_polling(self, bus):
         """Fallback polling method if GLib is not available."""
@@ -172,7 +173,7 @@ class LockMonitor:
                 'org.freedesktop.ScreenSaver'
             )
             
-            print("🔒 Using polling method for lock detection")
+            logger.info("🔒 Using polling method for lock detection")
             
             # Poll the GetActive method
             while self.running:
@@ -185,11 +186,11 @@ class LockMonitor:
                     time.sleep(1)  # Poll every second
                     
                 except Exception as e:
-                    print(f"Error polling lock state: {e}")
+                    logger.error(f"Error polling lock state: {e}")
                     time.sleep(5)
                     
         except Exception as e:
-            print(f"Error in polling monitor: {e}")
+            logger.error(f"Error in polling monitor: {e}")
     
     def _on_lock_state_changed(self, is_locked):
         """
@@ -216,12 +217,12 @@ class LockMonitor:
             self.is_locked = is_locked
             
             if is_locked:
-                print("🔒 Computer locked - turning off StreamDock")
+                logger.info("🔒 Computer locked - turning off StreamDock")
                 self.saved_brightness = getattr(self.device, '_current_brightness', 50)
                 
                 # Stop window monitor if it's running
                 if self.window_monitor and self.window_monitor.running:
-                    print("🔒 Stopping window monitor")
+                    logger.info("🔒 Stopping window monitor")
                     self.window_monitor.stop()
                 
                 # Clear all icons before closing
@@ -229,7 +230,7 @@ class LockMonitor:
                 time.sleep(0.5)  # Give device time to process clear command
                 self.device.close()
             else:
-                print("🔓 Computer unlocked - turning on StreamDock")
+                logger.info("🔓 Computer unlocked - turning on StreamDock")
                 
                 time.sleep(0.5)  # Give device time to be ready
                 
@@ -282,14 +283,14 @@ class LockMonitor:
                 
                 # Restart window monitor if it was running before lock
                 if self.window_monitor:
-                    print("🔓 Restarting window monitor")
+                    logger.info("🔓 Restarting window monitor")
                     self.window_monitor.start()
             
             # Reset processing flag
             self._processing_state_change = False
                 
         except Exception as e:
-            print(f"Error handling lock state change: {e}")
+            logger.error(f"Error handling lock state change: {e}")
             self._processing_state_change = False  # Reset flag even on error
     
     def get_device(self):

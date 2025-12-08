@@ -1,6 +1,5 @@
 import threading
 from abc import ABC, ABCMeta, abstractmethod
-import traceback
 import time
 
 class TransportError(Exception):
@@ -135,7 +134,7 @@ class StreamDock(ABC):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
-            print(f"key '{origin}' out of range. you should set (1 ~ 15)")
+            logger.warning(f"key '{origin}' out of range. you should set (1 ~ 15)")
             return -1
         self.transport.keyClear(index)
 
@@ -168,13 +167,12 @@ class StreamDock(ABC):
                     if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
                         if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} pressed")
+                            logger.info(f"Key {key_num} pressed")
                         elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} released")
+                            logger.info(f"Key {key_num} released")
             except Exception as e:
-                print(f"Error in whileread: {e}")
-                traceback.print_exc()
+                logger.exception(f"Error in whileread: {e}")
                 break
 
     def screen_Off(self):

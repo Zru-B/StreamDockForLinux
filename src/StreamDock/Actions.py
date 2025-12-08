@@ -61,7 +61,6 @@ def _launch_detached(command):
         close_fds=True
     )
 
-
 def execute_command(command):
     """Execute a system command using subprocess.Popen.
     
@@ -75,7 +74,6 @@ def execute_command(command):
         _launch_detached(command)
     except Exception as e:
         logger.error(f"Error executing command: {e}", exc_info=True)
-
 
 def emulate_key_combo(combo_string):
     """
@@ -105,7 +103,7 @@ def emulate_key_combo(combo_string):
 
     keys = [k.strip().upper() for k in combo_string.split('+')]
     if not keys:
-        print(f"Invalid key combination: {combo_string}")
+        logger.warning(f"Invalid key combination: {combo_string}")
         return
 
 
@@ -123,7 +121,7 @@ def emulate_key_combo(combo_string):
         elif len(key) == 1:
             xdotool_keys.append(key.lower())
         else:
-            print(f"Unknown key: {key}")
+            logger.warning(f"Unknown key: {key}")
             return
 
     # If the virtual keyboard failed, try kdotool (for KDE Wayland)
@@ -167,7 +165,6 @@ def type_text(text, delay=0.001):
         return
     except (FileNotFoundError, subprocess.CalledProcessError):
         pass
-
 
     try:
         # Next attempt - xdotool (X11)
@@ -214,6 +211,7 @@ def type_text(text, delay=0.001):
         logger.error("Error: neither kdotool nor xdotool found. type_text action will not work.")
     except Exception as e:
         logger.error(f"Unexpected error while typing text: {e}")
+
         # Try fallback method if the main method fails
         try:
             subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text], check=True)
@@ -229,7 +227,7 @@ def adjust_device_brightness(device, amount):
     :param amount: Amount to adjust brightness (can be positive or negative)
     """
     if device is None:
-        print("Error: Device is required for brightness adjustment")
+        logger.error("Error: Device is required for brightness adjustment")
         return
     
     try:
@@ -248,7 +246,7 @@ def adjust_device_brightness(device, amount):
         # Store the new brightness value
         device._current_brightness = new_brightness
     except Exception as e:
-        print(f"Error adjusting brightness: {e}")
+        logger.error(f"Error adjusting brightness: {e}")
 
 
 def send_dbus_command(dbus_command):
@@ -289,16 +287,16 @@ def send_dbus_command(dbus_command):
                 command = shortcuts[action]
                 subprocess.run(command, shell=True, check=True, capture_output=True)
             else:
-                print(f"Unknown D-Bus shortcut: {action}")
+                logger.warning(f"Unknown D-Bus shortcut: {action}")
         # Handle string format (direct command)
         elif isinstance(dbus_command, str):
             subprocess.run(dbus_command, shell=True, check=True, capture_output=True)
         else:
-            print(f"Invalid D-Bus command format: {type(dbus_command)}")
+            logger.error(f"Invalid D-Bus command format: {type(dbus_command)}")
     except FileNotFoundError:
-        print("Error: dbus-send or pactl not found. Install with: sudo apt install dbus pactl")
+        logger.error("Error: dbus-send or pactl not found. Install with: sudo apt install dbus pactl")
     except subprocess.CalledProcessError as e:
-        print(f"Error executing D-Bus command: {e}")
+        logger.error(f"Error executing D-Bus command: {e}")
 
 
 def parse_desktop_file(desktop_file):
@@ -336,7 +334,7 @@ def parse_desktop_file(desktop_file):
                 break
     
     if not desktop_path:
-        print(f"Desktop file not found: {desktop_file}")
+        logger.warning(f"Desktop file not found: {desktop_file}")
         return None
     
     try:
@@ -345,7 +343,7 @@ def parse_desktop_file(desktop_file):
         config.read(desktop_path)
         
         if 'Desktop Entry' not in config:
-            print(f"Invalid desktop file (no [Desktop Entry] section): {desktop_path}")
+            logger.warning(f"Invalid desktop file (no [Desktop Entry] section): {desktop_path}")
             return None
         
         entry = config['Desktop Entry']
@@ -353,7 +351,7 @@ def parse_desktop_file(desktop_file):
         # Get the Exec command
         exec_line = entry.get('Exec', '')
         if not exec_line:
-            print(f"No Exec field in desktop file: {desktop_path}")
+            logger.warning(f"No Exec field in desktop file: {desktop_path}")
             return None
         
         # Remove field codes (%f, %F, %u, %U, %i, %c, %k, etc.)
@@ -380,7 +378,7 @@ def parse_desktop_file(desktop_file):
         }
     
     except Exception as e:
-        print(f"Error parsing desktop file {desktop_path}: {e}")
+        logger.error(f"Error parsing desktop file {desktop_path}: {e}")
         return None
 
 
@@ -435,15 +433,15 @@ def launch_or_focus_application(app_config):
             if desktop_info:
                 command = desktop_info['command']
                 class_name = desktop_info['class_name']
-                print(f"Loaded from desktop file: {desktop_info['name']}")
-                print(f"  Command: {' '.join(command)}")
-                print(f"  Window class: {class_name}")
+                logger.debug(f"Loaded from desktop file: {desktop_info['name']}")
+                logger.debug(f"  Command: {' '.join(command)}")
+                logger.debug(f"  Window class: {class_name}")
                 # Allow override of class_name from config
                 if "class_name" in app_config:
                     class_name = app_config["class_name"].lower()
-                    print(f"  Overridden class: {class_name}")
+                    logger.debug(f"  Overridden class: {class_name}")
             else:
-                print(f"Failed to parse desktop file: {desktop_file}")
+                logger.warning(f"Failed to parse desktop file: {desktop_file}")
                 return
         else:
             # Use command parameter
@@ -456,11 +454,11 @@ def launch_or_focus_application(app_config):
         match_type = app_config.get("match_type", "contains")
         force_new = app_config.get("force_new", False)
     else:
-        print(f"Invalid LAUNCH_APPLICATION parameter: {app_config}")
+        logger.error(f"Invalid LAUNCH_APPLICATION parameter: {app_config}")
         return
     
     if not command:
-        print("Error: LAUNCH_APPLICATION requires either 'command' or 'desktop_file'")
+        logger.error("Error: LAUNCH_APPLICATION requires either 'command' or 'desktop_file'")
         return
     
     # If force_new is True, skip window detection and always launch
@@ -470,7 +468,7 @@ def launch_or_focus_application(app_config):
             _launch_detached(command)
             return
         except Exception as e:
-            print(f"Error launching application: {e}")
+            logger.error(f"Error launching application: {e}")
             return
     
     try:
@@ -521,7 +519,7 @@ def launch_or_focus_application(app_config):
             if result.returncode == 0 and result.stdout.strip():
                 # Window found, get the window ID
                 window_id = result.stdout.strip().split('\n')[0]
-                print(f"Found window (kdotool): {window_id} for class '{class_name}'")
+                logger.debug(f"Found window (kdotool): {window_id} for class '{class_name}'")
                 # Activate the window
                 subprocess.run(
                     ['kdotool', 'windowactivate', window_id],
@@ -539,7 +537,7 @@ def launch_or_focus_application(app_config):
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     window_id = result.stdout.strip().split('\n')[0]
-                    print(f"Found window (kdotool by name): {window_id} for '{search_by_name}'")
+                    logger.debug(f"Found window (kdotool by name): {window_id} for '{search_by_name}'")
                     subprocess.run(
                         ['kdotool', 'windowactivate', window_id],
                         check=True,
@@ -568,7 +566,7 @@ def launch_or_focus_application(app_config):
                     # Window found, focus it
                     window_ids = result.stdout.strip().split('\n')
                     if window_ids:
-                        print(f"Found window (xdotool): {window_ids[0]} for class '{class_name}'")
+                        logger.debug(f"Found window (xdotool): {window_ids[0]} for class '{class_name}'")
                         # Focus the first matching window
                         subprocess.run(
                             ['xdotool', 'windowactivate', window_ids[0]],
@@ -587,7 +585,7 @@ def launch_or_focus_application(app_config):
                     if result.returncode == 0 and result.stdout.strip():
                         window_ids = result.stdout.strip().split('\n')
                         if window_ids:
-                            print(f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'")
+                            logger.debug(f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'")
                             subprocess.run(
                                 ['xdotool', 'windowactivate', window_ids[0]],
                                 check=True,
@@ -617,12 +615,12 @@ def launch_or_focus_application(app_config):
         
         # If we got here, window detection failed but process is running
         # Launch new instance anyway (user may have minimized or hidden it)
-        print(f"Window not found for class '{class_name}', launching new instance")
+        logger.info(f"Window not found for class '{class_name}', launching new instance")
         # Launch in a completely separate process (detached from Python)
         _launch_detached(command)
     
     except Exception as e:
-        print(f"Error in LAUNCH_APPLICATION: {e}")
+        logger.error(f"Error in LAUNCH_APPLICATION: {e}")
 
 
 def execute_action(action, device=None, key_number=None):
@@ -634,7 +632,7 @@ def execute_action(action, device=None, key_number=None):
     :param key_number: Key number (required for CHANGE_KEY_IMAGE)
     """
     if not isinstance(action, tuple) or len(action) != 2:
-        print(f"Invalid action format: {action}. Expected (ActionType, parameter)")
+        logger.error(f"Invalid action format: {action}. Expected (ActionType, parameter)")
         return
 
     action_type, parameter = action
@@ -653,13 +651,13 @@ def execute_action(action, device=None, key_number=None):
     
     elif action_type == ActionType.CHANGE_KEY_IMAGE:
         if device is None or key_number is None:
-            print("Error: CHANGE_KEY_IMAGE requires device and key_number")
+            logger.error("Error: CHANGE_KEY_IMAGE requires device and key_number")
             return
         device.set_key_image(key_number, parameter)
     
     elif action_type == ActionType.CHANGE_KEY_TEXT:
         if device is None or key_number is None:
-            print("Error: CHANGE_KEY_TEXT requires device and key_number")
+            logger.error("Error: CHANGE_KEY_TEXT requires device and key_number")
             return
         
         # Parameter should be a dict with text and optional styling
@@ -677,7 +675,7 @@ def execute_action(action, device=None, key_number=None):
             font_size = 20
             bold = True
         else:
-            print(f"Error: CHANGE_KEY_TEXT parameter must be dict or string")
+            logger.error(f"Error: CHANGE_KEY_TEXT parameter must be dict or string")
             return
         
         # Generate text image
@@ -715,18 +713,18 @@ def execute_action(action, device=None, key_number=None):
             threading.Thread(target=cleanup, daemon=True).start()
             
         except Exception as e:
-            print(f"Error creating text image: {e}")
+            logger.error(f"Error creating text image: {e}")
     
     elif action_type == ActionType.CHANGE_KEY:
         if device is None:
-            print("Error: CHANGE_KEY requires device")
+            logger.error("Error: CHANGE_KEY requires device")
             return
         # The parameter is a Key object that will configure itself
         parameter._configure()
     
     elif action_type == ActionType.CHANGE_LAYOUT:
         if device is None:
-            print("Error: CHANGE_LAYOUT requires device")
+            logger.error("Error: CHANGE_LAYOUT requires device")
             return
         
         # Parameter is a dict with layout and options
@@ -745,13 +743,13 @@ def execute_action(action, device=None, key_number=None):
     
     elif action_type == ActionType.DEVICE_BRIGHTNESS_UP:
         if device is None:
-            print("Error: DEVICE_BRIGHTNESS_UP requires device")
+            logger.error("Error: DEVICE_BRIGHTNESS_UP requires device")
             return
         adjust_device_brightness(device, 10)
     
     elif action_type == ActionType.DEVICE_BRIGHTNESS_DOWN:
         if device is None:
-            print("Error: DEVICE_BRIGHTNESS_DOWN requires device")
+            logger.error("Error: DEVICE_BRIGHTNESS_DOWN requires device")
             return
         adjust_device_brightness(device, -10)
     
@@ -759,7 +757,7 @@ def execute_action(action, device=None, key_number=None):
         launch_or_focus_application(parameter)
     
     else:
-        print(f"Unknown action type: {action_type}")
+        logger.warning(f"Unknown action type: {action_type}")
 
 
 def execute_actions(actions, device=None, key_number=None):

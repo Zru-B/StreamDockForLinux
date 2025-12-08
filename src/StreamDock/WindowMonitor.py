@@ -5,6 +5,9 @@ import subprocess
 import threading
 import time
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class WindowMonitor:
@@ -20,6 +23,7 @@ class WindowMonitor:
         """
         self.poll_interval = poll_interval
         self.current_window = None
+        self.current_window_method = None
         self.window_rules = []
         self.running = False
         self.monitor_thread = None
@@ -38,21 +42,25 @@ class WindowMonitor:
         # Method 1: Try kdotool (best for KDE Wayland)
         window_info = self._try_kdotool()
         if window_info:
+            self.current_window_method = 'kdotool'
             return window_info
         
         # Method 2: Try KWin D-Bus scripting interface
         window_info = self._try_kwin_scripting()
         if window_info:
+            self.current_window_method = 'kwin_scripting'
             return window_info
         
         # Method 3: Try parsing plasma-workspace
         window_info = self._try_plasma_taskmanager()
         if window_info:
+            self.current_window_method = 'plasma_taskmanager'
             return window_info
         
         # Method 4: Fallback to basic KWin interface
         window_info = self._try_kwin_basic()
         if window_info:
+            self.current_window_method = 'kwin_basic'
             return window_info
         
         return None
@@ -264,9 +272,7 @@ class WindowMonitor:
         if ' — ' in title:
             return title.split(' — ')[-1].strip()
         if ' - ' in title:
-            parts = title.split(' - ')
-            if len(parts) > 1:
-                return parts[-1].strip()
+            return title.split(' - ')[-1].strip()
         if ': ' in title:
             return title.split(':')[0].strip()
         
@@ -342,17 +348,19 @@ class WindowMonitor:
             if match:
                 matched = True
                 try:
+                    logger.debug(f"Window rule matched: {window_info}")
                     rule['callback'](window_info)
                 except Exception as e:
-                    print(f"Error executing window rule callback: {e}")
+                    logger.exception(f"Error executing window rule callback: {e}")
                 break  # Only trigger first matching rule
         
         # If no rules matched, call default callback
         if not matched and self.default_callback:
             try:
+                logger.debug(f"No window rule matched, default callback triggered: {window_info['class']}")
                 self.default_callback(window_info)
             except Exception as e:
-                print(f"Error executing default callback: {e}")
+                logger.exception(f"Error executing default callback: {e}")
     
     def _monitor_loop(self):
         """
@@ -367,13 +375,14 @@ class WindowMonitor:
                     window_id = f"{window_info['title']}|{window_info['class']}"
                     
                     if window_id != self.current_window:
+                        logger.info(f"Window changed: {window_id}. Identified by: {self.current_window_method}")
                         self.current_window = window_id
                         self._check_rules(window_info)
                 
                 time.sleep(self.poll_interval)
                 
             except Exception as e:
-                print(f"Error in window monitor: {e}")
+                logger.exception(f"Error in window monitor: {e}")
                 time.sleep(self.poll_interval)
     
     def start(self):
