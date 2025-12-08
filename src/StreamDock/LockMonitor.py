@@ -68,7 +68,7 @@ class LockMonitor:
             from dbus.mainloop.glib import DBusGMainLoop
 
             self.dbus = dbus
-            self.DBusGMainLoop = DBusGMainLoop
+            self.dbus_g_main_loop = DBusGMainLoop
             self.dbus_available = True
         except ImportError:
             logger.warning("python-dbus not available. Lock monitoring disabled.")
@@ -99,7 +99,7 @@ class LockMonitor:
             from gi.repository import GLib
 
             # Initialize D-Bus main loop
-            self.DBusGMainLoop(set_as_default=True)
+            self.dbus_g_main_loop(set_as_default=True)
             bus = self.dbus.SessionBus()
 
             # Try KDE/freedesktop screen saver first
@@ -118,7 +118,7 @@ class LockMonitor:
 
                 logger.info("🔒 Connected to org.freedesktop.ScreenSaver")
 
-            except self.dbus.DBusException as e:
+            except self.dbus.DBusException:
                 # Try GNOME screen saver as fallback
                 try:
                     screensaver = bus.get_object(
@@ -134,9 +134,9 @@ class LockMonitor:
 
                     logger.info("🔒 Connected to org.gnome.ScreenSaver")
 
-                except self.dbus.DBusException as e2:
+                except self.dbus.DBusException as exc2:
                     logger.warning(
-                        f"Could not connect to screen saver D-Bus service: {e2}"
+                        f"Could not connect to screen saver D-Bus service: {exc2}"
                     )
                     return
 
@@ -149,16 +149,14 @@ class LockMonitor:
                     try:
                         loop.get_context().iteration(False)
                         time.sleep(0.1)
-                    except Exception as e:
-                        logger.error(f"Error in lock monitor loop: {e}")
+                    except Exception as exc:
+                        logger.error("Error in lock monitor loop: %s", exc)
                         break
-
             run_loop()
-
         except ImportError:
             logger.warning("GLib not available. Using polling fallback.")
             self._monitor_loop_polling(bus)
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Error starting lock monitor")
 
     def _monitor_loop_polling(self, bus):
@@ -166,18 +164,11 @@ class LockMonitor:
         try:
             # Get screen saver interface
             try:
-                screensaver = bus.get_object(
-                    "org.freedesktop.ScreenSaver", "/ScreenSaver"
-                )
-            except:
-                screensaver = bus.get_object(
-                    "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver"
-                )
+                screensaver = bus.get_object("org.freedesktop.ScreenSaver", "/ScreenSaver")
+            except Exception:
+                screensaver = bus.get_object("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver")
 
-            screensaver_interface = self.dbus.Interface(
-                screensaver, "org.freedesktop.ScreenSaver"
-            )
-
+            screensaver_interface = self.dbus.Interface(screensaver, "org.freedesktop.ScreenSaver")
             logger.info("🔒 Using polling method for lock detection")
 
             # Poll the GetActive method
@@ -190,12 +181,12 @@ class LockMonitor:
 
                     time.sleep(1)  # Poll every second
 
-                except Exception as e:
-                    logger.error(f"Error polling lock state: {e}")
+                except Exception as exc:
+                    logger.error("Error polling lock state: %s", exc)
                     time.sleep(5)
 
-        except Exception as e:
-            logger.error(f"Error in polling monitor: {e}")
+        except Exception as exc:
+            logger.error("Error in polling monitor: %s", exc)
 
     def _on_lock_state_changed(self, is_locked):
         """
@@ -272,12 +263,11 @@ class LockMonitor:
                 self.device.init()
 
                 # Restore brightness
-                self.device.set_brightness(self.saved_brightness)
-                self.device._current_brightness = self.saved_brightness
+                self.device.current_brightness(self.saved_brightness)
 
                 # Update device reference for ALL layouts (not just current)
                 # This is critical for window monitor callbacks to work after unlock
-                for layout_name, layout in self.all_layouts.items():
+                for _, layout in self.all_layouts.items():
                     layout.update_device(self.device)
 
                 # Now apply the current layout with the updated device reference
@@ -292,8 +282,8 @@ class LockMonitor:
             # Reset processing flag
             self._processing_state_change = False
 
-        except Exception as e:
-            logger.error(f"Error handling lock state change: {e}")
+        except Exception as exc:
+            logger.error("Error handling lock state change: %s", exc)
             self._processing_state_change = False  # Reset flag even on error
 
     def get_device(self):

@@ -55,23 +55,22 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result.returncode != 0:
                 logger.warning(
-                    f"kdotool found but appears to be broken (returned {result.returncode}). Disabling kdotool integration."
+                    "kdotool found but appears to be broken (returned %s). "
+                    "Disabling kdotool integration.",
+                    result.returncode,
                 )
                 return False
 
-            logger.info(
-                "kdotool found and functional. kdotool will be used for window detection."
-            )
+            logger.info("kdotool found and functional. kdotool will be used for window detection.")
             return True
 
-        except Exception as e:
-            logger.warning(
-                f"kdotool found but execution failed: {e}. Disabling kdotool integration."
-            )
+        except Exception as exc:
+            logger.warning("kdotool found but execution failed: %s. Disabling kdotool integration.", exc)
             return False
 
     def get_active_window_info(self):
@@ -120,6 +119,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result.returncode != 0:
@@ -133,6 +133,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result.returncode != 0:
@@ -146,6 +147,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result_class.returncode == 0 and result_class.stdout.strip():
@@ -186,6 +188,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             # This method might not work directly, skip for now
@@ -209,6 +212,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             # This is complex, skip for now
@@ -228,11 +232,13 @@ class WindowMonitor:
                 [
                     "bash",
                     "-c",
-                    'qdbus6 org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || qdbus org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || echo ""',
+                    'qdbus6 org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null '
+                    '|| qdbus org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || echo ""',
                 ],
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result.returncode == 0 and result.stdout.strip():
@@ -257,11 +263,13 @@ class WindowMonitor:
                 [
                     "bash",
                     "-c",
-                    'busctl --user get-property org.kde.KWin /KWin org.kde.KWin ActiveWindow 2>/dev/null || echo ""',
+                    'busctl --user get-property org.kde.KWin /KWin org.kde.KWin ActiveWindow '
+                    '2>/dev/null || echo ""',
                 ],
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if (
@@ -289,6 +297,7 @@ class WindowMonitor:
                 capture_output=True,
                 text=True,
                 timeout=1,
+                check=False,
             )
 
             if result.returncode == 0 and result.stdout.strip():
@@ -300,6 +309,7 @@ class WindowMonitor:
                     capture_output=True,
                     text=True,
                     timeout=1,
+                    check=False,
                 )
 
                 window_title = (
@@ -312,6 +322,7 @@ class WindowMonitor:
                     capture_output=True,
                     text=True,
                     timeout=1,
+                    check=False,
                 )
 
                 if result_class.returncode == 0 and result_class.stdout.strip():
@@ -328,7 +339,7 @@ class WindowMonitor:
 
             return None
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return None
 
     def _extract_app_from_title(self, title):
@@ -423,21 +434,19 @@ class WindowMonitor:
             if match:
                 matched = True
                 try:
-                    logger.debug(f"Window rule matched: {window_info}")
+                    logger.debug("Window rule matched: %s", window_info)
                     rule["callback"](window_info)
-                except Exception as e:
-                    logger.exception(f"Error executing window rule callback: {e}")
+                except Exception as exc:
+                    logger.exception("Error executing window rule callback: %s", exc)
                 break  # Only trigger first matching rule
 
         # If no rules matched, call default callback
         if not matched and self.default_callback:
             try:
-                logger.debug(
-                    f"No window rule matched, default callback triggered: {window_info['class']}"
-                )
+                logger.debug("No window rule matched, default callback triggered: %s", window_info['class'])
                 self.default_callback(window_info)
-            except Exception as e:
-                logger.exception(f"Error executing default callback: {e}")
+            except Exception as exc:
+                logger.exception("Error executing default callback: %s", exc)
 
     def _monitor_loop(self):
         """
@@ -452,16 +461,14 @@ class WindowMonitor:
                     window_id = f"{window_info['title']}|{window_info['class']}"
 
                     if window_id != self.current_window:
-                        logger.info(
-                            f"Window changed: {window_info['class']}. Identified by: {self.current_window_method}"
-                        )
+                        logger.info("Window changed: %s. Identified by: %s", window_info['class'], self.current_window_method)
                         self.current_window = window_id
                         self._check_rules(window_info)
 
                 time.sleep(self.poll_interval)
 
-            except Exception as e:
-                logger.exception(f"Error in window monitor: {e}")
+            except Exception as exc:
+                logger.exception("Error in window monitor: %s", exc)
                 time.sleep(self.poll_interval)
 
     def start(self):

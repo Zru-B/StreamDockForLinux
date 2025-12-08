@@ -1,3 +1,4 @@
+# pylint: disable=invalid-name
 """
 Configuration loader for StreamDock.
 Loads keys, layouts, and window rules from YAML configuration file.
@@ -40,10 +41,9 @@ from .Layout import Layout
 class ConfigValidationError(Exception):
     """Exception raised when configuration validation fails."""
 
-    pass
-
 
 class ConfigLoader:
+    # pylint: disable=too-many-instance-attributes
     """Load and validate StreamDock configuration from YAML file."""
 
     def __init__(self, config_path):
@@ -85,7 +85,7 @@ class ConfigLoader:
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(f"Configuration file not found: {self.config_path}")
 
-        with open(self.config_path, "r") as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
         if not self.config:
@@ -139,12 +139,9 @@ class ConfigLoader:
             brightness = settings["brightness"]
             if (
                 not isinstance(brightness, (int, float))
-                or brightness < 0
-                or brightness > 100
+                or 0 < brightness < 100
             ):
-                raise ConfigValidationError(
-                    "brightness must be a number between 0 and 100"
-                )
+                raise ConfigValidationError("brightness must be a number between 0 and 100")
             self.brightness = int(brightness)
 
         if "lock_monitor" in settings:
@@ -159,21 +156,16 @@ class ConfigLoader:
             interval = settings["double_press_interval"]
             if (
                 not isinstance(interval, (int, float))
-                or interval <= 0
-                or interval > 2.0
+                or 0 <= interval <= 2.0
             ):
-                raise ConfigValidationError(
-                    "double_press_interval must be a number between 0 and 2.0 (seconds)"
-                )
+                raise ConfigValidationError("double_press_interval must be a number between 0 and 2.0 (seconds)")
             self.double_press_interval = float(interval)
 
         if "log_level" in settings:
             log_level = settings["log_level"]
             valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
             if log_level.upper() not in valid_levels:
-                raise ConfigValidationError(
-                    f"log_level must be one of: {', '.join(valid_levels)}"
-                )
+                raise ConfigValidationError(f"log_level must be one of: {', '.join(valid_levels)}")
             self.log_level = log_level.upper()
         else:
             self.log_level = "INFO"
@@ -236,13 +228,9 @@ class ConfigLoader:
             # Validate text field if using text
             if has_text:
                 if not isinstance(key_def["text"], str):
-                    raise ConfigValidationError(
-                        f"Key '{key_name}' text field must be a string"
-                    )
+                    raise ConfigValidationError(f"Key '{key_name}' text field must be a string")
                 if not key_def["text"].strip():
-                    raise ConfigValidationError(
-                        f"Key '{key_name}' text field cannot be empty"
-                    )
+                    raise ConfigValidationError(f"Key '{key_name}' text field cannot be empty")
 
             # Validate actions (optional)
             for action_key in [
@@ -252,9 +240,7 @@ class ConfigLoader:
                 "on_double_press",
             ]:
                 if action_key in key_def:
-                    self._validate_actions(
-                        key_def[action_key], f"Key '{key_name}' {action_key}"
-                    )
+                    self._validate_actions(key_def[action_key], f"Key '{key_name}' {action_key}")
 
     def _validate_actions(self, actions, context):
         """Validate action definitions."""
@@ -263,28 +249,24 @@ class ConfigLoader:
 
         for i, action in enumerate(actions):
             if not isinstance(action, (dict, str)):
-                raise ConfigValidationError(
-                    f"{context}[{i}]: action must be a dictionary or string"
-                )
+                raise ConfigValidationError(f"{context}[{i}]: action must be a dictionary or string")
 
             if isinstance(action, dict):
                 # Get the action type (the key in the dict)
                 if len(action) != 1:
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: action dict must have exactly one key-value pair"
-                    )
+                    raise ConfigValidationError(f"{context}[{i}]: action dict must have exactly one key-value pair")
 
                 action_type_str = list(action.keys())[0]
 
                 # Validate action type exists
                 try:
                     ActionType[action_type_str.upper()]
-                except KeyError:
+                except KeyError as key_error:
                     valid_types = ", ".join([t.name for t in ActionType])
                     raise ConfigValidationError(
                         f"{context}[{i}]: invalid action type '{action_type_str}'. "
                         f"Valid types: {valid_types}"
-                    )
+                    ) from key_error
 
     def _validate_layouts(self):
         """Validate layouts section of configuration."""
@@ -300,72 +282,51 @@ class ConfigLoader:
 
         for layout_name, layout_def in layouts_config.items():
             if not isinstance(layout_def, dict):
-                raise ConfigValidationError(
-                    f"Layout '{layout_name}' definition must be a dictionary"
-                )
+                raise ConfigValidationError(f"Layout '{layout_name}' definition must be a dictionary")
 
             # Check required fields
             if "keys" not in layout_def:
-                raise ConfigValidationError(
-                    f"Layout '{layout_name}' is missing 'keys' field"
-                )
+                raise ConfigValidationError(f"Layout '{layout_name}' is missing 'keys' field")
 
             # Check default flag
             if layout_def.get("Default", False):
                 default_count += 1
                 if default_count > 1:
-                    raise ConfigValidationError(
-                        "Only one layout can have 'Default: true'"
-                    )
+                    raise ConfigValidationError("Only one layout can have 'Default: true'")
 
             # Validate keys list
             if not isinstance(layout_def["keys"], list):
-                raise ConfigValidationError(
-                    f"Layout '{layout_name}' keys must be a list"
-                )
+                raise ConfigValidationError(f"Layout '{layout_name}' keys must be a list")
 
             if not layout_def["keys"]:
-                raise ConfigValidationError(
-                    f"Layout '{layout_name}' keys list cannot be empty"
-                )
+                raise ConfigValidationError(f"Layout '{layout_name}' keys list cannot be empty")
 
             # Validate each key reference
             key_numbers = set()
             for j, key_ref in enumerate(layout_def["keys"]):
                 if not isinstance(key_ref, dict):
-                    raise ConfigValidationError(
-                        f"Layout '{layout_name}' key at index {j} must be a dictionary"
-                    )
+                    raise ConfigValidationError(f"Layout '{layout_name}' key at index {j} must be a dictionary")
 
                 # Key ref format: {number: "key_name"} or {number: None}
                 if len(key_ref) != 1:
-                    raise ConfigValidationError(
-                        f"Layout '{layout_name}' key at index {j} must have exactly one key-value pair"
-                    )
+                    raise ConfigValidationError(f"Layout '{layout_name}' key at index {j} must have exactly one key-value pair")
 
                 key_number = list(key_ref.keys())[0]
                 key_name = list(key_ref.values())[0]
 
                 # Validate key number
                 if not isinstance(key_number, int) or key_number < 1 or key_number > 15:
-                    raise ConfigValidationError(
-                        f"Layout '{layout_name}': invalid key number {key_number}. "
-                        f"Must be between 1 and 15"
-                    )
+                    raise ConfigValidationError(f"Layout '{layout_name}': invalid key number {key_number}. Must be between 1 and 15")
 
                 # Check for duplicate key numbers in layout
                 if key_number in key_numbers:
-                    raise ConfigValidationError(
-                        f"Layout '{layout_name}': duplicate key number {key_number}"
-                    )
+                    raise ConfigValidationError(f"Layout '{layout_name}': duplicate key number {key_number}")
 
                 key_numbers.add(key_number)
 
                 # Check if referenced key exists (None is allowed for empty keys)
                 if key_name is not None and key_name not in self.config["keys"]:
-                    raise ConfigValidationError(
-                        f"Layout '{layout_name}' references undefined key: '{key_name}'"
-                    )
+                    raise ConfigValidationError(f"Layout '{layout_name}' references undefined key: '{key_name}'")
 
         # Ensure at least one default layout exists
         if default_count == 0:
@@ -380,27 +341,19 @@ class ConfigLoader:
 
         for rule_name, rule_def in rules_config.items():
             if not isinstance(rule_def, dict):
-                raise ConfigValidationError(
-                    f"Window rule '{rule_name}' definition must be a dictionary"
-                )
+                raise ConfigValidationError(f"Window rule '{rule_name}' definition must be a dictionary")
 
             # Check required fields
             if "window_name" not in rule_def:
-                raise ConfigValidationError(
-                    f"Window rule '{rule_name}' is missing 'window_name' field"
-                )
+                raise ConfigValidationError(f"Window rule '{rule_name}' is missing 'window_name' field")
 
             if "layout" not in rule_def:
-                raise ConfigValidationError(
-                    f"Window rule '{rule_name}' is missing 'layout' field"
-                )
+                raise ConfigValidationError(f"Window rule '{rule_name}' is missing 'layout' field")
 
             # Check if referenced layout exists
             layout_name = rule_def["layout"]
             if layout_name not in self.config["layouts"]:
-                raise ConfigValidationError(
-                    f"Window rule '{rule_name}' references undefined layout: '{layout_name}'"
-                )
+                raise ConfigValidationError(f"Window rule '{rule_name}' references undefined layout: '{layout_name}'")
 
             # Validate match_field (optional)
             if "match_field" in rule_def:
@@ -438,16 +391,12 @@ class ConfigLoader:
                     elif isinstance(parameter, dict):
                         # Dict format with options
                         if "layout" not in parameter:
-                            raise ConfigValidationError(
-                                f"CHANGE_LAYOUT action must have 'layout' parameter"
-                            )
+                            raise ConfigValidationError("CHANGE_LAYOUT action must have 'layout' parameter")
                         # Ensure clear_all has default
                         if "clear_all" not in parameter:
                             parameter["clear_all"] = False
                     else:
-                        raise ConfigValidationError(
-                            f"CHANGE_LAYOUT parameter must be string or dict, got {type(parameter)}"
-                        )
+                        raise ConfigValidationError("CHANGE_LAYOUT parameter must be string or dict")
                 elif action_type in (
                     ActionType.DEVICE_BRIGHTNESS_UP,
                     ActionType.DEVICE_BRIGHTNESS_DOWN,
@@ -459,7 +408,9 @@ class ConfigLoader:
             elif isinstance(action_item, str):
                 # Simple string format for certain actions
                 # This is a fallback, main format should be dict
-                pass
+                raise NotImplementedError("Simple string format for actions is not supported yet")
+            else:
+                raise ConfigValidationError("Unsupported action format")
 
         return actions
 
@@ -475,13 +426,7 @@ class ConfigLoader:
             raise ConfigValidationError("Configuration not loaded. Call load() first.")
 
         # Set brightness
-        if self.brightness is not None:
-            device.set_brightness(self.brightness)
-            # Store brightness value on device for relative adjustments
-            device._current_brightness = self.brightness
-        else:
-            # Default brightness if not specified
-            device._current_brightness = 50
+        device.current_brightness(self.brightness or 50)
 
         # Set double-press interval
         device.double_press_interval = self.double_press_interval
@@ -653,7 +598,7 @@ class ConfigLoader:
         """Apply window rules to window monitor."""
         rules_config = self.config["windows_rules"]
 
-        for rule_name, rule_def in rules_config.items():
+        for _, rule_def in rules_config.items():
             pattern = rule_def["window_name"]
             layout_name = rule_def["layout"]
             match_field = rule_def.get("match_field", "class")

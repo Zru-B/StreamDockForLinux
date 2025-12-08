@@ -1,7 +1,10 @@
 import threading
+import logging
 import time
 from abc import ABC, ABCMeta, abstractmethod
 
+
+logger = logging.getLogger(__name__)
 
 class TransportError(Exception):
     def __init__(self, message, code=None):
@@ -93,6 +96,8 @@ class StreamDock(ABC):
 
         # Double-press interval (can be configured)
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
+        self.update_lock = threading.Lock()
+        self._current_brightness = 50
 
     def __del__(self):
         """
@@ -147,7 +152,7 @@ class StreamDock(ABC):
     def disconnected(self):
         self.transport.disconnected()
 
-    def cleaerIcon(self, index):
+    def clearIcon(self, index):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
@@ -157,6 +162,12 @@ class StreamDock(ABC):
 
     def clearAllIcon(self):
         self.transport.keyAllClear()
+
+    def current_brightness(self):
+        return self._current_brightness
+
+    def current_brightness(self, value):
+        self._current_brightness = value
 
     def wakeScreen(self):
         self.transport.wakeScreen()
@@ -180,7 +191,7 @@ class StreamDock(ABC):
         while 1:
             try:
                 data = self.read()
-                if data != None and len(data) >= 11:
+                if data is not None and len(data) >= 11:
                     if data[:3].decode("utf-8", errors="ignore") == "ACK" and data[
                         5:7
                     ].decode("utf-8", errors="ignore"):
