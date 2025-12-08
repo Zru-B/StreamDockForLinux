@@ -491,6 +491,8 @@ Contributions are welcome! Feel free to open an issue or submit a pull request f
 - Feature suggestions
 - Documentation improvements
 
+For details on setting up the environment, running tests, and code style, please see the **[Development Guide](DEVELOPMENT.md)**.
+
 ---
 
 ## Acknowledgments

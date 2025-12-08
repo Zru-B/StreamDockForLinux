@@ -1,0 +1,20 @@
+# Testing
+pytest
+pytest-qt
+coverage
+pytest-cov
+
+# Linting & Formatting
+pylint
+black
+isort
+flake8
+
+# Type Checking
+mypy
+types-PyYAML
+types-Pillow
+
+# Build
+build
+twine
