@@ -1,0 +1,84 @@
+import ctypes
+import random
+
+from .StreamDock import StreamDock
+from ..ImageHelpers.PILHelper import *
+
+
+class StreamDock293V3(StreamDock):
+    KEY_MAP = True
+    def __init__(self, transport1, devInfo):
+        super().__init__(transport1, devInfo)
+
+    def set_brightness(self, percent):
+        return self.transport.setBrightness(percent)
+    
+    def set_touchscreen_image(self, path):
+        temp_svg_file = None
+        try:
+            if not os.path.exists(path):
+                return -1
+            image, temp_svg_file = load_image(path, target_size=(800, 480))
+            image = to_native_touchscreen_format(self, image)
+            temp_image_path = "rotated_touchscreen_image_" + str(random.randint(9999, 999999)) + ".jpg"
+            image.save(temp_image_path)
+            
+            path_bytes = temp_image_path.encode('utf-8')
+            c_path = ctypes.c_char_p(path_bytes)
+            res = self.transport.setBackgroundImgDualDevice(c_path)
+            os.remove(temp_image_path)
+            return res
+        
+        except Exception:
+            return -1
+        finally:
+            if temp_svg_file and os.path.exists(temp_svg_file):
+                os.remove(temp_svg_file)
+
+    def set_key_image(self, key, path):
+        temp_svg_file = None
+        try:
+            origin = key
+            key = self.key(key)
+            if not os.path.exists(path):
+                return -1
+            if origin not in range(1, 16):
+                return -1
+            image, temp_svg_file = load_image(path, target_size=(112, 112))
+            image = to_native_key_format(self, image)
+            temp_image_path = "rotated_key_image_" + str(random.randint(9999, 999999)) + ".jpg"
+            image.save(temp_image_path)
+            path_bytes = temp_image_path.encode('utf-8')
+            c_path = ctypes.c_char_p(path_bytes)
+            res = self.transport.setKeyImgDualDevice(c_path, key)
+            os.remove(temp_image_path)
+            return res
+            
+        except Exception:
+            return -1
+        finally:
+            if temp_svg_file and os.path.exists(temp_svg_file):
+                os.remove(temp_svg_file)
+
+    def set_key_imageData(self, key, path):
+        pass
+    
+    def get_serial_number(self,length):
+        return self.transport.getInputReport(length)
+
+    def key_image_format(self):
+        return {
+            'size': (112, 112),
+            'format': "JPEG",
+            'rotation': 180,
+            'flip': (False, False)
+        }
+    
+    def touchscreen_image_format(self):
+        return {
+            'size': (800, 480),
+            'format': "JPEG",
+            'rotation': 180,
+            'flip': (False, False)
+        }
+    

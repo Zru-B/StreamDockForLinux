@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamdock"
+version = "1.0.0"
+description = "Linux Stream Dock 293v3 controller with YAML configuration, context-aware layouts, lock monitoring, and automation"
+authors = [
+    {name = "Zrubi", email = "zrubavel@gmail.com"}
+]
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["streamdock", "stream-dock", "macro-pad", "linux", "kde", "automation", "mirabox"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Hardware",
+    "Topic :: Desktop Environment",
+]
+dependencies = [
+    "pillow>=10.0.0",
+    "pyyaml>=6.0",
+    "cairosvg>=2.7.0",
+    "pyudev>=0.24.0",
+    "PyQt6>=6.4.0",
+]
+requires-python = ">=3.10.0"
+
+[project.optional-dependencies]
+lock-monitor = [
+    "dbus-python>=1.3.0",
+    "PyGObject>=3.44.0",
+]
+
+[tool.setuptools]
+packages = ["StreamDock"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+StreamDock = ["*.yml", "*.yaml"]
