@@ -334,7 +334,7 @@ class WindowMonitor:
                     "title": window_title,
                     "class": window_class,
                     "raw": window_title,
-                    "method": "xdotool_fallback",
+                    "method": "kwin_basic",
                 }
 
             return None
@@ -352,6 +352,17 @@ class WindowMonitor:
         """
         if not title:
             return "unknown"
+
+        # Handle edge cases not matched by common patterns
+        # Antigravity IDE title format: "<Project Name> - Antigravity - <File Name>"
+        if "Antigravity" in title:
+            return "Antigravity"
+        # Zoom title format: "Zoom Workplace - Licensed account"
+        if "Zoom Workplace" in title:
+            return "Zoom"
+        # Obsidian title format: "<Note Name> - <Vault Name> - Obsidian v<Version>"
+        if "Obsidian v" in title:
+            return "Obsidian"
 
         # Common patterns in window titles
         # "Document Name - Application"
@@ -458,11 +469,11 @@ class WindowMonitor:
 
                 # Check if window has changed
                 if window_info:
-                    window_id = f"{window_info['title']}|{window_info['class']}"
+                    window_id = window_info['class']
 
-                    if window_id != self.current_window:
-                        logger.info("Window changed: %s. Identified by: %s", window_info['class'], self.current_window_method)
-                        self.current_window = window_id
+                    if window_id != self.current_window_id:
+                        logger.info("Window changed: %s. Identified by: %s", window_info['class'], self.window_detection_method)
+                        self.current_window_id = window_id
                         self._check_rules(window_info)
 
                 time.sleep(self.poll_interval)
