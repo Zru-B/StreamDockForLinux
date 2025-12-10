@@ -1,0 +1,20 @@
+streamdock:
+  settings:
+    lock_monitor: false
+  keys:
+    Key1:
+      text: "Layout1"
+    Key2:
+      text: "Layout2"
+  layouts:
+    DefaultLayout:
+      Default: true
+      keys:
+        - 1: Key1
+    SecondLayout:
+      keys:
+        - 1: Key2
+  windows_rules:
+    SwitchRule:
+      window_name: "TargetApp"
+      layout: "SecondLayout"

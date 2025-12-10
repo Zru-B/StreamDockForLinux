@@ -1,0 +1,23 @@
+streamdock:
+  settings:
+    brightness: 30
+    double_press_interval: 0.5
+  keys:
+    IconKey:
+      icon: "tests/resources/test_icon.png"
+      on_press_actions:
+        - KEY_PRESS: "Enter"
+    TextKey:
+      text: "Hello"
+      on_press_actions:
+        - LAUNCH_APPLICATION: "app"
+  layouts:
+    Main:
+      Default: true
+      keys:
+        - 1: IconKey
+        - 2: TextKey
+  windows_rules:
+    Rule1:
+      window_name: "Firefox"
+      layout: "Main"
