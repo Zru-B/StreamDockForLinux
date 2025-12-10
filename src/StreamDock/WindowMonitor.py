@@ -17,11 +17,12 @@ class WindowMonitor:
     Monitor the active window on KDE Plasma (Wayland) and trigger callbacks when focus changes.
     """
 
-    def __init__(self, poll_interval=0.5):
+    def __init__(self, poll_interval=0.5, simulation_mode=False):
         """
         Initialize the window monitor.
 
         :param poll_interval: How often to check for window changes (in seconds)
+        :param simulation_mode: If True, read active window from a file instead of system
         """
         self.poll_interval = poll_interval
         self.current_window_id = None
@@ -30,7 +31,14 @@ class WindowMonitor:
         self.running = False
         self.monitor_thread = None
         self.default_callback = None
-        self.kdotool_available = self._check_kdotool_availability()
+        self.simulation_mode = simulation_mode
+        self.simulated_window_file = "/tmp/streamdock_fake_window"
+        
+        if not self.simulation_mode:
+            self.kdotool_available = self._check_kdotool_availability()
+        else:
+            self.kdotool_available = False
+            logger.info(f"WindowMonitor running in SIMULATION MODE. Reading from {self.simulated_window_file}")
 
     def _check_kdotool_availability(self):
         """
@@ -83,6 +91,10 @@ class WindowMonitor:
         """
         self.current_window_detection_method = None
 
+        # Method 0: Simulation Mode
+        if self.simulation_mode:
+            return self._try_simulation()
+
         # Try multiple methods in order of reliability
         # Method 1: Try kdotool (best for KDE Wayland)
         if self.kdotool_available:
@@ -110,6 +122,37 @@ class WindowMonitor:
             return window_info
 
         return None
+
+    def _try_simulation(self):
+        """Read active window from simulation file."""
+        import os
+        try:
+            if not os.path.exists(self.simulated_window_file):
+                return None
+                
+            with open(self.simulated_window_file, 'r') as f:
+                content = f.read().strip()
+                
+            if not content:
+                return None
+                
+            # Content format: "Title|Class" or just "Class"
+            parts = content.split('|')
+            if len(parts) == 2:
+                title, win_class = parts
+            else:
+                title = content
+                win_class = content
+                
+            return {
+                "title": title,
+                "class": win_class,
+                "raw": content,
+                "method": "simulation"
+            }
+        except Exception as e:
+            logger.error(f"Error reading simulation file: {e}")
+            return None
 
     def _try_kdotool(self):
         """Try using kdotool to get active window."""

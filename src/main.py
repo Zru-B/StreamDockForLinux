@@ -26,6 +26,11 @@ def parse_arguments():
         action="store_true",
         help="Run without a physical device (debug mode)",
     )
+    parser.add_argument(
+        "--simulate-windows",
+        action="store_true",
+        help="Simulate window focus changes using a temporary file (for E2E testing)",
+    )
     return parser.parse_args()
 
 
@@ -106,7 +111,7 @@ def main():
 
         # Initialize window monitor
         logger.debug("Initializing WindowMonitor")
-        window_monitor = WindowMonitor(poll_interval=0.5)
+        window_monitor = WindowMonitor(poll_interval=0.5, simulation_mode=args.simulate_windows)
 
         # Apply configuration to device
         try:

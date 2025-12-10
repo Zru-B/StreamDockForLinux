@@ -55,6 +55,7 @@ class DummyStreamDock(StreamDock):
             devInfo = {"vendor_id": 0, "product_id": 0, "path": "DUMMY_DEVICE"}
 
         super().__init__(transport, devInfo)
+        self.keys_state = {}  # Store current key images/state
         logger.info("[DummyStreamDock] Initialize")
 
     def open(self):
@@ -84,12 +85,14 @@ class DummyStreamDock(StreamDock):
 
     def clearAllIcon(self):
         logger.debug("[DummyStreamDock] Clear all icons")
+        self.keys_state.clear()
 
     def refresh(self):
         logger.debug("[DummyStreamDock] Refresh")
 
     def set_key_image(self, key, image):
         logger.debug(f"[DummyStreamDock] Set key image: key={key}")
+        self.keys_state[key] = image
 
     def set_touchscreen_image(self, image):
         logger.debug("[DummyStreamDock] Set touchscreen image")
