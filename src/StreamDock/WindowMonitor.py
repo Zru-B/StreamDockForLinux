@@ -24,8 +24,8 @@ class WindowMonitor:
         :param poll_interval: How often to check for window changes (in seconds)
         """
         self.poll_interval = poll_interval
-        self.current_window = None
-        self.current_window_method = None
+        self.current_window_id = None
+        self.current_window_detection_method = None
         self.window_rules = []
         self.running = False
         self.monitor_thread = None
@@ -81,31 +81,32 @@ class WindowMonitor:
         :return: Dictionary with window info: {'title': str, 'class': str, 'pid': int}
                  Returns None if unable to get window info
         """
-        # Try multiple methods in order of reliability
+        self.current_window_detection_method = None
 
+        # Try multiple methods in order of reliability
         # Method 1: Try kdotool (best for KDE Wayland)
         if self.kdotool_available:
             window_info = self._try_kdotool()
             if window_info:
-                self.current_window_method = "kdotool"
+                self.current_window_detection_method = "kdotool"
                 return window_info
 
         # Method 2: Try KWin D-Bus scripting interface
         window_info = self._try_kwin_scripting()
         if window_info:
-            self.current_window_method = "kwin_scripting"
+            self.current_window_detection_method = "kwin_scripting"
             return window_info
 
         # Method 3: Try parsing plasma-workspace
         window_info = self._try_plasma_taskmanager()
         if window_info:
-            self.current_window_method = "plasma_taskmanager"
+            self.current_window_detection_method = "plasma_taskmanager"
             return window_info
 
         # Method 4: Fallback to basic KWin interface
         window_info = self._try_kwin_basic()
         if window_info:
-            self.current_window_method = "kwin_basic"
+            self.current_window_detection_method = "kwin_basic"
             return window_info
 
         return None
@@ -472,7 +473,7 @@ class WindowMonitor:
                     window_id = window_info['class']
 
                     if window_id != self.current_window_id:
-                        logger.info("Window changed: %s. Identified by: %s", window_info['class'], self.window_detection_method)
+                        logger.info("Window changed: %s. Identified by: %s", window_info['class'], self.current_window_detection_method)
                         self.current_window_id = window_id
                         self._check_rules(window_info)
 

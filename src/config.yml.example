@@ -1,0 +1,74 @@
+streamdock:
+  # Global device settings
+  settings:
+    brightness: 50              # Screen brightness (0-100)
+    lock_monitor: true          # Turn off screen when computer is locked
+    double_press_interval: 0.3  # Max time between clicks for double press (seconds)
+    log_level: INFO             # DEBUG, INFO, WARNING, ERROR
+
+  # Define all your keys here
+  keys:
+    # Example 1: Launch an application with an icon
+    FirefoxKey:
+      icon: "../img/firefox.svg"  # Path can be relative or absolute
+      on_press_actions:
+        - LAUNCH_APPLICATION: "firefox"
+
+    # Example 2: Keyboard shortcut
+    TerminalKey:
+      icon: "../img/konsole.svg"
+      on_press_actions:
+        - LAUNCH_APPLICATION: "konsole"
+
+    # Example 3: Text-based key with multiple actions
+    CopyKey:
+      text: "Copy"
+      text_color: "white"
+      background_color: "blue"
+      font_size: 20
+      on_press_actions:
+        - KEY_PRESS: "CTRL+C"
+
+    # Example 4: Navigate to another layout
+    MediaLayerKey:
+      text: "Media >"
+      background_color: "#333333"
+      on_press_actions:
+        - CHANGE_LAYOUT: "MediaLayout"
+
+    # Example 5: Media Controls (D-Bus)
+    PlayPauseKey:
+      icon: "../img/play.svg"
+      on_press_actions:
+        - DBUS:
+            action: "play_pause"
+    
+    BackKey:
+      text: "< Back"
+      on_press_actions:
+        - CHANGE_LAYOUT: "MainLayout"
+
+  # Define your layouts (screens)
+  layouts:
+    # The default layout shown on startup
+    MainLayout:
+        Default: true
+        keys:
+          - 1: FirefoxKey
+          - 2: TerminalKey
+          - 3: CopyKey
+          - 5: MediaLayerKey
+
+    # A secondary layout for media controls
+    MediaLayout:
+        keys:
+            - 1: BackKey
+            - 2: PlayPauseKey
+
+  # Automatic layout switching based on active window
+  windows_rules:
+    # Switch to MediaLayout when Spotify is focused
+    SpotifyRule:
+        window_name: "Spotify"
+        layout: "MediaLayout"
+        match_field: "class"

@@ -1,3 +1,7 @@
+# User Config files
+**/*config*yml*
+!src/config.yml.example
+
 # Python
 __pycache__/
 *.py[cod]
