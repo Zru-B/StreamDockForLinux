@@ -139,7 +139,7 @@ class ConfigLoader:
             brightness = settings["brightness"]
             if (
                 not isinstance(brightness, (int, float))
-                or 0 < brightness < 100
+                or brightness > 100 or brightness < 0
             ):
                 raise ConfigValidationError("brightness must be a number between 0 and 100")
             self.brightness = int(brightness)
@@ -156,7 +156,7 @@ class ConfigLoader:
             interval = settings["double_press_interval"]
             if (
                 not isinstance(interval, (int, float))
-                or 0 <= interval <= 2.0
+                or interval > 2.0 or interval < 0
             ):
                 raise ConfigValidationError("double_press_interval must be a number between 0 and 2.0 (seconds)")
             self.double_press_interval = float(interval)

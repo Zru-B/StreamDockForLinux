@@ -616,7 +616,7 @@ def launch_or_focus_application(app_config):
                         subprocess.run(
                             ["xdotool", "windowactivate", window_ids[0]],
                             check=True,
-                            timeout=2, check=False,
+                            timeout=2,
                         )
                         window_found = True
                 elif search_by_name and not window_found:
@@ -636,7 +636,7 @@ def launch_or_focus_application(app_config):
                             subprocess.run(
                                 ["xdotool", "windowactivate", window_ids[0]],
                                 check=True,
-                                timeout=2, check=False,
+                                timeout=2,
                             )
                             window_found = True
 
