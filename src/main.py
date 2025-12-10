@@ -42,9 +42,11 @@ def main():
     if args.config:
         config_file = args.config
     else:
-        # Use config.yml in the same directory as the script
+        # Use config.yml in the project root directory
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_file = os.path.join(script_dir, "config.yml")
+        # Go up one level from src/ to project root
+        project_root = os.path.dirname(script_dir)
+        config_file = os.path.join(project_root, "config.yml")
 
     # Load configuration
     try:

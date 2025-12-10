@@ -20,4 +20,4 @@ fi
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 # Run the configuration editor
-python3 "$SCRIPT_DIR/config_editor.py" "$@"
+python3 "$SCRIPT_DIR/../src/Configer/config_editor.py" "$@"
