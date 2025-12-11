@@ -405,8 +405,11 @@ class WindowMonitor:
         if "Zoom Workplace" in title:
             return "Zoom"
         # Obsidian title format: "<Note Name> - <Vault Name> - Obsidian v<Version>"
-        if "Obsidian v" in title:
+        if "obsidian" in title.lower():
             return "Obsidian"
+        # Slack title format: "Slack - <Channel Name>"
+        if "slack" in title.lower():
+            return "Slack"
 
         # Common patterns in window titles
         # "Document Name - Application"
