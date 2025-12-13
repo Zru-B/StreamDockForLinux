@@ -174,8 +174,28 @@ class ConfigLoader:
             # Validate icon path exists if using icon
             if has_icon:
                 icon_path = key_def['icon']
+                
+                if icon_path is None:
+                    raise ConfigValidationError(f"Icon path for key '{key_name}' cannot be empty")
+                
+                if not isinstance(icon_path, str):
+                    raise ConfigValidationError(f"Icon path for key '{key_name}' must be a string")
+                
+                # Expand user path (~) and environment variables
+                icon_path = os.path.expanduser(icon_path)
+                icon_path = os.path.expandvars(icon_path)
+                
+                # Update the config with expanded path
+                key_def['icon'] = icon_path
+                
                 if not os.path.exists(icon_path):
                     raise ConfigValidationError(f"Icon file not found for key '{key_name}': {icon_path}")
+                if not os.path.isfile(icon_path):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be a file")
+                if not icon_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be an image file")
+                if not os.access(icon_path, os.R_OK):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be readable")
             
             # Validate text field if using text
             if has_text:
