@@ -29,6 +29,7 @@ streamdock:
 """
 import yaml
 import os
+import logging
 from .Key import Key
 from .Layout import Layout
 from .Actions import ActionType
@@ -58,6 +59,7 @@ class ConfigLoader:
         self.lock_monitor_enabled = True  # Default enabled
         self.double_press_interval = 0.3  # Default 300ms
         self._temp_text_images = []  # Track temporary text image files
+        self.logger = logging.getLogger(__name__)
     
     def __del__(self):
         """Cleanup temporary text image files."""
@@ -420,9 +422,11 @@ class ConfigLoader:
         
         # Create key definitions (without numbers yet)
         self._create_keys(device)
+        self.logger.info(f"Loaded {len(self.keys)} key definitions")
         
         # Create layouts
         self._create_layouts(device)
+        self.logger.info(f"Loaded {len(self.layouts)} layouts")
         
         # Resolve CHANGE_LAYOUT action references
         self._resolve_layout_references()

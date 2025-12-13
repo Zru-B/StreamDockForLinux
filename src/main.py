@@ -6,6 +6,7 @@ from StreamDock.DeviceManager import DeviceManager
 from StreamDock.WindowMonitor import WindowMonitor
 from StreamDock.LockMonitor import LockMonitor
 from StreamDock.ConfigLoader import ConfigLoader, ConfigValidationError
+import logging
 import threading
 import time
 import sys
@@ -14,7 +15,7 @@ import os
 
 def main():
     """Main application entry point."""
-    
+    logging.basicConfig(level=logging.INFO)
     # Parse command-line arguments for config file
     config_file = 'config.yml'
     
@@ -30,13 +31,13 @@ def main():
         config_loader = ConfigLoader(config_file)
         config_loader.load()
     except FileNotFoundError as e:
-        print(f"Error: {e}")
+        logging.error(f"{e}")
         sys.exit(1)
     except ConfigValidationError as e:
-        print(f"Configuration validation error: {e}")
+        logging.error(f"Configuration Error: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"Error loading configuration: {e}")
+        logging.exception(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
     
     # Initialize device manager
@@ -49,7 +50,7 @@ def main():
     t.start()
     
     if len(streamdocks) == 0:
-        print("No Stream Dock devices found. Please connect a device and try again.")
+        logging.error("No Stream Dock devices found. Please connect a device and try again.")
         sys.exit(1)
     
     for device in streamdocks:
@@ -85,21 +86,21 @@ def main():
             lock_monitor.start()
             
         except ConfigValidationError as e:
-            print(f"Error applying configuration: {e}")
+            logging.exception(f"Error applying configuration: {e}")
             device.close()
             sys.exit(1)
         except Exception as e:
-            print(f"Error applying configuration: {e}")
+            logging.exception(f"Error applying configuration: {e}")
             device.close()
             sys.exit(1)
         
         # Keep the program running to process key events
-        print("\nStreamDock is ready. Press Ctrl+C to exit.\n")
+        logging.info("\nStreamDock is ready. Press Ctrl+C to exit.\n")
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\nShutting down...")
+            logging.info("\nShutting down...")
             if config_loader.config.get('windows_rules'):
                 window_monitor.stop()
             lock_monitor.stop()

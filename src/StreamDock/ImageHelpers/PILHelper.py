@@ -1,7 +1,10 @@
 import io
 import os
 import tempfile
+import logging
 from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
 
 try:
     import cairosvg
@@ -19,6 +22,7 @@ def convert_svg_to_png(svg_path, target_size=None):
     :return: Path to the temporary PNG file
     """
     if not SVG_SUPPORT:
+        logger.warning("SVG support disabled: cairosvg not found")
         raise RuntimeError(
             "SVG support requires cairosvg library. "
             "Install with: pip install cairosvg"
@@ -48,6 +52,7 @@ def convert_svg_to_png(svg_path, target_size=None):
         # Clean up temp file on error
         if os.path.exists(temp_png_path):
             os.remove(temp_png_path)
+        logger.error(f"SVG conversion failed for {svg_path}: {e}")
         raise RuntimeError(f"Failed to convert SVG to PNG: {e}")
 
 
