@@ -183,9 +183,8 @@ class ConfigLoader:
                 if not isinstance(icon_path, str):
                     raise ConfigValidationError(f"Icon path for key '{key_name}' must be a string")
                 
-                # Expand user path (~) and environment variables
-                icon_path = os.path.expanduser(icon_path)
-                icon_path = os.path.expandvars(icon_path)
+                # Expand environment variables and user path (~)
+                icon_path = os.path.abspath(os.path.expanduser(os.path.expandvars(icon_path.strip())))
                 
                 # Update the config with expanded path
                 key_def['icon'] = icon_path
