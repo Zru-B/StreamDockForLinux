@@ -236,7 +236,6 @@ def type_text(text, delay=0.001):
                 continue
             except subprocess.CalledProcessError as e:
                 logger.error("Failed to type character: %s", e)
-                if e.stderr:
     except FileNotFoundError:
         logger.error("Error: neither kdotool nor xdotool found. type_text action will not work.")
     except Exception as exc:
