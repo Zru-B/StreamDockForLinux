@@ -67,12 +67,13 @@ def main():
         logger.exception(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
     
-    # Set logger level based on configuration file
-    logger.setLevel(getattr(logging, config_loader.log_level))
+    # Set the root logger's level based on configuration file
+    logger.setLevel(config_loader.log_level or logging.INFO)
 
     logger.info("Application started")
     logger.debug(f"Configuration loaded from: {config_file}")
-    logger.debug(f"Log level set to: {config_loader.log_level}")
+    logger.debug(f"Root logger log level set to: {logging.getLevelName(logging.getLogger().level)}")
+    logger.debug(f"Main logger log level set to: {logging.getLevelName(logger.level)}")
 
     streamdocks = []
 
