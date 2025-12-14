@@ -4,6 +4,16 @@ import time
 import os
 import shlex
 import configparser
+import logging
+from .VirtualKeyboard import VirtualKeyboard
+
+logger = logging.getLogger(__name__)
+# Initialize Virtual Keyboard
+try:
+    vk = VirtualKeyboard()
+except Exception as e:
+    logger.error(f"Failed to initialize virtual keyboard: {e}")
+    vk = None
 
 
 class ActionType(Enum):
@@ -64,7 +74,7 @@ def execute_command(command):
     try:
         _launch_detached(command)
     except Exception as e:
-        print(f"Error executing command: {e}")
+        logger.error(f"Error executing command: {e}", exc_info=True)
 
 
 def emulate_key_combo(combo_string):
@@ -98,6 +108,14 @@ def emulate_key_combo(combo_string):
         print(f"Invalid key combination: {combo_string}")
         return
 
+
+    # Try VirtualKeyboard first
+    if vk and vk.available:
+        if vk.send_combo(combo_string):
+            return
+        else:
+            logger.warning("VirtualKeyboard failed to send combo, falling back to xdotool/kdotool")
+
     xdotool_keys = []
     for key in keys:
         if key in key_mapping:
@@ -108,12 +126,24 @@ def emulate_key_combo(combo_string):
             print(f"Unknown key: {key}")
             return
 
+    # If the virtual keyboard failed, try kdotool (for KDE Wayland)
+    try:
+        # kdotool key "CTRL+C"
+        subprocess.run(['kdotool', 'key', '+'.join(xdotool_keys)], check=True)
+        return
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # Fallback to xdotool
+        pass
+    except Exception as e:
+        logger.warning(f"kdotool failed: {e}")
+
+    # Fallback to xdotool (X11)
     try:
         subprocess.run(['xdotool', 'key', '+'.join(xdotool_keys)], check=True)
     except FileNotFoundError:
-        print("Error: xdotool not found. Install with: sudo apt install xdotool")
+        logger.error("Error: neither kdotool nor xdotool found. key_press action will not work.")
     except subprocess.CalledProcessError as e:
-        print(f"Error pressing key combination: {e}")
+        logger.error(f"Error pressing key combination: {e}")
 
 
 def type_text(text, delay=0.001):
@@ -125,9 +155,22 @@ def type_text(text, delay=0.001):
     """
     if not text:
         return
-        
+
+    # Try VirtualKeyboard first
+    if vk and vk.available:
+        if vk.type_string(text, delay=delay):
+            return
+
     try:
-        # Get the active window ID to ensure we type in the right window
+        # Next attempt - kdotool (KDE Wayland)
+        subprocess.run(['kdotool', 'type', text], check=True)
+        return
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+
+    try:
+        # Next attempt - xdotool (X11)
         try:
             window_id = subprocess.check_output(['xdotool', 'getactivewindow']).decode('utf-8').strip()
             window_args = ['windowactivate', '--sync', window_id]
@@ -160,22 +203,22 @@ def type_text(text, delay=0.001):
                 if delay > 0:
                     time.sleep(delay)
             except subprocess.TimeoutExpired:
-                print(f"[WARNING] Timeout while typing character")
+                logger.warning(f"Timeout while typing character")
                 continue
             except subprocess.CalledProcessError as e:
-                print(f"[ERROR] Failed to type character: {e}")
+                logger.error(f"Failed to type character: {e}")
                 if e.stderr:
-                    print(f"[ERROR] stderr: {e.stderr}")
+                    logger.error(f"stderr: {e.stderr}")
     
     except FileNotFoundError:
-        print("[ERROR] xdotool not found. Install with: sudo apt install xdotool")
+        logger.error("Error: neither kdotool nor xdotool found. type_text action will not work.")
     except Exception as e:
-        print(f"[ERROR] Unexpected error while typing text: {e}")
+        logger.error(f"Unexpected error while typing text: {e}")
         # Try fallback method if the main method fails
         try:
             subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text], check=True)
         except Exception as fallback_error:
-            print(f"[ERROR] Fallback typing also failed: {fallback_error}")
+            logger.error(f"Fallback typing also failed: {fallback_error}")
 
 
 def adjust_device_brightness(device, amount):

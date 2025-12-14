@@ -7,3 +7,6 @@ PyQt6
 # Optional: For lock monitor feature (KDE/GNOME)
 dbus-python
 PyGObject
+
+# Virtual Keyboard support
+evdev

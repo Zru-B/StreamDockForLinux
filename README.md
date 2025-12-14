@@ -7,7 +7,7 @@ A powerful, customizable Stream Dock 293v3 controller for Linux with YAML config
 - 🎯 **YAML Configuration** - Define your entire setup in a simple config file
 - 🪟 **Context-Aware Layouts** - Automatically switch layouts based on focused window
 - 🔒 **Lock Monitor** - Automatically turn off device when computer is locked
-- ⌨️ **Keyboard Automation** - Execute commands, type text, simulate shortcuts
+- ⌨️ **Keyboard Automation** - Execute commands, type text, simulate shortcuts (Virtual Keyboard & xdotool)
 - 🎵 **Media Controls** - Control Spotify, VLC, and other MPRIS-compatible players
 - 🔊 **Volume Control** - Adjust system volume with PulseAudio integration
 - 🎨 **Dynamic Key Images** - Change key images on press/release
@@ -61,6 +61,10 @@ sudo pacman -S pulseaudio-utils
 
 # For lock monitor (optional)
 sudo pacman -S python-dbus python-gobject
+
+# For Virtual Keyboard (optional but recommended)
+# No system packages needed (uses python-evdev)
+# But requires udev rule setup (see Device Setup)
 ```
 
 ### Python Dependencies
@@ -83,6 +87,7 @@ pip install pillow pyyaml cairosvg pyudev PyQt6 dbus-python PyGObject
 - `cairosvg` - SVG to PNG conversion
 - `pyudev` - Device hotplug monitoring
 - `PyQt6` - Configuration editor GUI
+- `evdev` - Virtual Keyboard support
 
 **System dependencies (must be installed via package manager):**
 - `hidapi` / `libhidapi-libusb` - HID device communication (system library, not Python package)
@@ -220,6 +225,31 @@ ls -l /dev/hidraw* | grep hotspot
 You should see permissions like `crw-rw-rw-` indicating the device is accessible.
 
 **Note:** You may need to log out and log back in for group changes to take effect.
+
+### Virtual Keyboard Setup (Recommended)
+
+To enable the improved Virtual Keyboard (faster, reliable, works on Wayland/X11 without focus stealing), you need additional udev rules for `/dev/uinput`.
+
+See [SETUP_UDEV.md](SETUP_UDEV.md) for detailed instructions.
+
+Briefly:
+1.  Create `/etc/udev/rules.d/99-streamdock-uinput.rules` with:
+    ```
+    KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+    ```
+2.  Add your user to the `input` group:
+    ```
+    sudo usermod -aG input $USER
+    ```
+3.  Load the kernel module:
+    ```
+    sudo modprobe uinput
+    ```
+4.  Reload rules:
+    ```
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+    ```
 
 ---
 
