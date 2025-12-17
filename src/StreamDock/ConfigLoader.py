@@ -426,7 +426,7 @@ class ConfigLoader:
             raise ConfigValidationError("Configuration not loaded. Call load() first.")
 
         # Set brightness
-        device.current_brightness(self.brightness or 50)
+        device.set_brightness(self.brightness or 50)
 
         # Set double-press interval
         device.double_press_interval = self.double_press_interval

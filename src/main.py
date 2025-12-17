@@ -98,9 +98,7 @@ def main():
         t.start()
 
         if len(streamdocks) == 0:
-            logger.error(
-                "No Stream Dock devices found. Please connect a device and try again."
-            )
+            logger.error("No Stream Dock devices found. Please connect a device and try again.")
             sys.exit(1)
 
     for device in streamdocks:
@@ -117,9 +115,7 @@ def main():
         # Apply configuration to device
         try:
             default_layout, all_layouts = config_loader.apply(device, window_monitor)
-            logger.debug(
-                f"Device configuration applied. Default layout: {default_layout}"
-            )
+            logger.debug(f"Device configuration applied. Default layout: {default_layout}")
 
             # Initialize lock monitor (from config setting) with default layout, all layouts, and window monitor
             logger.debug("Initializing LockMonitor")

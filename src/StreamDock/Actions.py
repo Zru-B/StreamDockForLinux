@@ -262,20 +262,13 @@ def adjust_device_brightness(device, amount):
         return
 
     try:
-        # Get current brightness (stored as an attribute on the device)
-        current_brightness = getattr(device, "_current_brightness", 50)
-
-        # Calculate new brightness
-        new_brightness = current_brightness + amount
+        new_brightness = device.get_brightness() + amount
 
         # Clamp to valid range (0-100)
         new_brightness = max(0, min(100, new_brightness))
 
         # Set new brightness
         device.set_brightness(new_brightness)
-
-        # Store the new brightness value
-        device._current_brightness = new_brightness
     except Exception as e:
         logger.error("Error adjusting brightness: %s", e)
 

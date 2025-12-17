@@ -163,11 +163,8 @@ class StreamDock(ABC):
     def clearAllIcon(self):
         self.transport.keyAllClear()
 
-    def current_brightness(self):
+    def get_brightness(self):
         return self._current_brightness
-
-    def current_brightness(self, value):
-        self._current_brightness = value
 
     def wakeScreen(self):
         self.transport.wakeScreen()

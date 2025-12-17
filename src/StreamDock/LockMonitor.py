@@ -263,7 +263,7 @@ class LockMonitor:
                 self.device.init()
 
                 # Restore brightness
-                self.device.current_brightness(self.saved_brightness)
+                self.device.set_brightness(self.saved_brightness)
 
                 # Update device reference for ALL layouts (not just current)
                 # This is critical for window monitor callbacks to work after unlock

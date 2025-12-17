@@ -72,7 +72,7 @@ class TestConfigLoader:
         assert len(all_layouts["Main"].keys) == 2
         
         # Verify brightness was set on device
-        mock_device.current_brightness.assert_called_with(30)
+        mock_device.set_brightness.assert_called_with(30)
         
         # Verify window rules were added
         # We wrapped the callback in a lambda, so we can't easily check equality, 
