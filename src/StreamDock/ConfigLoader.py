@@ -29,6 +29,7 @@ streamdock:
 """
 import yaml
 import os
+import logging
 from .Key import Key
 from .Layout import Layout
 from .Actions import ActionType
@@ -58,6 +59,7 @@ class ConfigLoader:
         self.lock_monitor_enabled = True  # Default enabled
         self.double_press_interval = 0.3  # Default 300ms
         self._temp_text_images = []  # Track temporary text image files
+        self.logger = logging.getLogger(__name__)
     
     def __del__(self):
         """Cleanup temporary text image files."""
@@ -174,8 +176,27 @@ class ConfigLoader:
             # Validate icon path exists if using icon
             if has_icon:
                 icon_path = key_def['icon']
+                
+                if icon_path is None:
+                    raise ConfigValidationError(f"Icon path for key '{key_name}' cannot be empty")
+                
+                if not isinstance(icon_path, str):
+                    raise ConfigValidationError(f"Icon path for key '{key_name}' must be a string")
+                
+                # Expand environment variables and user path (~)
+                icon_path = os.path.abspath(os.path.expanduser(os.path.expandvars(icon_path.strip())))
+                
+                # Update the config with expanded path
+                key_def['icon'] = icon_path
+                
                 if not os.path.exists(icon_path):
                     raise ConfigValidationError(f"Icon file not found for key '{key_name}': {icon_path}")
+                if not os.path.isfile(icon_path):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be a file")
+                if not icon_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be an image file")
+                if not os.access(icon_path, os.R_OK):
+                    raise ConfigValidationError(f"Icon file for key '{key_name}' must be readable")
             
             # Validate text field if using text
             if has_text:
@@ -400,9 +421,11 @@ class ConfigLoader:
         
         # Create key definitions (without numbers yet)
         self._create_keys(device)
+        self.logger.info(f"Loaded {len(self.keys)} key definitions")
         
         # Create layouts
         self._create_layouts(device)
+        self.logger.info(f"Loaded {len(self.layouts)} layouts")
         
         # Resolve CHANGE_LAYOUT action references
         self._resolve_layout_references()
