@@ -446,10 +446,98 @@ def launch_or_focus_application(app_config):
         {"command": ["firefox", "--private-window"], "force_new": true}
     """
     # Parse configuration
-    force_new = False  # Default: try to focus existing window
+    command, class_name, match_type, force_new = _parse_app_config(app_config)
+
+    if command is None:
+        logger.error("Error: LAUNCH_APPLICATION requires either 'command' or 'desktop_file'")
+        return
+
+    # If force_new is True, skip window detection and always launch
+    if force_new:
+        try:
+            # Launch in a completely separate process (detached from Python)
+            _launch_detached(command)
+        except Exception as e:
+            logger.error("Error launching application: %s", e)
+        finally:
+            return
+
+    try:
+        # Quick check: is the process already running?
+        process_name = command[0] if isinstance(command, list) else command
+        # Extract just the executable name (remove path)
+        process_name = os.path.basename(process_name)
+
+        try:
+            # Check if process exists and launch it if not
+            result = subprocess.run(["pgrep", "-x", process_name], capture_output=True, text=True, timeout=1, check=False)
+            if result.returncode != 0 or not result.stdout.strip():
+                # Process not running, launch it (detached from Python)
+                _launch_detached(command)
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # pgrep not available, continue with window detection
+
+        # For Chrome/Chromium apps, also try searching by name (from desktop file)
+        search_by_name = None
+        if "chromium" in command[0].lower() or "chrome" in command[0].lower():
+            # Extract app name from desktop file if we have it
+            if isinstance(app_config, dict) and app_config.get("desktop_file"):
+                # We already parsed it, get the name
+                desktop_info = parse_desktop_file(app_config.get("desktop_file"))
+                if desktop_info:
+                    search_by_name = desktop_info["name"]
+
+        # Search for the window using kdotool (KDE Wayland)
+        try:
+            window_id = _kdotool_search_by_class(class_name)
+            if not window_id and search_by_name:
+                window_id = _kdotool_search_by_name(search_by_name)
+
+            subprocess.run(["kdotool", "windowactivate", window_id], check=True, timeout=2)
+            return True
+        except FileNotFoundError:
+            # kdotool not available, try other methods
+            pass
+        except subprocess.TimeoutExpired:
+            pass
+
+        # Search for the window using xdotool (X11 sessions)
+        try:
+            window_id = _xdotool_search_by_class(class_name)
+            if not window_id and search_by_name:
+                window_id = _xdotool_search_by_name(search_by_name)
+
+            subprocess.run(["xdotool", "windowactivate", window_id], check=True, timeout=2)
+            return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        # Last resort: try wmctrl (works on some Wayland compositors)
+        try:
+            result = subprocess.run(
+                ["wmctrl", "-xa", class_name], capture_output=True, text=True, timeout=2, check=False
+            )
+            if result.returncode == 0:
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        # If we got here, window detection failed but process is running
+        # Launch new instance anyway (user may have minimized or hidden it)
+        logger.info(f"Window not found for class '{class_name}', launching new instance")
+        # Launch in a completely separate process (detached from Python)
+        _launch_detached(command)
+
+    except Exception as exc:
+        logger.exception(f"Unhandled exception in LAUNCH_APPLICATION: {exc}")
+
+
+def _parse_app_config(app_config):
     command = None
     class_name = None
     match_type = "contains"
+    force_new = False
 
     if isinstance(app_config, str):
         # Simple string command
@@ -478,7 +566,7 @@ def launch_or_focus_application(app_config):
                     logger.debug("  Overridden class: %s", class_name)
             else:
                 logger.warning("Failed to parse desktop file: %s", desktop_file)
-                return
+                return None, None, "contains", False
         else:
             # Use command parameter
             command = app_config.get("command")
@@ -491,181 +579,103 @@ def launch_or_focus_application(app_config):
         force_new = app_config.get("force_new", False)
     else:
         logger.error("Invalid LAUNCH_APPLICATION parameter: %s", app_config)
-        return
+        return None, None, "contains", False
 
-    if not command:
-        logger.error(
-            "Error: LAUNCH_APPLICATION requires either 'command' or 'desktop_file'"
-        )
-        return
+    return command, class_name, match_type, force_new
 
-    # If force_new is True, skip window detection and always launch
-    if force_new:
-        try:
-            # Launch in a completely separate process (detached from Python)
-            _launch_detached(command)
-            return
-        except Exception as e:
-            logger.error("Error launching application: %s", e)
-            return
+def _kdotool_search_by_class(class_name: str) -> str | None:
+    """
+    Search for a window by class name using kdotool.
 
+    :param class_name: Window class name to search for
+    :return: Window ID if found, None otherwise
+    """
     try:
-        # Quick check: is the process already running?
-        process_name = command[0] if isinstance(command, list) else command
-        # Extract just the executable name (remove path)
-        process_name = os.path.basename(process_name)
-
-        try:
-            # Check if process exists
-            result = subprocess.run(
-                ["pgrep", "-x", process_name], capture_output=True, text=True, timeout=1, check=False
-            )
-
-            if result.returncode != 0 or not result.stdout.strip():
-                # Process not running, launch it (detached from Python)
-                _launch_detached(command)
-                return
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # pgrep not available, continue with window detection
-
-        # Process is running, try to find and focus window
-        window_found = False
-
-        # For Chrome/Chromium apps, also try searching by name (from desktop file)
-        search_by_name = None
-        if "chromium" in command[0].lower() or "chrome" in command[0].lower():
-            # Extract app name from desktop file if we have it
-            if isinstance(app_config, dict) and app_config.get("desktop_file"):
-                # We already parsed it, get the name
-                desktop_info = parse_desktop_file(app_config.get("desktop_file"))
-                if desktop_info:
-                    search_by_name = desktop_info["name"]
-
-        # Try kdotool first (KDE Wayland)
-        try:
-            # Search for window by class name
-            result = subprocess.run(
-                ["kdotool", "search", "--class", class_name],
-                capture_output=True,
-                text=True,
-                timeout=2, check=False,
-            )
-
-            if result.returncode == 0 and result.stdout.strip():
-                # Window found, get the window ID
-                window_id = result.stdout.strip().split("\n")[0]
-                logger.debug(
-                    f"Found window (kdotool): {window_id} for class '{class_name}'"
-                )
-                # Activate the window
-                subprocess.run(
-                    ["kdotool", "windowactivate", window_id], check=True, timeout=2
-                )
-                window_found = True
-            elif search_by_name and not window_found:
-                # Fallback: Try searching by window name for Chrome apps
-                result = subprocess.run(
-                    ["kdotool", "search", "--name", search_by_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=2, check=False,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    window_id = result.stdout.strip().split("\n")[0]
-                    logger.debug(
-                        f"Found window (kdotool by name): {window_id} for '{search_by_name}'"
-                    )
-                    subprocess.run(
-                        ["kdotool", "windowactivate", window_id], check=True, timeout=2
-                    )
-                    window_found = True
-
-        except FileNotFoundError:
-            # kdotool not available, try other methods
-            pass
-        except subprocess.TimeoutExpired:
-            pass
-
-        # Try xdotool as fallback (for X11 sessions)
-        if not window_found:
-            try:
-                # Search for windows by class name (search all desktops)
-                result = subprocess.run(
-                    [
-                        "xdotool",
-                        "search",
-                        "--all",
-                        "--onlyvisible",
-                        "--class",
-                        class_name,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=2, check=False,
-                )
-
-                if result.returncode == 0 and result.stdout.strip():
-                    # Window found, focus it
-                    window_ids = result.stdout.strip().split("\n")
-                    if window_ids:
-                        logger.debug(
-                            f"Found window (xdotool): {window_ids[0]} for class '{class_name}'"
-                        )
-                        # Focus the first matching window
-                        subprocess.run(
-                            ["xdotool", "windowactivate", window_ids[0]],
-                            check=True,
-                            timeout=2,
-                        )
-                        window_found = True
-                elif search_by_name and not window_found:
-                    # Fallback: Try searching by window name for Chrome apps
-                    result = subprocess.run(
-                        ["xdotool", "search", "--all", "--name", search_by_name],
-                        capture_output=True,
-                        text=True,
-                        timeout=2, check=False,
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        window_ids = result.stdout.strip().split("\n")
-                        if window_ids:
-                            logger.debug(
-                                f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'"
-                            )
-                            subprocess.run(
-                                ["xdotool", "windowactivate", window_ids[0]],
-                                check=True,
-                                timeout=2,
-                            )
-                            window_found = True
-
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-
-        # If we found a window, we're done
-        if window_found:
-            return
-
-        # Last resort: try wmctrl (works on some Wayland compositors)
-        try:
-            result = subprocess.run(
-                ["wmctrl", "-xa", class_name], capture_output=True, text=True, timeout=2, check=False
-            )
-            if result.returncode == 0:
-                return
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-
-        # If we got here, window detection failed but process is running
-        # Launch new instance anyway (user may have minimized or hidden it)
-        logger.info(
-            f"Window not found for class '{class_name}', launching new instance"
+        result = subprocess.run(
+            ["kdotool", "search", "--class", class_name],
+            capture_output=True,
+            text=True,
+            timeout=2, check=False,
         )
-        # Launch in a completely separate process (detached from Python)
-        _launch_detached(command)
+        if result.returncode == 0 and result.stdout.strip():
+            # Window found, get the window ID
+            window_id = result.stdout.strip().split("\n")[0]
+            logger.debug(f"Found window (kdotool): {window_id} for class '{class_name}'")
+            return window_id
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        return None
 
-    except Exception as e:
-        logger.error("Error in LAUNCH_APPLICATION: %s", e)
+def _kdotool_search_by_name(name: str) -> str | None:
+    """
+    Search for a window by name using kdotool.
+
+    :param name: Window name to search for
+    :return: Window ID if found, None otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["kdotool", "search", "--name", name],
+            capture_output=True,
+            text=True,
+            timeout=2, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Window found, get the window ID
+            window_id = result.stdout.strip().split("\n")[0]
+            logger.debug(f"Found window (kdotool): {window_id} for name '{name}'")
+            return window_id
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        return None
+
+def _xdotool_search_by_class(class_name: str) -> str | None:
+    """
+    Search for a window by class name using xdotool.
+
+    :param class_name: Window class name to search for
+    :return: The Window ID of the first found window, None otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["xdotool", "search", "--all", "--onlyvisible", "--class", class_name],
+            capture_output=True,
+            text=True,
+            timeout=2, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Window found, get the window ID
+            window_id = result.stdout.strip().split("\n")[0]
+            logger.debug(f"Found window (xdotool): {window_id} for class '{class_name}'")
+            return window_id
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        return None
+
+def _xdotool_search_by_name(name: str) -> str | None:
+    """
+    Search for a window by name using xdotool.
+
+    :param name: Window name to search for
+    :return: The Window ID of the first found window, None otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["xdotool", "search", "--all", "--name", name],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Window found, get the window ID
+            window_id = result.stdout.strip().split("\n")[0]
+            logger.debug(f"Found window (xdotool): {window_id} for name '{name}'")
+            return window_id
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        return None
 
 
 def execute_action(action, device=None, key_number=None):
