@@ -133,3 +133,111 @@ class TestConfigLoader:
         with pytest.raises(ConfigValidationError) as exc:
             loader.load()
         assert "Only one layout can have 'Default: true'" in str(exc.value)
+
+    def test_change_key_resolution(self, mock_device):
+        """Test that CHANGE_KEY actions are properly resolved to Key instances."""
+        config_path = "tests/resources/test_change_key.yml"
+        loader = ConfigLoader(config_path)
+        loader.load()
+        
+        default_layout, all_layouts = loader.apply(mock_device)
+        
+        # Get the PrintScreenKey definition
+        print_screen_key_def = loader.keys["PrintScreenKey"]
+        on_press_actions = print_screen_key_def["on_press"]
+        
+        # Find the CHANGE_KEY action (should be the third action)
+        change_key_action = on_press_actions[2]
+        action_type, parameter = change_key_action
+        
+        # Verify it's a CHANGE_KEY action
+        from StreamDock.Actions import ActionType
+        assert action_type == ActionType.CHANGE_KEY
+        
+        # Verify the parameter is now a Key instance, not a string
+        from StreamDock.Key import Key
+        assert isinstance(parameter, Key), f"Expected Key instance, got {type(parameter)}"
+        
+        # Verify it's the correct key (CancelPrintScreenKey)
+        assert parameter.key_number == 2  # CancelPrintScreenKey is on key 2
+        
+        # Verify the Key has _configure method (would fail if it was still a string)
+        assert hasattr(parameter, "_configure")
+        assert callable(parameter._configure)
+
+    def test_change_key_missing_reference(self, create_config_file):
+        """Test that referencing a non-existent key in CHANGE_KEY raises an error."""
+        with open("tests/resources/test_change_key.yml", 'r') as f:
+            data = yaml.safe_load(f)
+        
+        # Add a key that references a non-existent key
+        data["streamdock"]["keys"]["BadKey"] = {
+            "icon": "tests/resources/test_icon.png",
+            "on_press_actions": [
+                {"CHANGE_KEY": "NonExistentKey"}
+            ]
+        }
+        data["streamdock"]["layouts"]["Main"]["keys"].append({3: "BadKey"})
+        
+        config_path = create_config_file(data)
+        loader = ConfigLoader(config_path)
+        loader.load()
+        
+        from unittest.mock import MagicMock
+        mock_device = MagicMock()
+        
+        with pytest.raises(ConfigValidationError) as exc:
+            loader.apply(mock_device)
+        assert "references undefined key 'NonExistentKey'" in str(exc.value)
+
+    def test_change_key_not_in_layout(self, create_config_file, mock_device):
+        """Test CHANGE_KEY can reference a key that's not in any layout."""
+        # Create a config where TargetKey is not in the layout, but PrintKey is
+        data = {
+            "streamdock": {
+                "settings": {"brightness": 30},
+                "keys": {
+                    "PrintKey": {
+                        "icon": "tests/resources/test_icon.png",
+                        "on_press_actions": [
+                            {"CHANGE_KEY": "TargetKey"}
+                        ]
+                    },
+                    "TargetKey": {
+                        "icon": "tests/resources/test_icon.png",
+                        "on_press_actions": [
+                            {"KEY_PRESS": "Esc"}
+                        ]
+                    }
+                },
+                "layouts": {
+                    "Main": {
+                        "Default": True,
+                        "keys": [
+                            {1: "PrintKey"}  # TargetKey is NOT in layout
+                        ]
+                    }
+                }
+            }
+        }
+        
+        config_path = create_config_file(data)
+        loader = ConfigLoader(config_path)
+        loader.load()
+        
+        # This should NOT raise an error because we create Key instances on-the-fly
+        default_layout, all_layouts = loader.apply(mock_device)
+        
+        # Verify that TargetKey instance was created
+        assert "TargetKey" in loader.key_instances
+        
+        # Verify the CHANGE_KEY action was resolved to a Key instance
+        print_key_def = loader.keys["PrintKey"]
+        change_key_action = print_key_def["on_press"][0]
+        action_type, parameter = change_key_action
+        
+        from StreamDock.Actions import ActionType
+        from StreamDock.Key import Key
+        assert action_type == ActionType.CHANGE_KEY
+        assert isinstance(parameter, Key)
+

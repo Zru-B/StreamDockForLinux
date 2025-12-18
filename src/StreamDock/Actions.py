@@ -665,7 +665,16 @@ def execute_action(action, device=None, key_number=None):
         if device is None:
             logger.error("Error: CHANGE_KEY requires device")
             return
+        if key_number is None:
+            logger.error("Error: CHANGE_KEY requires key_number")
+            return
         # The parameter is a Key object that will configure itself
+        # Update the key_number to match the button that triggered this action
+        parameter.key_number = key_number
+        # Recalculate logical key after updating key_number
+        parameter.logical_key = parameter.KEY_MAPPING.get(key_number, key_number)
+        
+        logger.debug("Configuring key %d: %s", key_number, parameter)
         parameter._configure()
 
     elif action_type == ActionType.CHANGE_LAYOUT:

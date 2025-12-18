@@ -56,6 +56,7 @@ class ConfigLoader:
         self.config = None
         self.keys = {}  # name -> Key definition dict
         self.layouts = {}  # name -> Layout object
+        self.key_instances = {}  # name -> Key instance
         self.window_rules = []
         self.default_layout = None
         self.brightness = None
@@ -387,6 +388,17 @@ class ConfigLoader:
                             parameter["clear_all"] = False
                     else:
                         raise ConfigValidationError("CHANGE_LAYOUT parameter must be string or dict")
+                elif action_type == ActionType.CHANGE_KEY:
+                    # Key reference will be resolved later
+                    if isinstance(parameter, str):
+                        # Simple format: just key name
+                        parameter = {"key_name": parameter}
+                    elif isinstance(parameter, dict):
+                        # Dict format with options
+                        if "key_name" not in parameter:
+                            raise ConfigValidationError("CHANGE_KEY action must have 'key_name' parameter")
+                    else:
+                        raise ConfigValidationError("CHANGE_KEY parameter must be string or dict")
                 elif action_type in (
                     ActionType.DEVICE_BRIGHTNESS_UP,
                     ActionType.DEVICE_BRIGHTNESS_DOWN,
@@ -431,6 +443,9 @@ class ConfigLoader:
 
         # Resolve CHANGE_LAYOUT action references
         self._resolve_layout_references()
+
+        # Resolve CHANGE_KEY action references
+        self._resolve_key_references()
 
         # Apply window rules
         if window_monitor and "windows_rules" in self.config:
@@ -546,6 +561,13 @@ class ConfigLoader:
 
                 layout_keys.append(key_instance)
 
+                # Track key instance for CHANGE_KEY resolution
+                # Use the first instance (or default layout's instance) for each key name
+                if key_name not in self.key_instances:
+                    self.key_instances[key_name] = key_instance
+                elif is_default:  # Prefer instance from default layout
+                    self.key_instances[key_name] = key_instance
+
             # Create Layout with clear_keys list and clear_all option
             layout = Layout(
                 device, layout_keys, clear_keys=clear_keys, clear_all=clear_all
@@ -582,6 +604,48 @@ class ConfigLoader:
                                 "layout": self.layouts[layout_name],
                                 "clear_all": clear_all,
                             },
+                        )
+
+    def _resolve_key_references(self):
+        """Resolve CHANGE_KEY action references to actual Key objects."""
+        for key_name, key_def in self.keys.items():
+            for action_list_name in ["on_press", "on_release", "on_double_press"]:
+                actions = key_def.get(action_list_name)
+                if not actions:
+                    continue
+
+                for i, (action_type, parameter) in enumerate(actions):
+                    if action_type == ActionType.CHANGE_KEY:
+                        # Parameter is now a dict with key name
+                        target_key_name = parameter["key_name"]
+
+                        # Check if target key exists in config
+                        if target_key_name not in self.keys:
+                            raise ConfigValidationError(
+                                f"Key '{key_name}' {action_list_name}: "
+                                f"references undefined key '{target_key_name}'"
+                            )
+
+                        # If the key instance doesn't exist yet (not in any layout),
+                        # create it now with a dummy key_number (will be set when used)
+                        if target_key_name not in self.key_instances:
+                            target_key_def = self.keys[target_key_name]
+                            # Create Key instance with key_number=0 as placeholder
+                            # The actual key_number will be set when CHANGE_KEY is executed
+                            key_instance = Key(
+                                device=target_key_def["device"],
+                                key_number=0,  # Placeholder, will be updated on use
+                                image_path=target_key_def["image"],
+                                on_press=target_key_def["on_press"],
+                                on_release=target_key_def["on_release"],
+                                on_double_press=target_key_def["on_double_press"],
+                            )
+                            self.key_instances[target_key_name] = key_instance
+
+                        # Replace with the actual Key instance
+                        actions[i] = (
+                            action_type,
+                            self.key_instances[target_key_name],
                         )
 
     def _apply_window_rules(self, window_monitor):
