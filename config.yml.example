@@ -4,7 +4,6 @@ streamdock:
     brightness: 50              # Screen brightness (0-100)
     lock_monitor: true          # Turn off screen when computer is locked
     double_press_interval: 0.3  # Max time between clicks for double press (seconds)
-    log_level: INFO             # DEBUG, INFO, WARNING, ERROR
 
   # Define all your keys here
   keys:

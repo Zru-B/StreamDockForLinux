@@ -61,7 +61,6 @@ class ConfigLoader:
         self.brightness = None
         self.lock_monitor_enabled = True  # Default enabled
         self.double_press_interval = 0.3  # Default 300ms
-        self.log_level = "INFO"  # Default log level
         self._temp_text_images = []  # Track temporary text image files
         self.logger = logging.getLogger(__name__)
 
@@ -160,15 +159,6 @@ class ConfigLoader:
             ):
                 raise ConfigValidationError("double_press_interval must be a number between 0 and 2.0 (seconds)")
             self.double_press_interval = float(interval)
-
-        if "log_level" in settings:
-            log_level = settings["log_level"]
-            valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-            if log_level.upper() not in valid_levels:
-                raise ConfigValidationError(f"log_level must be one of: {', '.join(valid_levels)}")
-            self.log_level = log_level.upper()
-        else:
-            self.log_level = "INFO"
 
     def _validate_keys(self):
         """Validate keys section of configuration."""

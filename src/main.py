@@ -31,17 +31,28 @@ def parse_arguments():
         action="store_true",
         help="Simulate window focus changes using a temporary file (for E2E testing)",
     )
+    parser.add_argument(
+        "-d", "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print the configuration and exit",
+    )
     return parser.parse_args()
 
 
 def main():
     """Main application entry point."""
+    args = parse_arguments()
+
+
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO)
+        level=logging.DEBUG if args.debug else logging.INFO)
     logger = logging.getLogger(__name__)
-
-    args = parse_arguments()
 
     # Determine config file path
     if args.config:
@@ -67,9 +78,6 @@ def main():
         logger.exception(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
     
-    # Set the root logger's level based on configuration file
-    logger.setLevel(config_loader.log_level or logging.INFO)
-
     logger.info("Application started")
     logger.debug(f"Configuration loaded from: {config_file}")
     logger.debug(f"Root logger log level set to: {logging.getLevelName(logging.getLogger().level)}")
