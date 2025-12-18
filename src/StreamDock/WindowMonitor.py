@@ -11,29 +11,9 @@ import time
 from typing import Callable, Optional
 
 from StreamDock.Models import WindowInfo, AppPattern
+from StreamDock.WindowUtils import WindowUtils
 
 logger = logging.getLogger(__name__)
-
-# Patterns are checked in order, first match wins
-APP_PATTERNS = [
-    AppPattern(["antigravity"], "Antigravity"),
-    AppPattern(["chrome"], "Chrome"),
-    AppPattern(["chromium"], "Chromium"),
-    AppPattern(["code"], "VSCode"),
-    AppPattern(["discord"], "Discord"),
-    AppPattern(["dolphin"], "Dolphin"),
-    AppPattern(["firefox"], "Firefox"),
-    AppPattern(["intellij"], "IntelliJ"),
-    AppPattern(["kate"], "Kate"),
-    AppPattern(["konsole"], "Konsole", exact_matches=["org.kde.konsole"]),
-    AppPattern(["obsidian"], "Obsidian"),
-    AppPattern(["pycharm"], "PyCharm"),
-    AppPattern(["slack"], "Slack"),
-    AppPattern(["spotify"], "Spotify"),
-    AppPattern(["telegram", "telegram-desktop"], "Telegram"),
-    AppPattern(["yakuake"], "Yakuake", exact_matches=["org.kde.yakuake"]),
-    AppPattern(["zoom", "zoom workplace"], "Zoom"),
-]
 
 
 class WindowMonitor:
@@ -63,46 +43,8 @@ class WindowMonitor:
             self.kdotool_available = False
             logger.info(f"WindowMonitor running in SIMULATION MODE. Reading from {self.simulated_window_file}")
         else:
-            self.kdotool_available = self._check_kdotool_availability()
-
-    def _check_kdotool_availability(self) -> bool:
-        """
-        Check if kdotool is installed and functional.
-
-        Verifies both the existence of the executable and its ability to run
-        a simple command without crashing (which can happen on some systems due to
-        D-Bus path issues).
-
-        :return: True if kdotool is available and working, False otherwise.
-        """
-        if shutil.which("kdotool") is None:
-            logger.warning("kdotool not found. Window detection might be less reliable on KDE Wayland.")
-            return False
-
-        # Check if kdotool actually works (it might panic on some systems)
-        try:
-            result = subprocess.run(
-                ["kdotool", "getactivewindow"],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-
-            if result.returncode != 0:
-                logger.warning(
-                    "kdotool found but appears to be broken (returned %s). "
-                    "Disabling kdotool integration.",
-                    result.returncode,
-                )
-                return False
-
-            logger.info("kdotool found and functional. kdotool will be used for window detection.")
-            return True
-
-        except Exception as exc:
-            logger.warning("kdotool found but execution failed: %s. Disabling kdotool integration.", exc)
-            return False
+            # Use WindowUtils for tool availability checking
+            self.kdotool_available = WindowUtils.is_kdotool_available()
 
     def get_active_window_info(self) -> WindowInfo | None:
         """
@@ -120,7 +62,7 @@ class WindowMonitor:
         # Try multiple methods in order of reliability
         # Method 1: Try kdotool (best for KDE Wayland)
         if self.kdotool_available:
-            window_info = self._try_kdotool()
+            window_info = WindowUtils.kdotool_get_active_window()
             if window_info:
                 self.current_window_detection_method = "kdotool"
                 return window_info
@@ -174,65 +116,6 @@ class WindowMonitor:
             )
         except Exception as e:
             logger.error(f"Error reading simulation file: {e}")
-            return None
-
-    def _try_kdotool(self) -> WindowInfo | None:
-        """Try using kdotool to get active window."""
-        try:
-            # Get window ID
-            result = subprocess.run(
-                ["kdotool", "getactivewindow"],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-
-            if result.returncode != 0:
-                return None
-
-            window_id = result.stdout.strip()
-
-            # Get window title
-            result = subprocess.run(
-                ["kdotool", "getwindowname", window_id],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-
-            if result.returncode != 0:
-                return None
-
-            window_info = WindowInfo(
-                title=result.stdout.strip(),
-                class_name="",
-                raw=result.stdout.strip(),
-                method="kdotool"
-            )
-
-            # Try to get actual window class
-            result_class = subprocess.run(
-                ["kdotool", "getwindowclassname", window_id],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-
-            if result_class.returncode == 0 and result_class.stdout.strip():
-                raw_class = result_class.stdout.strip()
-                # Always normalize the class name to handle edge cases
-                window_info.class_name = self._normalize_class_name(raw_class, window_info.title)
-                logger.debug("Checkpoint A: title=%s, raw_class=%s, normalized_class=%s", window_info.title, raw_class, window_info.class_name)
-            else:
-                # Fallback to extracting from title
-                window_info.class_name = self._extract_app_from_title(window_info.title)
-                logger.debug("Checkpoint B: title=%s, class=%s", window_info.title, window_info.class_name)
-
-            return window_info
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return None
 
     def _try_kwin_scripting(self) -> WindowInfo | None:
@@ -319,7 +202,7 @@ class WindowMonitor:
                     pass
                 else:
                     window_title = raw_output
-                    window_class = self._extract_app_from_title(window_title)
+                    window_class = WindowUtils.extract_app_from_title(window_title)
 
                     return WindowInfo(
                         title=window_title,
@@ -352,7 +235,7 @@ class WindowMonitor:
                 if window_title.startswith("s "):
                     window_title = window_title[2:].strip('"')
 
-                window_class = self._extract_app_from_title(window_title)
+                window_class = WindowUtils.extract_app_from_title(window_title)
 
                 return WindowInfo(
                     title=window_title,
@@ -395,9 +278,9 @@ class WindowMonitor:
 
                 if result_class.returncode == 0 and result_class.stdout.strip():
                     raw_class = result_class.stdout.strip()
-                    window_class = self._normalize_class_name(raw_class, window_title)
+                    window_class = WindowUtils.normalize_class_name(raw_class, window_title)
                 else:
-                    window_class = self._extract_app_from_title(window_title)
+                    window_class = WindowUtils.extract_app_from_title(window_title)
 
                 return WindowInfo(
                     title=window_title,
@@ -410,58 +293,6 @@ class WindowMonitor:
 
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return None
-
-    def _normalize_class_name(self, class_name: str, title: str = "") -> str:
-        """
-        Normalize and translate window class names to human-readable application names.
-        Handles edge cases and known application patterns using the global APP_PATTERNS.
-        
-        :param class_name: Raw window class name
-        :param title: Optional window title for additional context
-        :return: Normalized application name
-        """
-        if not class_name:
-            return "unknown"
-        
-        # Iterate through all application patterns to find a match
-        for pattern in APP_PATTERNS:
-            if pattern.match(class_name, title):
-                return pattern.normalized_name
-        
-        # Return the class name as-is if no translation found
-        return class_name
-    
-    def _extract_app_from_title(self, title: str) -> str:
-        """
-        Extract application name from window title using common patterns.
-        Common patterns: "Title - Application" or "Application: Title"
-
-        :param title: Window title string
-        :return: Extracted application name
-        """
-        if not title:
-            return "unknown"
-
-        # First try to normalize if the title itself contains recognizable app names
-        normalized = self._normalize_class_name(title, title)
-        if normalized != title:
-            return normalized
-
-        # Common patterns in window titles
-        # "Document Name - Application"
-        if " — " in title:
-            extracted = title.split(" — ")[-1].strip()
-            return self._normalize_class_name(extracted, title)
-        if " - " in title:
-            extracted = title.split(" - ")[-1].strip()
-            return self._normalize_class_name(extracted, title)
-        if ": " in title:
-            extracted = title.split(":")[0].strip()
-            return self._normalize_class_name(extracted, title)
-
-        # Return first word of title as fallback
-        fallback = title.split()[0] if title.split() else "unknown"
-        return self._normalize_class_name(fallback, title)
 
     def add_window_rule(self, pattern: str | re.Pattern, callback: Callable[[WindowInfo], None], match_field: str = "class") -> None:
         """

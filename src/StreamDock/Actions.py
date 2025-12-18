@@ -8,6 +8,7 @@ from enum import Enum
 from threading import Thread
 
 from .VirtualKeyboard import VirtualKeyboard
+from .WindowUtils import WindowUtils
 
 logger = logging.getLogger(__name__)
 # Initialize Virtual Keyboard
@@ -482,29 +483,22 @@ def launch_or_focus_application(app_config):
                     search_by_name = desktop_info["name"]
 
         # Search for the window using kdotool (KDE Wayland)
-        try:
-            window_id = _kdotool_search_by_class(class_name)
+        if WindowUtils.is_kdotool_available():
+            window_id = WindowUtils.kdotool_search_by_class(class_name)
             if not window_id and search_by_name:
-                window_id = _kdotool_search_by_name(search_by_name)
-
-            subprocess.run(["kdotool", "windowactivate", window_id], check=True, timeout=2)
-            return True
-        except FileNotFoundError:
-            # kdotool not available, try other methods
-            pass
-        except subprocess.TimeoutExpired:
-            pass
+                window_id = WindowUtils.kdotool_search_by_name(search_by_name)
+            
+            if window_id and WindowUtils.kdotool_activate_window(window_id):
+                return True
 
         # Search for the window using xdotool (X11 sessions)
-        try:
-            window_id = _xdotool_search_by_class(class_name)
+        elif WindowUtils.is_xdotool_available():
+            window_id = WindowUtils.xdotool_search_by_class(class_name)
             if not window_id and search_by_name:
-                window_id = _xdotool_search_by_name(search_by_name)
-
-            subprocess.run(["xdotool", "windowactivate", window_id], check=True, timeout=2)
-            return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+                window_id = WindowUtils.xdotool_search_by_name(search_by_name)
+            
+            if window_id and WindowUtils.xdotool_activate_window(window_id):
+                return True
 
         # Last resort: try wmctrl (works on some Wayland compositors)
         try:
@@ -576,101 +570,6 @@ def _parse_app_config(app_config):
 
     return command, class_name, match_type, force_new
 
-def _kdotool_search_by_class(class_name: str) -> str | None:
-    """
-    Search for a window by class name using kdotool.
-
-    :param class_name: Window class name to search for
-    :return: Window ID if found, None otherwise
-    """
-    try:
-        result = subprocess.run(
-            ["kdotool", "search", "--class", class_name],
-            capture_output=True,
-            text=True,
-            timeout=2, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, get the window ID
-            window_id = result.stdout.strip().split("\n")[0]
-            logger.debug(f"Found window (kdotool): {window_id} for class '{class_name}'")
-            return window_id
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        return None
-
-def _kdotool_search_by_name(name: str) -> str | None:
-    """
-    Search for a window by name using kdotool.
-
-    :param name: Window name to search for
-    :return: Window ID if found, None otherwise
-    """
-    try:
-        result = subprocess.run(
-            ["kdotool", "search", "--name", name],
-            capture_output=True,
-            text=True,
-            timeout=2, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, get the window ID
-            window_id = result.stdout.strip().split("\n")[0]
-            logger.debug(f"Found window (kdotool): {window_id} for name '{name}'")
-            return window_id
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        return None
-
-def _xdotool_search_by_class(class_name: str) -> str | None:
-    """
-    Search for a window by class name using xdotool.
-
-    :param class_name: Window class name to search for
-    :return: The Window ID of the first found window, None otherwise
-    """
-    try:
-        result = subprocess.run(
-            ["xdotool", "search", "--all", "--onlyvisible", "--class", class_name],
-            capture_output=True,
-            text=True,
-            timeout=2, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, get the window ID
-            window_id = result.stdout.strip().split("\n")[0]
-            logger.debug(f"Found window (xdotool): {window_id} for class '{class_name}'")
-            return window_id
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        return None
-
-def _xdotool_search_by_name(name: str) -> str | None:
-    """
-    Search for a window by name using xdotool.
-
-    :param name: Window name to search for
-    :return: The Window ID of the first found window, None otherwise
-    """
-    try:
-        result = subprocess.run(
-            ["xdotool", "search", "--all", "--name", name],
-            capture_output=True, text=True, timeout=2, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, get the window ID
-            window_id = result.stdout.strip().split("\n")[0]
-            logger.debug(f"Found window (xdotool): {window_id} for name '{name}'")
-            return window_id
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    finally:
-        return None
-
-
 def execute_action(action, device=None, key_number=None):
     """
     Execute a single action.
@@ -680,9 +579,7 @@ def execute_action(action, device=None, key_number=None):
     :param key_number: Key number (required for CHANGE_KEY_IMAGE)
     """
     if not isinstance(action, tuple) or len(action) != 2:
-        logger.error(
-            f"Invalid action format: {action}. Expected (ActionType, parameter)"
-        )
+        logger.error(f"Invalid action format: {action}. Expected (ActionType, parameter)")
         return
 
     action_type, parameter = action
