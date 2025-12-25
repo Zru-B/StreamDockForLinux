@@ -392,19 +392,124 @@ Dynamically changes the text displayed on the currently pressed key.
 
 ## `CHANGE_KEY`
 
-Replaces the entire key configuration (image and actions) with a different key definition.
+Replaces the entire key configuration (image and actions) with a different key definition from the `keys` section. This allows dynamic key transformations, such as switching a button between different states or modes.
 
-**Format:**
+**Formats:**
 ```yaml
-- "CHANGE_KEY": KeyObject  # Internal use only
+# Simple format (most common)
+- "CHANGE_KEY": "KeyName"
+
+# Advanced format with options (for future extensions)
+- "CHANGE_KEY":
+    key_name: "KeyName"
 ```
 
-**Note:** This action is primarily used internally by the configuration system. It's not typically used directly in YAML configurations. Instead, use `CHANGE_KEY_IMAGE` or `CHANGE_KEY_TEXT` for dynamic updates, or `CHANGE_LAYOUT` to switch between predefined key sets.
+**Parameters:**
+- `key_name` (required): Name of the key definition to switch to (must be defined in `keys` section)
 
-**Internal Behavior:**
-- Accepts a `Key` object instance
-- Calls the key's `_configure()` method to apply image and callbacks
-- Used by the layout system when applying layouts
+**Examples:**
+
+**Example 1: Screenshot with Cancel**
+```yaml
+keys:
+  PrintScreenKey:
+    icon: "img/screen_capture.png"
+    on_press_actions:
+      - KEY_PRESS: "META+SHIFT+P"        # Trigger screenshot tool
+      - WAIT: 1.5                         # Wait for tool to be ready
+      - CHANGE_KEY: CancelPrintScreenKey  # Change to cancel button
+  
+  CancelPrintScreenKey:
+    icon: "img/screen_capture_abort.png"
+    on_press_actions:
+      - KEY_PRESS: "Esc"                 # Cancel screenshot
+      - CHANGE_KEY: PrintScreenKey       # Change back to screenshot button
+
+layouts:
+  Main:
+    Default: true
+    keys:
+      - 11: PrintScreenKey  # Only PrintScreenKey is initially visible
+```
+
+**Example 2: Record/Stop Toggle**
+```yaml
+keys:
+  RecordKey:
+    icon: "img/record.png"
+    on_press_actions:
+      - EXECUTE_COMMAND: "obs-studio --start-recording"
+      - CHANGE_KEY: StopRecordKey
+  
+  StopRecordKey:
+    icon: "img/stop.png"
+    on_press_actions:
+      - EXECUTE_COMMAND: "obs-studio --stop-recording"
+      - CHANGE_KEY: RecordKey
+
+layouts:
+  Main:
+    Default: true
+    keys:
+      - 5: RecordKey
+```
+
+**Example 3: Multi-State Button**
+```yaml
+keys:
+  State1Key:
+    text: "State 1"
+    on_press_actions:
+      - TYPE_TEXT: "First state activated"
+      - CHANGE_KEY: State2Key
+  
+  State2Key:
+    text: "State 2"
+    on_press_actions:
+      - TYPE_TEXT: "Second state activated"
+      - CHANGE_KEY: State3Key
+  
+  State3Key:
+    text: "State 3"
+    on_press_actions:
+      - TYPE_TEXT: "Third state activated"
+      - CHANGE_KEY: State1Key  # Cycle back to first state
+
+layouts:
+  Main:
+    Default: true
+    keys:
+      - 1: State1Key  # Only State1Key is initially visible
+```
+
+**Behavior:**
+- Updates the pressed key's image to the target key's image
+- Replaces the pressed key's callbacks (on_press, on_release, on_double_press) with the target key's callbacks
+- The target key does **not** need to be in any layout initially - it can be a "hidden" key definition
+- Works on the physical button that was pressed, regardless of the target key's original position
+- Changes take effect immediately
+- Device display is refreshed automatically
+
+**Important Notes:**
+- The target key name must exist in the `keys` section, or a validation error will occur
+- The target key does NOT need to be assigned to a physical button in any layout
+- This enables creating "state machine" buttons that cycle through different configurations
+- For simple image-only changes, consider `CHANGE_KEY_IMAGE` instead
+- For text-only changes, consider `CHANGE_KEY_TEXT` instead
+
+**Use Cases:**
+- **State toggles**: Record/Stop, Play/Pause, On/Off
+- **Modal buttons**: Different actions in different modes (e.g., screenshot → cancel screenshot)
+- **Progressive actions**: Multi-step workflows where the button changes after each step
+- **Dynamic UI**: Buttons that adapt based on context or application state
+
+**Comparison with Similar Actions:**
+- `CHANGE_KEY_IMAGE`: Only changes the icon, keeps the same actions
+- `CHANGE_KEY_TEXT`: Only changes the text display, keeps the same actions  
+- `CHANGE_KEY`: Replaces both image AND all actions (complete key replacement)
+- `CHANGE_LAYOUT`: Switches the entire device to different layout (all 15 keys)
+
+
 
 ---
 
