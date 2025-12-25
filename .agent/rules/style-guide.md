@@ -48,6 +48,7 @@
 - **Contextual Logging**: Include identifiers where possible (e.g., device serial, layout name) to make logs searchable.
 
 ### 7. Code Reuse and Refactoring
+- **Update Tests When Refactoring**: Always update corresponding unit tests when refactoring a function. Tests must reflect new signatures, behaviors, and edge cases.
 - **Prioritize Reuse**: Before implementing new logic, thoroughly search the existing codebase for similar functionality. Reuse or refactor existing classes and functions.
 - **Continuous Refactoring**: If an existing function almost meets your needs, refactor it to be more generic rather than creating a near-duplicate.
 - **Dead Code Prevention**: Ensure that changes do not leave orphaned or redundant code paths. Cleanup unused imports, variables, and functions as you go.
