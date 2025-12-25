@@ -86,7 +86,6 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-.agent/
 .idea/
 .qodo/
 .vscode/
@@ -95,3 +94,7 @@ config*.yml
 
 .DS_Store
 Thumbs.db
+
+# Allow agent protocols
+!.agent/
+!.agent/**
