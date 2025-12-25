@@ -1,0 +1,20 @@
+streamdock:
+  settings:
+    brightness: 30
+  keys:
+    PrintScreenKey:
+      icon: "tests/resources/test_icon.png"
+      on_press_actions:
+        - KEY_PRESS: "META+SHIFT+P"
+        - WAIT: 1.5
+        - CHANGE_KEY: CancelPrintScreenKey
+    CancelPrintScreenKey:
+      icon: "tests/resources/test_icon.png"
+      on_press_actions:
+        - KEY_PRESS: "Esc"
+  layouts:
+    Main:
+      Default: true
+      keys:
+        - 1: PrintScreenKey
+        - 2: CancelPrintScreenKey

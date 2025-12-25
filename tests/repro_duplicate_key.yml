@@ -1,0 +1,10 @@
+streamdock:
+  keys:
+    TestKey:
+      text: "Test"
+  layouts:
+    Main:
+      Default: true
+      keys:
+        - 1: "TestKey"
+        - 1: "TestKey" # Duplicate
