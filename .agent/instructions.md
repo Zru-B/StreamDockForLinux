@@ -29,7 +29,13 @@ Always consider that this application interacts directly with hardware. Minor bu
 - `WindowMonitor`: Tracks focused windows for layout switching.
 - `LockMonitor`: Handles D-Bus signals for screen lock/unlock.
 
+### 4. Code Reuse & Maintenance
+**Mandatory**: Any new feature and/or bug fix must first rely on and reuse/modify existing code instead of simply creating more code. This is critical to prevent dead and unmaintainable code sections.
+
 ## Agent Behavior
 - **Be Cautious**: When suggesting udev rules or system-level changes, emphasize the risk.
-- **Reference Documentation**: Refer to the `README.md` for current installation and configuration examples.
-- **Follow Rules**: Adhere to the specific rules in `.agent/rules/`.
+- **Reference Documentation**: Refer to the \`README.md\` for current installation and configuration examples.
+- **Follow Rules**: Adhere to the specific rules in [\`.agent/rules/\`](file:///home/speled/git_repositories/StreamDockForLinux/.agent/rules/).
+  - [Style Guide](file:///home/speled/git_repositories/StreamDockForLinux/.agent/rules/style-guide.md)
+  - [Testing Standards](file:///home/speled/git_repositories/StreamDockForLinux/.agent/rules/testing-standards.md)
+  - [Deployment Safety](file:///home/speled/git_repositories/StreamDockForLinux/.agent/rules/deployment-safety.md)
