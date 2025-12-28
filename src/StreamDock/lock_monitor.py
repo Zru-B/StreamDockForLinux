@@ -225,7 +225,7 @@ class LockMonitor:
                     self.window_monitor.stop()
                 
                 # Clear all icons before closing
-                self.device.clearAllIcon()
+                self.device.clear_all_icons()
                 time.sleep(0.5)  # Give device time to process clear command
                 self.device.close()
             else:

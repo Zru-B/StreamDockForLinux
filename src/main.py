@@ -2,10 +2,10 @@
 """
 StreamDock main application with YAML configuration support.
 """
-from StreamDock.DeviceManager import DeviceManager
-from StreamDock.WindowMonitor import WindowMonitor
-from StreamDock.LockMonitor import LockMonitor
-from StreamDock.ConfigLoader import ConfigLoader, ConfigValidationError
+from StreamDock.device_manager import DeviceManager
+from StreamDock.window_monitor import WindowMonitor
+from StreamDock.lock_monitor import LockMonitor
+from StreamDock.config_loader import ConfigLoader, ConfigValidationError
 import logging
 import threading
 import time

@@ -120,9 +120,9 @@ class StreamDock(ABC):
         self._setup_reader(self._read)
 
     def init(self):
-        self.wakeScreen()
+        self.wake_screen()
         self.set_brightness(100)
-        self.clearAllIcon()
+        self.clear_all_icons()
         self.refresh()
 
     def close(self):
@@ -131,24 +131,24 @@ class StreamDock(ABC):
     def disconnected(self):
         self.transport.disconnected()
 
-    def cleaerIcon(self, index):
+    def clear_icon(self, index):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
             print(f"key '{origin}' out of range. you should set (1 ~ 15)")
             return -1
-        self.transport.keyClear(index)
+        self.transport.key_clear(index)
 
-    def clearAllIcon(self):
-        self.transport.keyAllClear()
+    def clear_all_icons(self):
+        self.transport.key_all_clear()
 
-    def wakeScreen(self):
-        self.transport.wakeScreen()
+    def wake_screen(self):
+        self.transport.wake_screen()
 
     def refresh(self):
         self.transport.refresh()
 
-    def getPath(self):
+    def get_path(self):
         return self.path
 
     def read(self):
@@ -177,21 +177,21 @@ class StreamDock(ABC):
                 traceback.print_exc()
                 break
 
-    def screen_Off(self):
-        res=self.transport.screen_Off()   
-        self.reset_Countdown(self.__seconds)
+    def screen_off(self):
+        res=self.transport.screen_off()   
+        self.reset_countdown(self.__seconds)
         return res
 
-    def screen_On(self):
-        return self.transport.screen_On()  
+    def screen_on(self):
+        return self.transport.screen_on()  
 
     def set_seconds(self,data):
         self.__seconds=data
-        self.reset_Countdown(self.__seconds)
+        self.reset_countdown(self.__seconds)
 
-    def reset_Countdown(self,data):
+    def reset_countdown(self,data):
         self.screenlicent.cancel()
-        self.screenlicent=threading.Timer(data,self.screen_Off) 
+        self.screenlicent=threading.Timer(data,self.screen_off) 
         self.screenlicent.start()
 
     @abstractmethod
@@ -218,7 +218,7 @@ class StreamDock(ABC):
         :rtype: str
         :return: Identifier for the attached device.
         """
-        return self.getPath()
+        return self.get_path()
 
     def _setup_reader(self, callback):
         """

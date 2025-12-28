@@ -202,7 +202,7 @@ class HIDTransport:
                 pass
             self._device = None
     
-    def getInputReport(self, length: int) -> Optional[bytes]:
+    def get_input_report(self, length: int) -> Optional[bytes]:
         """
         Get an input report from the device.
         
@@ -259,7 +259,7 @@ class HIDTransport:
         except Exception:
             return None
     
-    def deleteRead(self):
+    def delete_read(self):
         """Clear the last read buffer."""
         self._last_read = None
     
@@ -317,14 +317,14 @@ class HIDTransport:
         
         return device_list
     
-    def freeEnumerate(self, devs):
+    def free_enumerate(self, devs):
         """
         Free enumeration results.
         Note: In Python, this is handled by garbage collection, but kept for API compatibility.
         """
         pass
     
-    def setBrightness(self, percent: int) -> int:
+    def set_brightness(self, percent: int) -> int:
         """
         Set display brightness.
         
@@ -352,7 +352,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result == self.PACKET_SIZE else -1
     
-    def setBackgroundImg(self, buffer: bytes, size: int) -> int:
+    def set_background_img(self, buffer: bytes, size: int) -> int:
         """
         Set background image from raw data.
         
@@ -404,7 +404,7 @@ class HIDTransport:
         
         return 1
     
-    def setBackgroundImgFromFile(self, path: bytes) -> int:
+    def set_background_img_from_file(self, path: bytes) -> int:
         """
         Set background image from file path (513-byte packets).
         
@@ -461,7 +461,7 @@ class HIDTransport:
         except Exception:
             return -1
     
-    def setBackgroundImgDualDevice(self, path: bytes) -> int:
+    def set_background_img_dual_device(self, path: bytes) -> int:
         """
         Set background image from file path (for dual device).
         
@@ -518,7 +518,7 @@ class HIDTransport:
         except Exception:
             return -1
     
-    def setKeyImg(self, path: bytes, key: int) -> int:
+    def set_key_img(self, path: bytes, key: int) -> int:
         """
         Set key image from file path.
         
@@ -576,7 +576,7 @@ class HIDTransport:
         except Exception:
             return -1
     
-    def setKeyImgDualDevice(self, path: bytes, key: int) -> int:
+    def set_key_img_dual_device(self, path: bytes, key: int) -> int:
         """
         Set key image from file path (for dual device).
         
@@ -634,10 +634,10 @@ class HIDTransport:
         except Exception:
             return -1
     
-    def setKeyImgDataDualDevice(self, path: bytes, key: int) -> int:
+    def set_key_img_data_dual_device(self, path: bytes, key: int) -> int:
         """
         Set key image data (for dual device).
-        Same as setKeyImgDualDevice in this implementation.
+        Same as set_key_img_dual_device in this implementation.
         
         Args:
             path: File path to image
@@ -646,9 +646,9 @@ class HIDTransport:
         Returns:
             1 on success, -1 on failure
         """
-        return self.setKeyImgDualDevice(path, key)
+        return self.set_key_img_dual_device(path, key)
     
-    def keyClear(self, index: int) -> int:
+    def key_clear(self, index: int) -> int:
         """
         Clear a specific key.
         
@@ -674,7 +674,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
     
-    def keyAllClear(self) -> int:
+    def key_all_clear(self) -> int:
         """
         Clear all keys.
         
@@ -697,7 +697,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
     
-    def wakeScreen(self) -> int:
+    def wake_screen(self) -> int:
         """
         Wake up the screen.
         
@@ -758,7 +758,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
     
-    def switchMode(self, mode: int) -> int:
+    def switch_mode(self, mode: int) -> int:
         """
         Switch device mode.
         

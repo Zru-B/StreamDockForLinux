@@ -638,7 +638,7 @@ def execute_action(action, device=None, key_number=None):
             return
         
         # Generate text image
-        from .ImageHelpers.PILHelper import create_text_image
+        from .image_helpers.pil_helper import create_text_image
         import tempfile
         import os
         
@@ -692,7 +692,7 @@ def execute_action(action, device=None, key_number=None):
         
         # Action's clear_all overrides layout's clear_all if explicitly set to True
         if action_clear_all and not layout.clear_all:
-            device.clearAllIcon()
+            device.clear_all_icons()
         
         # Apply the layout (which will also check layout's clear_all setting)
         layout.apply()
