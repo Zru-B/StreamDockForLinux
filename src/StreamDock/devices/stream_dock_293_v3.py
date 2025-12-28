@@ -2,8 +2,8 @@ import ctypes
 import random
 import logging
 
-from .StreamDock import StreamDock
-from ..ImageHelpers.PILHelper import *
+from .stream_dock import StreamDock
+from ..image_helpers.pil_helper import *
 
 
 class StreamDock293V3(StreamDock):
@@ -13,7 +13,7 @@ class StreamDock293V3(StreamDock):
         self.logger = logging.getLogger(__name__)
 
     def set_brightness(self, percent):
-        return self.transport.setBrightness(percent)
+        return self.transport.set_brightness(percent)
     
     def set_touchscreen_image(self, path):
         temp_svg_file = None
@@ -28,7 +28,7 @@ class StreamDock293V3(StreamDock):
             
             path_bytes = temp_image_path.encode('utf-8')
             c_path = ctypes.c_char_p(path_bytes)
-            res = self.transport.setBackgroundImgDualDevice(c_path)
+            res = self.transport.set_background_img_dual_device(c_path)
             os.remove(temp_image_path)
             return res
         
@@ -56,7 +56,7 @@ class StreamDock293V3(StreamDock):
             image.save(temp_image_path)
             path_bytes = temp_image_path.encode('utf-8')
             c_path = ctypes.c_char_p(path_bytes)
-            res = self.transport.setKeyImgDualDevice(c_path, key)
+            res = self.transport.set_key_img_dual_device(c_path, key)
             os.remove(temp_image_path)
             return res
             
@@ -67,11 +67,11 @@ class StreamDock293V3(StreamDock):
             if temp_svg_file and os.path.exists(temp_svg_file):
                 os.remove(temp_svg_file)
 
-    def set_key_imageData(self, key, path):
+    def set_key_image_data(self, key, path):
         pass
     
     def get_serial_number(self,length):
-        return self.transport.getInputReport(length)
+        return self.transport.get_input_report(length)
 
     def key_image_format(self):
         return {

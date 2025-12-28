@@ -1,4 +1,4 @@
-from .Key import Key
+from .key import Key
 
 
 class Layout:
@@ -42,7 +42,7 @@ class Layout:
         """
         # Clear all icons and callbacks if requested
         if self.clear_all:
-            self.device.clearAllIcon()
+            self.device.clear_all_icons()
             self.device.clear_all_callbacks()
 
         # Clear specified keys (both icons and callbacks)
@@ -50,7 +50,7 @@ class Layout:
             self.device.cleaerIcon(key_number)
             # Get the logical key number for callback clearing
             logical_key = key_number  # Will be mapped in clear_key_callback if needed
-            from .Key import Key
+            from .key import Key
             logical_key = Key.KEY_MAPPING.get(key_number, key_number)
             self.device.clear_key_callback(logical_key)
 

@@ -2,6 +2,9 @@ import threading
 from abc import ABC, ABCMeta, abstractmethod
 import traceback
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TransportError(Exception):
     def __init__(self, message, code=None):
@@ -120,9 +123,9 @@ class StreamDock(ABC):
         self._setup_reader(self._read)
 
     def init(self):
-        self.wakeScreen()
+        self.wake_screen()
         self.set_brightness(100)
-        self.clearAllIcon()
+        self.clear_all_icons()
         self.refresh()
 
     def close(self):
@@ -131,24 +134,24 @@ class StreamDock(ABC):
     def disconnected(self):
         self.transport.disconnected()
 
-    def cleaerIcon(self, index):
+    def clear_icon(self, index):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
-            print(f"key '{origin}' out of range. you should set (1 ~ 15)")
+            logger.error(f"key '{origin}' out of range. you should set (1 ~ 15)")
             return -1
-        self.transport.keyClear(index)
+        self.transport.key_clear(index)
 
-    def clearAllIcon(self):
-        self.transport.keyAllClear()
+    def clear_all_icons(self):
+        self.transport.key_all_clear()
 
-    def wakeScreen(self):
-        self.transport.wakeScreen()
+    def wake_screen(self):
+        self.transport.wake_screen()
 
     def refresh(self):
         self.transport.refresh()
 
-    def getPath(self):
+    def get_path(self):
         return self.path
 
     def read(self):
@@ -168,30 +171,29 @@ class StreamDock(ABC):
                     if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
                         if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} pressed")
+                            logger.debug(f"Key {key_num} pressed")
                         elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} released")
+                            logger.debug(f"Key {key_num} released")
             except Exception as e:
-                print(f"Error in whileread: {e}")
-                traceback.print_exc()
+                logger.exception(f"Error in whileread: {e}")
                 break
 
-    def screen_Off(self):
-        res=self.transport.screen_Off()   
-        self.reset_Countdown(self.__seconds)
+    def screen_off(self):
+        res=self.transport.screen_off()   
+        self.reset_countdown(self.__seconds)
         return res
 
-    def screen_On(self):
-        return self.transport.screen_On()  
+    def screen_on(self):
+        return self.transport.screen_on()  
 
     def set_seconds(self,data):
         self.__seconds=data
-        self.reset_Countdown(self.__seconds)
+        self.reset_countdown(self.__seconds)
 
-    def reset_Countdown(self,data):
+    def reset_countdown(self,data):
         self.screenlicent.cancel()
-        self.screenlicent=threading.Timer(data,self.screen_Off) 
+        self.screenlicent=threading.Timer(data,self.screen_off) 
         self.screenlicent.start()
 
     @abstractmethod
@@ -218,7 +220,7 @@ class StreamDock(ABC):
         :rtype: str
         :return: Identifier for the attached device.
         """
-        return self.getPath()
+        return self.get_path()
 
     def _setup_reader(self, callback):
         """
@@ -531,6 +533,7 @@ class StreamDock(ABC):
                                         release_thread.start()
                 del arr
             except Exception:
+                logger.exception("Error in read loop")
                 self.run_read_thread = False
                 self.close()
         pass

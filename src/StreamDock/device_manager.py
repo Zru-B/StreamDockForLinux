@@ -1,6 +1,7 @@
 import pyudev
-from .ProductIDs import g_products
-from .Transport.LibUSBHIDAPI import LibUSBHIDAPI
+import logging
+from .product_ids import g_products
+from .transport.lib_usb_hid_api import LibUSBHIDAPI
 
 class DeviceManager:
     streamdocks = list()
@@ -10,6 +11,7 @@ class DeviceManager:
         return LibUSBHIDAPI()
 
     def __init__(self, transport=None):
+        self.logger = logging.getLogger(__name__)
         self.transport = self._get_transport(transport)
 
     def enumerate(self):
@@ -32,8 +34,8 @@ class DeviceManager:
                 continue
             if device.action == 'remove':
                 for willRemoveDevice in self.streamdocks:
-                    if device.device_path.find(willRemoveDevice.getPath()) != -1:
-                        print("[remove] path: " + willRemoveDevice.getPath())
+                    if device.device_path.find(willRemoveDevice.get_path()) != -1:
+                        self.logger.info("[remove] path: " + willRemoveDevice.get_path())
                         del willRemoveDevice
                         break
                     
@@ -58,7 +60,7 @@ class DeviceManager:
                         found_devices = self.transport.enumerate(vid, pid)
                         for d in found_devices:
                             if d['path'].endswith(full_path):
-                                print("[add] path:", d['path'])
+                                self.logger.info(f"[add] path: {d['path']}")
                                 newDevice = class_type(self.transport, d)
                                 self.streamdocks.append(newDevice)
                                 newDevice.open()
