@@ -1,8 +1,7 @@
-import threading
-from abc import ABC, ABCMeta, abstractmethod
-import traceback
-import time
 import logging
+import threading
+import time
+from abc import ABC, ABCMeta, abstractmethod
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +307,6 @@ class StreamDock(ABC):
         :param function callback: Callback function to fire each time a button
                                 state changes.
         """
-        pass
 
     def set_touchscreen_callback_async(self, async_callback, loop=None):
         """
@@ -536,4 +534,3 @@ class StreamDock(ABC):
                 logger.exception("Error in read loop")
                 self.run_read_thread = False
                 self.close()
-        pass

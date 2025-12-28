@@ -1,10 +1,12 @@
-import pyudev
 import logging
+
+import pyudev
+
+from .devices.mock import MockDevice
 from .product_ids import g_products
 from .transport.lib_usb_hid_api import LibUSBHIDAPI
-
 from .transport.mock_transport import MockTransport
-from .devices.mock import MockDevice
+
 
 class DeviceManager:
     streamdocks = list()

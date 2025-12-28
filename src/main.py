@@ -2,16 +2,17 @@
 """
 StreamDock main application with YAML configuration support.
 """
-from StreamDock.device_manager import DeviceManager
-from StreamDock.window_monitor import WindowMonitor
-from StreamDock.lock_monitor import LockMonitor
-from StreamDock.config_loader import ConfigLoader, ConfigValidationError
 import argparse
 import logging
+import os
+import sys
 import threading
 import time
-import sys
-import os
+
+from StreamDock.config_loader import ConfigLoader, ConfigValidationError
+from StreamDock.device_manager import DeviceManager
+from StreamDock.lock_monitor import LockMonitor
+from StreamDock.window_monitor import WindowMonitor
 
 
 def parse_args() -> argparse.Namespace:

@@ -25,9 +25,10 @@ Commands:
 """
 
 import ctypes
-from ctypes import Structure, POINTER, c_int, c_char_p, c_wchar_p, c_ushort, c_ubyte, c_size_t, c_void_p
 import os
-from typing import Optional, List, Dict, Tuple
+from ctypes import (POINTER, Structure, c_char_p, c_int, c_size_t, c_ubyte,
+                    c_ushort, c_void_p, c_wchar_p)
+from typing import Dict, List, Optional, Tuple
 
 # Load libhidapi-libusb (NOT hidraw - the StreamDock requires libusb backend)
 _hidapi = None
@@ -44,7 +45,6 @@ if _hidapi is None:
 
 class _hid_device_info(Structure):
     """C structure for hid_device_info from hidapi."""
-    pass
 
 _hid_device_info._fields_ = [
     ('path', c_char_p),
@@ -322,7 +322,6 @@ class HIDTransport:
         Free enumeration results.
         Note: In Python, this is handled by garbage collection, but kept for API compatibility.
         """
-        pass
     
     def set_brightness(self, percent: int) -> int:
         """

@@ -1,7 +1,10 @@
-import pytest
-from unittest.mock import MagicMock, call, patch
 import re
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
 from src.StreamDock.window_monitor import WindowMonitor
+
 
 @pytest.fixture
 def monitor():

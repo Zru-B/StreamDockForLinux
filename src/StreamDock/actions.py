@@ -1,10 +1,10 @@
-from enum import Enum
-import subprocess
-import time
-import os
-import shlex
 import configparser
 import logging
+import os
+import shlex
+import subprocess
+import time
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -641,9 +641,10 @@ def execute_action(action, device=None, key_number=None):
             return
         
         # Generate text image
-        from .image_helpers.pil_helper import create_text_image
-        import tempfile
         import os
+        import tempfile
+
+        from .image_helpers.pil_helper import create_text_image
         
         try:
             text_image = create_text_image(

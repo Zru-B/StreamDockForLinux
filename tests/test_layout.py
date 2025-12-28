@@ -1,7 +1,10 @@
-import pytest
 from unittest.mock import MagicMock, call
-from StreamDock.layout import Layout
+
+import pytest
+
 from StreamDock.key import Key
+from StreamDock.layout import Layout
+
 
 @pytest.fixture
 def mock_device():

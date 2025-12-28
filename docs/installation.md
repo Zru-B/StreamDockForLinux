@@ -92,6 +92,10 @@ python -m venv --system-site-packages venv
 source venv/bin/activate
 
 # 3. Install dependencies
+# For development (includes testing and linting tools):
+pip install -r requirements-dev.txt
+
+# For production only:
 pip install -r requirements.txt
 
 # 4. Run the application

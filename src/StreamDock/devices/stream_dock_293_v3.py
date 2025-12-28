@@ -1,9 +1,9 @@
 import ctypes
-import random
 import logging
+import random
 
-from .stream_dock import StreamDock
 from ..image_helpers.pil_helper import *
+from .stream_dock import StreamDock
 
 
 class StreamDock293V3(StreamDock):

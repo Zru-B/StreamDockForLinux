@@ -3,13 +3,15 @@
 Custom widgets for StreamDock Configuration Editor
 """
 
-from PyQt6.QtWidgets import (QFrame, QLabel, QVBoxLayout, QWidget, QPushButton,
-                              QListWidget, QListWidgetItem, QHBoxLayout, QSizePolicy, QMenu)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint
-from PyQt6.QtGui import QPixmap, QPalette, QColor, QFont, QPainter, QDrag, QAction
+from pathlib import Path
+
 from config_editor_models import KeyDefinition
 from modern_styles import get_colors
-from pathlib import Path
+from PyQt6.QtCore import QMimeData, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPixmap
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
+                             QListWidgetItem, QMenu, QPushButton, QVBoxLayout,
+                             QWidget)
 
 COLORS = get_colors()
 

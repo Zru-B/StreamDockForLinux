@@ -2,8 +2,9 @@
 Mock HID transport for testing and headless mode.
 """
 import logging
-from typing import Optional, List, Dict, Tuple
-from queue import Queue, Empty
+from queue import Empty, Queue
+from typing import Dict, List, Optional, Tuple
+
 
 class MockTransport:
     """

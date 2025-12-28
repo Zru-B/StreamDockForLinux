@@ -4,18 +4,21 @@ Dialogs for StreamDock Configuration Editor
 Handles key editing, action editing, and layout management
 """
 
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                              QPushButton, QRadioButton, QButtonGroup, QFileDialog,
-                              QColorDialog, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox, QListWidget,
-                              QGroupBox, QTextEdit, QScrollArea, QWidget, QMessageBox,
-                              QTabWidget, QFormLayout, QListWidgetItem, QSizePolicy)
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor, QPixmap, QImage
+from pathlib import Path
+
 from config_editor_models import KeyDefinition
 from config_editor_widgets import ActionListItem
 from modern_styles import get_colors
-from pathlib import Path
 from PIL import Image
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox,
+                             QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                             QListWidget, QListWidgetItem, QMessageBox,
+                             QPushButton, QRadioButton, QScrollArea,
+                             QSizePolicy, QSpinBox, QTabWidget, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 COLORS = get_colors()
 

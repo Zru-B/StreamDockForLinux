@@ -377,7 +377,8 @@ This workflow outlines a systematic approach to refactoring code safely, ensurin
 
 - [ ] **Check for cleanup opportunities**
   - Remove dead code
-  - Remove unused imports
+  - Remove unused imports (`autoflake`)
+  - Sort imports (`isort`)
   - Remove commented-out code
   - Remove debug logging
 
@@ -545,6 +546,13 @@ pytest tests/ -v
 
 # Quick syntax check
 python -m py_compile src/path/to/file.py
+```
+
+### Code Cleanup
+```bash
+# Remove unused imports and sort imports (requires autoflake and isort)
+# Replace 'src tests' with your target directories
+autoflake --remove-all-unused-imports --recursive --in-place src tests && isort src tests
 ```
 
 ### Performance Testing

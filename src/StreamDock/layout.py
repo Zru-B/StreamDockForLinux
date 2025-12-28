@@ -1,4 +1,3 @@
-from .key import Key
 
 
 class Layout:

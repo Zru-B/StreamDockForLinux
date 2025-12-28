@@ -1,7 +1,10 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
+
 from src.StreamDock.device_manager import DeviceManager
-from src.StreamDock.product_ids import USBVendorIDs, USBProductIDs
+from src.StreamDock.product_ids import USBProductIDs, USBVendorIDs
+
 
 @pytest.fixture
 def mock_transport():
@@ -37,7 +40,6 @@ def test_enumerate_finds_devices(mock_transport, mock_stream_dock_class):
     # So `from .product_ids import g_products` imports that list.
     # To mock the class used in `g_products`, we might need to patch `src.StreamDock.product_ids.g_products` 
     # OR patch `src.StreamDock.device_manager.g_products`.
-    pass
 
 @patch('src.StreamDock.device_manager.g_products')
 def test_enumerate_uses_g_products(mock_g_products, mock_transport):

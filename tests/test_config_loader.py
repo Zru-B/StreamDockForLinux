@@ -1,6 +1,8 @@
-import pytest
 import os
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from src.StreamDock.config_loader import ConfigLoader, ConfigValidationError
 from src.StreamDock.devices.stream_dock import StreamDock
 from src.StreamDock.window_monitor import WindowMonitor

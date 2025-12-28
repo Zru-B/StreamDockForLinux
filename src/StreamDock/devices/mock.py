@@ -1,7 +1,7 @@
 import logging
-import time
+
 from .stream_dock import StreamDock
-from ..product_ids import USBVendorIDs, USBProductIDs
+
 
 class MockDevice(StreamDock):
     """

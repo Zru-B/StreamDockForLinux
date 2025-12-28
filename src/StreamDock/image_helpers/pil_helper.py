@@ -1,7 +1,7 @@
-import io
+import logging
 import os
 import tempfile
-import logging
+
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)

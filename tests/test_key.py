@@ -1,6 +1,9 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, call, patch
+
 from StreamDock.key import Key
+
 
 @pytest.fixture
 def mock_device():
