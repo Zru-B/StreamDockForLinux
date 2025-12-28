@@ -1,6 +1,6 @@
 import pyudev
-from .ProductIDs import g_products
-from .Transport.LibUSBHIDAPI import LibUSBHIDAPI
+from .product_ids import g_products
+from .transport.lib_usb_hid_api import LibUSBHIDAPI
 
 class DeviceManager:
     streamdocks = list()
@@ -32,8 +32,8 @@ class DeviceManager:
                 continue
             if device.action == 'remove':
                 for willRemoveDevice in self.streamdocks:
-                    if device.device_path.find(willRemoveDevice.getPath()) != -1:
-                        print("[remove] path: " + willRemoveDevice.getPath())
+                    if device.device_path.find(willRemoveDevice.get_path()) != -1:
+                        print("[remove] path: " + willRemoveDevice.get_path())
                         del willRemoveDevice
                         break
                     
