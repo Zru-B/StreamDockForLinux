@@ -9,7 +9,7 @@ class Layout:
     This makes it easy to switch between different key configurations.
     """
 
-    def __init__(self, device, keys, clear_keys=None, clear_all=False):
+    def __init__(self, device, keys, clear_keys=None, clear_all=False, name=None):
         """
         Initialize a Layout with a device and a collection of Keys.
 
@@ -17,8 +17,10 @@ class Layout:
         :param keys: List of Key instances (1-15 keys)
         :param clear_keys: Optional list of key numbers to clear (set to empty)
         :param clear_all: If True, clear all icons before applying this layout (default: False)
+        :param name: Optional name for the layout (for debugging/logging)
         """
         self.device = device
+        self.name = name
 
         # Validate that we have between 1 and 15 keys (or clear operations)
         if not isinstance(keys, list):

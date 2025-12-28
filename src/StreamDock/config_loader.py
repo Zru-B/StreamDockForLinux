@@ -59,7 +59,17 @@ class ConfigLoader:
         self.lock_monitor_enabled = True  # Default enabled
         self.double_press_interval = 0.3  # Default 300ms
         self._temp_text_images = []  # Track temporary text image files
+        self.active_layout = None
+        self.layout_change_callback = None
         self.logger = logging.getLogger(__name__)
+    
+    def set_layout_change_callback(self, callback):
+        """
+        Set a callback to be called when the active layout changes.
+        
+        :param callback: Function taking (layout_object) as argument
+        """
+        self.layout_change_callback = callback
     
     def __del__(self):
         """Cleanup temporary text image files."""
@@ -395,7 +405,32 @@ class ConfigLoader:
                 pass
         
         return actions
-    
+
+    def switch_to_layout(self, layout, window_info=None):
+        """
+        Switch to a new layout if it's not already active.
+        
+        :param layout: Layout object to switch to
+        :param window_info: Optional dictionary with window information for logging
+        """
+        window_desc = f"{window_info.get('class')}" if window_info and window_info.get('class') else "manual/unknown"
+        if window_desc.startswith('org.kde.'):
+            window_desc = window_desc.replace('org.kde.', '')
+        
+        if self.active_layout == layout:
+            self.logger.debug(f"Active window: {window_desc} | Layout '{layout.name}' is already active, skipping reload")
+            return
+        
+        self.logger.info(f"Active window: {window_desc} | Switching to layout: '{layout.name}'")
+        self.active_layout = layout
+        layout.apply()
+        
+        if self.layout_change_callback:
+            try:
+                self.layout_change_callback(layout)
+            except Exception:
+                self.logger.exception("Error in layout change callback")
+
     def apply(self, device, window_monitor=None):
         """
         Apply the configuration to the device.
@@ -434,6 +469,10 @@ class ConfigLoader:
         if window_monitor and 'windows_rules' in self.config:
             self._apply_window_rules(window_monitor)
         
+        # Initialize active layout state
+        if self.default_layout:
+            self.active_layout = self.default_layout
+
         return self.default_layout, self.layouts
     
     def _create_keys(self, device):
@@ -540,7 +579,7 @@ class ConfigLoader:
                 layout_keys.append(key_instance)
             
             # Create Layout with clear_keys list and clear_all option
-            layout = Layout(device, layout_keys, clear_keys=clear_keys, clear_all=clear_all)
+            layout = Layout(device, layout_keys, clear_keys=clear_keys, clear_all=clear_all, name=layout_name)
             self.layouts[layout_name] = layout
             
             if is_default:
@@ -586,12 +625,12 @@ class ConfigLoader:
             # Add rule to window monitor
             window_monitor.add_window_rule(
                 pattern,
-                lambda win_info, layout=layout: layout.apply(),
+                lambda win_info, layout=layout: self.switch_to_layout(layout, window_info=win_info),
                 match_field=match_field
             )
         
         # Set default callback
         if self.default_layout:
             window_monitor.set_default_callback(
-                lambda win_info: self.default_layout.apply()
+                lambda win_info: self.switch_to_layout(self.default_layout, window_info=win_info)
             )
