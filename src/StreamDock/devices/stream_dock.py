@@ -2,6 +2,9 @@ import threading
 from abc import ABC, ABCMeta, abstractmethod
 import traceback
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TransportError(Exception):
     def __init__(self, message, code=None):
@@ -135,7 +138,7 @@ class StreamDock(ABC):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
-            print(f"key '{origin}' out of range. you should set (1 ~ 15)")
+            logger.error(f"key '{origin}' out of range. you should set (1 ~ 15)")
             return -1
         self.transport.key_clear(index)
 
@@ -168,13 +171,12 @@ class StreamDock(ABC):
                     if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
                         if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} pressed")
+                            logger.debug(f"Key {key_num} pressed")
                         elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            print(f"Key {key_num} released")
+                            logger.debug(f"Key {key_num} released")
             except Exception as e:
-                print(f"Error in whileread: {e}")
-                traceback.print_exc()
+                logger.exception(f"Error in whileread: {e}")
                 break
 
     def screen_off(self):
@@ -531,6 +533,7 @@ class StreamDock(ABC):
                                         release_thread.start()
                 del arr
             except Exception:
+                logger.exception("Error in read loop")
                 self.run_read_thread = False
                 self.close()
         pass
