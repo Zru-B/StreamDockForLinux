@@ -411,7 +411,7 @@ class StreamDock(ABC):
         while self.run_read_thread:
             try:
                 arr=self.read()
-                if len(arr) >= 10:
+                if arr is not None and len(arr) >= 10:
                     if arr[9]!=0xFF:
                         k = KEY_MAPPING[arr[9]]
                         new = arr[10]

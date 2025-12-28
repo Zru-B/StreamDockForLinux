@@ -3,19 +3,30 @@ import logging
 from .product_ids import g_products
 from .transport.lib_usb_hid_api import LibUSBHIDAPI
 
+from .transport.mock_transport import MockTransport
+from .devices.mock import MockDevice
+
 class DeviceManager:
     streamdocks = list()
 
     @staticmethod
     def _get_transport(transport):
+        if transport == "mock":
+            return MockTransport()
         return LibUSBHIDAPI()
 
     def __init__(self, transport=None):
         self.streamdocks = list()
         self.logger = logging.getLogger(__name__)
         self.transport = self._get_transport(transport)
+        self.transport_mode = transport
 
     def enumerate(self):
+        if self.transport_mode == "mock":
+            self.streamdocks = [MockDevice(self.transport, d) for d in self.transport.enumerate(0, 0)]
+            self.streamdocks[0].open() # Auto open mock device
+            return self.streamdocks
+            
         products = g_products
         for vid, pid, class_type in products:
             found_devices = self.transport.enumerate(vid = vid, pid = pid)
@@ -23,6 +34,13 @@ class DeviceManager:
         return self.streamdocks
 
     def listen(self):
+        if self.transport_mode == "mock":
+            # In mock mode, we don't monitor udev. 
+            # We just loop forever or wait for stop signal (but listen blocks, so we sleep)
+            import time
+            while True:
+                time.sleep(1)
+                
         products = g_products
         context = pyudev.Context()
         monitor = pyudev.Monitor.from_netlink(context)

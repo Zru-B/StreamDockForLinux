@@ -6,6 +6,7 @@ from StreamDock.device_manager import DeviceManager
 from StreamDock.window_monitor import WindowMonitor
 from StreamDock.lock_monitor import LockMonitor
 from StreamDock.config_loader import ConfigLoader, ConfigValidationError
+import argparse
 import logging
 import threading
 import time
@@ -13,18 +14,40 @@ import sys
 import os
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="StreamDock Linux Controller")
+    parser.add_argument('config', nargs='?', help="Path to configuration file")
+    parser.add_argument('--mock', '--headless', action='store_true', help="Run in mock/headless mode without physical device")
+    return parser.parse_args()
+
+
 def main():
     """Main application entry point."""
     logging.basicConfig(level=logging.INFO)
-    # Parse command-line arguments for config file
-    config_file = 'config.yml'
     
-    if len(sys.argv) > 1:
-        config_file = sys.argv[1]
+    # Initialize argument parser
+    args = parse_args()
+    
+    # Determine config file path
+    if args.config:
+        config_file = args.config
     else:
         # Use config.yml in the same directory as the script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_file = os.path.join(script_dir, 'config.yml')
+        # script_dir = os.path.dirname(os.path.abspath(__file__))
+        # config_file = os.path.join(script_dir, 'config.yml')
+        # Find 'config.yml' in the parent directory or the current directory
+        config_file = 'config.yml'
+        if not os.path.exists(config_file):
+            config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yml')
+        if not os.path.exists(config_file):
+            logging.error("config.yml not found")
+            sys.exit(1)
+    
+    # Determine transport mode
+    transport_type = 'mock' if args.mock else None
+    
+    if transport_type == 'mock':
+        logging.info("Starting in MOCK/HEADLESS mode")
     
     # Load configuration
     try:
@@ -41,7 +64,7 @@ def main():
         sys.exit(1)
     
     # Initialize device manager
-    deviceManager = DeviceManager()
+    deviceManager = DeviceManager(transport=transport_type)
     streamdocks = deviceManager.enumerate()
     
     # Start listening thread
@@ -54,7 +77,8 @@ def main():
         sys.exit(1)
     
     for device in streamdocks:
-        device.open()
+        if transport_type != 'mock':
+            device.open()
         device.init()
 
         # device.set_touchscreen_image("/home/zrubi/Development_Private/StreamDock/img/zrubi_logo.jpg")
