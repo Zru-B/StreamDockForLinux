@@ -11,6 +11,7 @@ class DeviceManager:
         return LibUSBHIDAPI()
 
     def __init__(self, transport=None):
+        self.streamdocks = list()
         self.logger = logging.getLogger(__name__)
         self.transport = self._get_transport(transport)
 
@@ -36,8 +37,9 @@ class DeviceManager:
                 for willRemoveDevice in self.streamdocks:
                     if device.device_path.find(willRemoveDevice.get_path()) != -1:
                         self.logger.info("[remove] path: " + willRemoveDevice.get_path())
-                        del willRemoveDevice
+                        self.streamdocks.remove(willRemoveDevice)
                         break
+                continue
                     
             vendor_id_str = device.get('ID_VENDOR_ID')
             product_id_str = device.get('ID_MODEL_ID')
