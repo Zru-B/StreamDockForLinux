@@ -1,0 +1,11 @@
+streamdock:
+  keys:
+    Key1:
+      # Missing text or icon
+      on_press_actions:
+        - "KEY_PRESS": "a"
+  layouts:
+    Layout1:
+      Default: true
+      keys:
+        - 1: "Key1"

@@ -1,0 +1,11 @@
+streamdock:
+  settings:
+    brightness: 101 # Invalid
+  keys:
+    Key1:
+      text: "K1"
+  layouts:
+    Layout1:
+      Default: true
+      keys:
+        - 1: "Key1"
