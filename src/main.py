@@ -84,6 +84,9 @@ def main():
             
             # Start lock monitoring
             lock_monitor.start()
+
+            # Keep lock monitor updated with current layout
+            config_loader.set_layout_change_callback(lock_monitor.set_current_layout)
             
         except ConfigValidationError as e:
             logging.exception(f"Error applying configuration: {e}")
