@@ -54,8 +54,6 @@ class StreamDock(ABC):
     DECK_VISUAL = False
     DECK_TOUCH = False
     
-    transport=None
-    screenlicent=None
     __metaclass__ = ABCMeta    
     __seconds = 300
     def __init__(self,transport1,devInfo):
@@ -79,6 +77,7 @@ class StreamDock(ABC):
         
         # Double-press interval (can be configured)
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
+        self.screenlicent = None
         
     def __del__(self):
         """
@@ -128,6 +127,7 @@ class StreamDock(ABC):
         self.refresh()
 
     def close(self):
+        self._setup_reader(None)
         self.disconnected()
 
     def disconnected(self):
@@ -191,8 +191,10 @@ class StreamDock(ABC):
         self.reset_countdown(self.__seconds)
 
     def reset_countdown(self,data):
-        self.screenlicent.cancel()
+        if self.screenlicent is not None:
+            self.screenlicent.cancel()
         self.screenlicent=threading.Timer(data,self.screen_off) 
+        self.screenlicent.daemon = True
         self.screenlicent.start()
 
     @abstractmethod
@@ -479,6 +481,7 @@ class StreamDock(ABC):
                                         
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_press_callback)
                                         self.pending_single_press[k] = timer
+                                        timer.daemon = True
                                         timer.start()
                                 else:
                                     # No double-press callback, use immediate on_press in separate thread
@@ -519,6 +522,7 @@ class StreamDock(ABC):
                                         
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_release_callback)
                                         self.pending_single_release[k] = timer
+                                        timer.daemon = True
                                         timer.start()
                                 else:
                                     # No double-press callback, use immediate on_release in separate thread
