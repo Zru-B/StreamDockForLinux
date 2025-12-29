@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.StreamDock.window_monitor import WindowMonitor
+from StreamDock.window_monitor import WindowMonitor
 
 
 @pytest.fixture

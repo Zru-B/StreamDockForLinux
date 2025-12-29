@@ -45,3 +45,12 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 StreamDock = ["*.yml", "*.yaml"]
+
+[tool.pytest.ini_options]
+markers = [
+    "regression: marks tests as regression tests",
+    "issue: marks tests linked to specific issues",
+    "stability: marks tests for stability and concurrency"
+]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.StreamDock.device_manager import DeviceManager
-from src.StreamDock.product_ids import USBProductIDs, USBVendorIDs
+from StreamDock.device_manager import DeviceManager
+from StreamDock.product_ids import USBProductIDs, USBVendorIDs
 
 
 @pytest.fixture

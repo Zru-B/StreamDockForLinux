@@ -3,6 +3,7 @@ import threading
 import time
 import random
 import logging
+import pytest
 from unittest.mock import MagicMock, patch
 from StreamDock.devices.stream_dock import StreamDock
 
@@ -24,6 +25,8 @@ class ConcreteStreamDock(StreamDock):
     def set_touchscreen_image(self, image):
         pass
 
+@pytest.mark.regression
+@pytest.mark.stability
 class TestConcurrencyAndStability(unittest.TestCase):
     def setUp(self):
         self.mock_transport = MagicMock()

@@ -682,8 +682,52 @@ def execute_action(action, device=None, key_number=None):
         if device is None:
             logger.error("Error: CHANGE_KEY requires device")
             return
-        # The parameter is a Key object that will configure itself
-        parameter._configure()
+            
+        # Avoid circular import
+        from .key import Key
+        
+        target_key = None
+        
+        # Case 1: Parameter is already a Key object
+        if isinstance(parameter, Key):
+            target_key = parameter
+            
+        # Case 2: Parameter is a string (Image Path)
+        elif isinstance(parameter, str):
+            if key_number is None:
+                logger.error("Error: CHANGE_KEY with string/image path requires key_number context")
+                return
+            target_key = Key(device, key_number, image_path=parameter)
+            
+        # Case 3: Parameter is a dict (Full configuration)
+        elif isinstance(parameter, dict):
+            if key_number is None:
+                logger.error("Error: CHANGE_KEY with dict config requires key_number context")
+                return
+            
+            image_path = parameter.get('image', '')
+            on_press = parameter.get('actions') # classic config uses 'actions' for press
+            if not on_press:
+                on_press = parameter.get('on_press')
+            
+            on_release = parameter.get('on_release')
+            on_double_press = parameter.get('on_double_press')
+            
+            target_key = Key(
+                device, 
+                key_number, 
+                image_path=image_path,
+                on_press=on_press, 
+                on_release=on_release, 
+                on_double_press=on_double_press
+            )
+            
+        else:
+            logger.error(f"Error: CHANGE_KEY parameter has invalid type: {type(parameter)}")
+            return
+
+        if target_key:
+            target_key._configure()
     
     elif action_type == ActionType.CHANGE_LAYOUT:
         if device is None:

@@ -3,9 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.StreamDock.config_loader import ConfigLoader, ConfigValidationError
-from src.StreamDock.devices.stream_dock import StreamDock
-from src.StreamDock.window_monitor import WindowMonitor
+from StreamDock.config_loader import ConfigLoader, ConfigValidationError
+from StreamDock.devices.stream_dock import StreamDock
+from StreamDock.window_monitor import WindowMonitor
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), 'configs')
 
