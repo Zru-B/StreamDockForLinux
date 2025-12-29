@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import queue
 from abc import ABC, ABCMeta, abstractmethod
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,9 @@ KEY_MAPPING = {
 # Default double-press detection interval (in seconds)
 # This can be overridden via configuration
 DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
+
+# Default number of worker threads for callback processing
+DEFAULT_WORKER_THREADS = 4
 
 class StreamDock(ABC):
     """
@@ -67,6 +71,10 @@ class StreamDock(ABC):
 
         self.key_callback = None
         self.per_key_callbacks = {}  # Dictionary to store per-key callbacks
+        
+        # event queue and worker threads
+        self._event_queue = queue.Queue()
+        self._workers = []
         
         # Double-press detection tracking
         self.last_release_time = {}  # Track last release time for each key
@@ -117,6 +125,7 @@ class StreamDock(ABC):
             return k
 
     def open(self):
+        self._start_workers()
         self.transport.open(bytes(self.path,'utf-8'))
         self._setup_reader(self._read)
 
@@ -128,6 +137,7 @@ class StreamDock(ABC):
 
     def close(self):
         self._setup_reader(None)
+        self._stop_workers()
         self.disconnected()
 
     def disconnected(self):
@@ -247,6 +257,54 @@ class StreamDock(ABC):
             self.read_thread = threading.Thread(target=callback)
             self.read_thread.daemon = True
             self.read_thread.start()
+
+    def _worker_loop(self):
+        """
+        Worker thread loop that consumes tasks from the event queue and executes them.
+        """
+        while True:
+            try:
+                task = self._event_queue.get()
+                if task is None:
+                    # Sentinel to shut down the worker
+                    self._event_queue.task_done()
+                    break
+                
+                func, args = task
+                try:
+                    func(*args)
+                except Exception:
+                    logger.exception(f"Error executing callback {func.__name__}")
+                finally:
+                    self._event_queue.task_done()
+            except Exception:
+                logger.exception("Unexpected error in worker loop")
+
+    def _start_workers(self):
+        """
+        Starts the worker threads for processing callbacks.
+        """
+        if not self._workers:
+            for _ in range(DEFAULT_WORKER_THREADS):
+                t = threading.Thread(target=self._worker_loop)
+                t.daemon = True
+                t.start()
+                self._workers.append(t)
+
+    def _stop_workers(self):
+        """
+        Stops the worker threads.
+        """
+        # Send shutdown sentinels
+        for _ in self._workers:
+            self._event_queue.put(None)
+        
+        # We don't necessarily join() here because they are daemon threads 
+        # and we might want fast shutdown. But for correctness we could.
+        # Given StreamDock usage, just clearing the list is enough as they are Daemon.
+        # But clearing the list ensures we can restart them if opened again.
+        self._workers.clear()
+
 
     def set_key_callback(self, callback):
         """
@@ -420,14 +478,9 @@ class StreamDock(ABC):
                         if new == 0x01:
                             new = 1
                         
-                        # Call global callback if set (in separate thread to avoid blocking)
+                        # Call global callback if set (in worker pool)
                         if self.key_callback is not None:
-                            def execute_global_callback():
-                                self.key_callback(self, k, new)
-                            
-                            global_callback_thread = threading.Thread(target=execute_global_callback)
-                            global_callback_thread.daemon = True
-                            global_callback_thread.start()
+                            self._event_queue.put((self.key_callback, (self, k, new)))
                         
                         # Handle per-key callbacks with double-press detection
                         if k in self.per_key_callbacks:
@@ -458,13 +511,9 @@ class StreamDock(ABC):
                                                 self.pending_single_release[k].cancel()
                                                 self.pending_single_release[k] = None
                                             
-                                            # Call double-press callback in a separate thread to avoid blocking reader
-                                            def execute_double_press():
-                                                callbacks['on_double_press'](self, k)
-                                            
-                                            double_press_thread = threading.Thread(target=execute_double_press)
-                                            double_press_thread.daemon = True
-                                            double_press_thread.start()
+                                            # Call double-press callback in worker pool
+                                            if callbacks.get('on_double_press'):
+                                                self._event_queue.put((callbacks['on_double_press'], (self, k)))
                                             
                                             # Clear the last release time to prevent triple-press from being detected as another double-press
                                             del self.last_release_time[k]
@@ -476,7 +525,7 @@ class StreamDock(ABC):
                                         def delayed_press_callback():
                                             # Fire the callback only if it wasn't cancelled
                                             if k in self.pending_single_press and self.pending_single_press[k] is not None:
-                                                callbacks['on_press'](self, k)
+                                                self._event_queue.put((callbacks['on_press'], (self, k)))
                                                 self.pending_single_press[k] = None
                                         
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_press_callback)
@@ -484,14 +533,9 @@ class StreamDock(ABC):
                                         timer.daemon = True
                                         timer.start()
                                 else:
-                                    # No double-press callback, use immediate on_press in separate thread
+                                    # No double-press callback, use immediate on_press in worker pool
                                     if callbacks.get('on_press'):
-                                        def execute_press():
-                                            callbacks['on_press'](self, k)
-                                        
-                                        press_thread = threading.Thread(target=execute_press)
-                                        press_thread.daemon = True
-                                        press_thread.start()
+                                        self._event_queue.put((callbacks['on_press'], (self, k)))
                             
                             # Handle key release (new == 0)
                             elif new == 0:
@@ -517,7 +561,7 @@ class StreamDock(ABC):
                                         def delayed_release_callback():
                                             # Fire the callback only if it wasn't cancelled
                                             if k in self.pending_single_release and self.pending_single_release[k] is not None:
-                                                callbacks['on_release'](self, k)
+                                                self._event_queue.put((callbacks['on_release'], (self, k)))
                                                 self.pending_single_release[k] = None
                                         
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_release_callback)
@@ -525,14 +569,9 @@ class StreamDock(ABC):
                                         timer.daemon = True
                                         timer.start()
                                 else:
-                                    # No double-press callback, use immediate on_release in separate thread
+                                    # No double-press callback, use immediate on_release in worker pool
                                     if callbacks.get('on_release'):
-                                        def execute_release():
-                                            callbacks['on_release'](self, k)
-                                        
-                                        release_thread = threading.Thread(target=execute_release)
-                                        release_thread.daemon = True
-                                        release_thread.start()
+                                        self._event_queue.put((callbacks['on_release'], (self, k)))
                 del arr
             except Exception:
                 logger.exception("Error in read loop")
