@@ -57,16 +57,13 @@ def test_file_not_found():
         loader.load()
 
 @patch('src.StreamDock.image_helpers.pil_helper.create_text_image')
-@patch('os.close')
-@patch('tempfile.mkstemp')
-def test_apply_valid_config(mock_mkstemp, mock_close, mock_create_text_image):
+def test_apply_valid_config(mock_create_text_image):
+    from PIL import Image
     # Setup mocks
-    mock_mkstemp.return_value = (1, "/tmp/mock_image.png")
-    mock_image = MagicMock()
-    mock_create_text_image.return_value = mock_image
+    mock_create_text_image.return_value = Image.new('RGB', (112, 112))
     
     # Mock device
-    mock_device = MagicMock(spec=StreamDock)
+    mock_device = MagicMock()
     
     loader = ConfigLoader(get_config_path('valid_config.yml'))
     loader.load()
@@ -84,16 +81,14 @@ def test_apply_valid_config(mock_mkstemp, mock_close, mock_create_text_image):
     mock_device.set_brightness.assert_called_with(50)
 
 @patch('src.StreamDock.image_helpers.pil_helper.create_text_image')
-@patch('os.close')
-@patch('tempfile.mkstemp')
-def test_apply_with_window_rules(mock_mkstemp, mock_close, mock_create_text_image):
+def test_apply_with_window_rules(mock_create_text_image):
+    from PIL import Image
     # Setup mocks for image creation
-    mock_mkstemp.return_value = (1, "/tmp/mock_image.png")
-    mock_create_text_image.return_value = MagicMock()
+    mock_create_text_image.return_value = Image.new('RGB', (112, 112))
     
     # Mock dependencies
-    mock_device = MagicMock(spec=StreamDock)
-    mock_window_monitor = MagicMock(spec=WindowMonitor)
+    mock_device = MagicMock()
+    mock_window_monitor = MagicMock()
     
     # Create a config with window rules on the fly to avoid creating another file if possible, 
     # but since I prefer real files for now, I'll use a mocked loader or create a temporary file.
