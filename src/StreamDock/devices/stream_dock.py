@@ -163,8 +163,12 @@ class StreamDock(ABC):
     def get_path(self):
         return self.path
 
-    def read(self):
-        data = self.transport.read_(13)
+    def read(self, timeout_ms=None):
+        if timeout_ms is not None:
+            data = self.transport.read_(13, timeout_ms=timeout_ms)
+        else:
+            data = self.transport.read_(13)
+        
         # read_() returns a tuple: (result_bytes, ack, ok, key, status)
         # Extract only the bytes array
         if data and isinstance(data, tuple):
@@ -175,7 +179,7 @@ class StreamDock(ABC):
         """Read loop for manual key event monitoring (deprecated - use callbacks)."""
         while 1:
             try:
-                data = self.read()
+                data = self.read(timeout_ms=1000)
                 if data != None and len(data) >= 11:
                     if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
                         if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
@@ -468,7 +472,7 @@ class StreamDock(ABC):
     def _read(self):
         while self.run_read_thread:
             try:
-                arr=self.read()
+                arr=self.read(timeout_ms=1000)
                 if arr is not None and len(arr) >= 10:
                     if arr[9]!=0xFF:
                         k = KEY_MAPPING[arr[9]]

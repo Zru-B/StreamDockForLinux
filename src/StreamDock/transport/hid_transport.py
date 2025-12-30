@@ -91,6 +91,9 @@ _hidapi.hid_set_nonblocking.argtypes = [c_void_p, c_int]
 _hidapi.hid_get_input_report.restype = c_int
 _hidapi.hid_get_input_report.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t]
 
+_hidapi.hid_read_timeout.restype = c_int
+_hidapi.hid_read_timeout.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t, c_int]
+
 # Initialize hidapi
 _hidapi.hid_init()
 
@@ -226,12 +229,13 @@ class HIDTransport:
         except Exception:
             return None
     
-    def read_(self, length: int) -> Optional[Tuple[bytes, str, str, int, int]]:
+    def read_(self, length: int, timeout_ms: int = -1) -> Optional[Tuple[bytes, str, str, int, int]]:
         """
         Read data from the HID device.
         
         Args:
             length: Number of bytes to read
+            timeout_ms: Timeout in milliseconds (-1 for infinite)
         
         Returns:
             Tuple of (raw_bytes, ack_response, ok_response, key, status) or None
@@ -242,7 +246,11 @@ class HIDTransport:
         
         try:
             buffer = (c_ubyte * MAX_LENGTH)()
-            result = _hidapi.hid_read(self._device, buffer, MAX_LENGTH)
+            
+            if timeout_ms == -1:
+                result = _hidapi.hid_read(self._device, buffer, MAX_LENGTH)
+            else:
+                result = _hidapi.hid_read_timeout(self._device, buffer, MAX_LENGTH, timeout_ms)
             
             if result > 0:
                 result_bytes = bytes(buffer[:result])
