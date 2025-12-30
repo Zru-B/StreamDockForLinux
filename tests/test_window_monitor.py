@@ -202,3 +202,79 @@ class TestWindowMonitor:
             assert mock_check.call_count == 2
             mock_check.assert_has_calls([call(info_a), call(info_b)])
 
+
+    @patch('subprocess.run')
+    def test_xprop_fallback_logic(self, mock_run, monitor):
+        """
+        Verify that if kdotool/qdbus fail, we fall back to xdotool+xprop 
+        and correctly parse WM_CLASS.
+        """
+        # Setup the sequence of mock responses for subprocess.run
+        
+        # 1. kdotool getactivewindow -> Fails (simulating crash or missing)
+        kdotool_fail = MagicMock()
+        kdotool_fail.returncode = 1
+        
+        # 2. kwin scripting -> Fails
+        # 3. plasma taskmanager -> Fails
+        
+        # 4. kwin basic (Method 4)
+        # 4a. qdbus6 -> Fails (rc=1 or empty)
+        qdbus_fail = MagicMock()
+        qdbus_fail.returncode = 1
+        
+        # 4b. busctl -> Fails or empty
+        busctl_fail = MagicMock()
+        busctl_fail.returncode = 0
+        busctl_fail.stdout = ""
+        
+        # 4c. xdotool getactivewindow -> Succeeds (returns ID)
+        xdotool_id_success = MagicMock()
+        xdotool_id_success.returncode = 0
+        xdotool_id_success.stdout = "12345\n"
+        
+        # 4d. xdotool getwindowname -> Succeeds
+        xdotool_name_success = MagicMock()
+        xdotool_name_success.returncode = 0
+        xdotool_name_success.stdout = "My Window Title\n"
+        
+        # 4e. xprop -id 12345 WM_CLASS -> Succeeds
+        xprop_success = MagicMock()
+        xprop_success.returncode = 0
+        xprop_success.stdout = 'WM_CLASS(STRING) = "my_app_instance", "MyAppClass"\n'
+        
+        # Configure side_effect to return these mocks in order
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            if 'kdotool' in cmd:
+                return kdotool_fail
+            if 'qdbus' in cmd[0] or (len(cmd) > 1 and 'qdbus' in cmd[1]): 
+                return qdbus_fail 
+            if 'busctl' in cmd[0] or (len(cmd) > 1 and 'busctl' in cmd[1]):
+                return busctl_fail
+            if 'xdotool' in cmd and 'getactivewindow' in cmd[0]:
+                return xdotool_id_success
+            if len(cmd) > 1 and 'xdotool' in cmd[2]: 
+                 if 'getactivewindow' in cmd[2]: return xdotool_id_success
+
+            # Direct list calls
+            if cmd[0] == 'xdotool' and cmd[1] == 'getwindowname':
+                return xdotool_name_success
+                
+            if cmd[0] == 'xprop' and cmd[1] == '-id' and cmd[3] == 'WM_CLASS':
+                return xprop_success
+                
+            # Default fail for others
+            m = MagicMock()
+            m.returncode = 1
+            return m
+
+        mock_run.side_effect = side_effect
+        
+        # Execute
+        info = monitor.get_active_window_info()
+        
+        # Verify
+        assert info is not None, "Should return window info"
+        assert info['class'] == "MyAppClass", "Should parse class from xprop output"
+        assert info['method'] == "xdotool_xprop", "Should use correct fallback method"

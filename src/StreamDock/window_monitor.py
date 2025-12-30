@@ -226,23 +226,41 @@ class WindowMonitor:
                 window_title = result_title.stdout.strip() if result_title.returncode == 0 else ''
                 
                 # Get window class (WM_CLASS)
-                result_class = subprocess.run(
-                    ['xdotool', 'getwindowclassname', window_id],
-                    capture_output=True,
-                    text=True,
-                    timeout=1
-                )
-                
-                if result_class.returncode == 0 and result_class.stdout.strip():
-                    window_class = result_class.stdout.strip()
-                else:
-                    window_class = self._extract_app_from_title(window_title)
+                # Get window class (WM_CLASS) using xprop (xdotool doesn't support getwindowclassname)
+                try:
+                    result_class = subprocess.run(
+                        ['xprop', '-id', window_id, 'WM_CLASS'],
+                        capture_output=True,
+                        text=True,
+                        timeout=1
+                    )
+                    
+                    if result_class.returncode == 0 and result_class.stdout.strip():
+                        # Output format: WM_CLASS(STRING) = "appname", "AppName"
+                        # We want the second part (Class) usually, or the first (Instance)
+                        output = result_class.stdout.strip()
+                        if '=' in output:
+                            parts = output.split('=')[1].strip().split(',')
+                            if len(parts) >= 2:
+                                # Get the capitalized class name (second part), remove quotes
+                                window_class = parts[1].strip().strip('"')
+                            elif len(parts) == 1:
+                                window_class = parts[0].strip().strip('"')
+                            else:
+                                window_class = self._extract_app_from_title(window_title)
+                        else:
+                            window_class = self._extract_app_from_title(window_title)
+                    else:
+                        window_class = self._extract_app_from_title(window_title)
+                        
+                except Exception:
+                   window_class = self._extract_app_from_title(window_title)
                 
                 return {
                     'title': window_title,
                     'class': window_class,
                     'raw': window_title,
-                    'method': 'xdotool_fallback'
+                    'method': 'xdotool_xprop'
                 }
             
             return None
