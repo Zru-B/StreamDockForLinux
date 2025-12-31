@@ -414,7 +414,7 @@ class ConfigLoader:
         :param layout: Layout object to switch to
         :param window_info: Optional dictionary with window information for logging
         """
-        window_desc = f"{window_info.get('class')}" if window_info and window_info.get('class') else "manual/unknown"
+        window_desc = f"{window_info.class_name}" if window_info and window_info.class_name else "manual/unknown"
         if window_desc.startswith('org.kde.'):
             window_desc = window_desc.replace('org.kde.', '')
         

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from StreamDock.window_monitor import WindowMonitor
+from StreamDock.Models import WindowInfo
 
 
 @pytest.fixture
@@ -16,7 +17,7 @@ class TestWindowMonitor:
         assert monitor.poll_interval == 0.1
         assert monitor.window_rules == []
         assert monitor.running == False
-        assert monitor.current_window is None
+        assert monitor.current_window_id is None
 
     def test_add_window_rule(self, monitor):
         """Test adding window rules."""
@@ -50,23 +51,26 @@ class TestWindowMonitor:
         assert monitor.default_callback == callback
 
     def test_extract_app_from_title(self, monitor):
-        """Test app name extraction logic."""
+        """Test app name extraction logic - now in WindowUtils."""
+        from StreamDock.WindowUtils import WindowUtils
         # Common separators
-        assert monitor._extract_app_from_title("Doc - Word") == "Word"
-        assert monitor._extract_app_from_title("Song — Spotify") == "Spotify"
-        assert monitor._extract_app_from_title("Error: Log") == "Error"
+        assert WindowUtils.extract_app_from_title("Doc - Word") == "Word"
+        assert WindowUtils.extract_app_from_title("Song — Spotify") == "Spotify"
+        assert WindowUtils.extract_app_from_title("Error: Log") == "Error"
         
         # Known apps fallback
-        assert monitor._extract_app_from_title("Inbox (1) - Gmail - Mozilla Firefox") == "Mozilla Firefox"
-        assert monitor._extract_app_from_title("main.py - VSCode") == "VSCode"
+        assert WindowUtils.extract_app_from_title("Inbox (1) - Gmail - Mozilla Firefox") == "Firefox"
+        assert WindowUtils.extract_app_from_title("main.py - VSCode") == "VSCode"
         
         # Simple fallback
-        assert monitor._extract_app_from_title("Terminal") == "Terminal"
-        assert monitor._extract_app_from_title("") == "unknown"
+        assert WindowUtils.extract_app_from_title("Terminal") == "Terminal"
+        assert WindowUtils.extract_app_from_title("") == "unknown"
 
+    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
-    def test_try_kdotool_success(self, mock_run, monitor):
-        """Test kdotool method success path."""
+    def test_kdotool_detection_via_utils(self, mock_run, mock_kdotool_check, monitor):
+        """Test kdotool method success path via WindowUtils."""
+        from StreamDock.WindowUtils import WindowUtils
         # Setup sequence of subprocess calls: 
         # 1. getactivewindow -> "123"
         # 2. getwindowname -> "My Window"
@@ -78,51 +82,51 @@ class TestWindowMonitor:
             MagicMock(returncode=0, stdout="my.class\n")
         ]
         
-        info = monitor._try_kdotool()
+        info = WindowUtils.kdotool_get_active_window()
         
         assert info is not None
-        assert info['method'] == 'kdotool'
-        assert info['title'] == "My Window"
-        assert info['class'] == "my.class"
+        assert info.method == 'kdotool'
+        assert info.title == "My Window"
+        assert info.class_name == "my.class"
 
+    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
-    def test_try_kdotool_fallback_class(self, mock_run, monitor):
+    def test_kdotool_fallback_class(self, mock_run, mock_kdotool_check, monitor):
         """Test kdotool relying on title extraction when class lookup fails."""
+        from StreamDock.WindowUtils import WindowUtils
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="123\n"),
             MagicMock(returncode=0, stdout="My Window - Firefox\n"),
             MagicMock(returncode=1, stdout="") # Class lookup fails
         ]
         
-        info = monitor._try_kdotool()
+        info = WindowUtils.kdotool_get_active_window()
         
         assert info is not None
-        assert info['class'] == "Firefox" # Extracted from title
+        assert info.class_name == "Firefox" # Extracted from title
 
+    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
-    def test_try_kdotool_failure(self, mock_run, monitor):
+    def test_kdotool_failure(self, mock_run, mock_kdotool_check, monitor):
         """Test kdotool returning None on failure."""
+        from StreamDock.WindowUtils import WindowUtils
         mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert monitor._try_kdotool() is None
+        assert WindowUtils.kdotool_get_active_window() is None
 
     @patch('subprocess.run')
     def test_get_active_window_info_chain(self, mock_run, monitor):
         """Test that get_active_window_info tries methods in order."""
-        # 1. kdotool fails
-        # 2. kwin script fails
-        # 3. plasma taskmanager fails
-        # 4. kwin basic succeeds
+        # Test with simulation mode disabled - kdotool method should be tried via WindowUtils
+        monitor.kdotool_available = False  # Skip kdotool
         
-        # We mock the internal helper methods to verify the chain logic simpler
-        with patch.object(monitor, '_try_kdotool', return_value=None) as m1, \
-             patch.object(monitor, '_try_kwin_scripting', return_value=None) as m2, \
+        # Mock the internal helper methods to verify the chain logic
+        with patch.object(monitor, '_try_kwin_scripting', return_value=None) as m2, \
              patch.object(monitor, '_try_plasma_taskmanager', return_value=None) as m3, \
-             patch.object(monitor, '_try_kwin_basic', return_value={'title': 'Win'}) as m4:
+             patch.object(monitor, '_try_kwin_basic', return_value=WindowInfo(title='Win', class_name='App', raw='Win', method='kwin')) as m4:
              
              result = monitor.get_active_window_info()
              
-             assert result == {'title': 'Win'}
-             m1.assert_called_once()
+             assert result.title == 'Win'
              m2.assert_called_once()
              m3.assert_called_once()
              m4.assert_called_once()
@@ -138,7 +142,7 @@ class TestWindowMonitor:
         monitor.set_default_callback(default_cb)
         
         # Case 1: Match first rule
-        info = {'class': 'Mozilla Firefox', 'title': 'Page'}
+        info = WindowInfo(title='Page', class_name='Mozilla Firefox', raw='Page', method='test')
         monitor._check_rules(info)
         callback1.assert_called_with(info)
         callback2.assert_not_called()
@@ -146,7 +150,7 @@ class TestWindowMonitor:
         
         # Case 2: Match no rules (Default)
         callback1.reset_mock()
-        info = {'class': 'Konsole', 'title': 'Terminal'}
+        info = WindowInfo(title='Terminal', class_name='Konsole', raw='Terminal', method='test')
         monitor._check_rules(info)
         callback1.assert_not_called()
         default_cb.assert_called_with(info)
@@ -158,12 +162,12 @@ class TestWindowMonitor:
         monitor.add_window_rule(pattern, callback, match_field='title')
         
         # Match
-        monitor._check_rules({'title': 'test.py - VSCode', 'class': 'Code'})
+        monitor._check_rules(WindowInfo(title='test.py - VSCode', class_name='Code', raw='test', method='test'))
         callback.assert_called()
         
         # No Match
         callback.reset_mock()
-        monitor._check_rules({'title': 'readme.md - VSCode', 'class': 'Code'})
+        monitor._check_rules(WindowInfo(title='readme.md - VSCode', class_name='Code', raw='readme', method='test'))
         callback.assert_not_called()
 
     @patch('time.sleep') # Don't actually sleep
@@ -178,8 +182,8 @@ class TestWindowMonitor:
         # 3. Window B (change)
         # 4. Stop
         
-        info_a = {'title': 'A', 'class': 'AppA'}
-        info_b = {'title': 'B', 'class': 'AppB'}
+        info_a = WindowInfo(title='A', class_name='AppA', raw='A', method='test')
+        info_b = WindowInfo(title='B', class_name='AppB', raw='B', method='test')
         
         mock_get_info.side_effect = [info_a, info_a, info_b]
         
