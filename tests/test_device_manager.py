@@ -8,12 +8,12 @@ from StreamDock.product_ids import USBProductIDs, USBVendorIDs
 
 @pytest.fixture
 def mock_transport():
-    with patch('src.StreamDock.device_manager.LibUSBHIDAPI') as mock:
+    with patch('StreamDock.device_manager.LibUSBHIDAPI') as mock:
         yield mock
 
 @pytest.fixture
 def mock_stream_dock_class():
-    with patch('src.StreamDock.product_ids.StreamDock293V3') as mock:
+    with patch('StreamDock.product_ids.StreamDock293V3') as mock:
         yield mock
 
 def test_enumerate_finds_devices(mock_transport, mock_stream_dock_class):
@@ -41,7 +41,7 @@ def test_enumerate_finds_devices(mock_transport, mock_stream_dock_class):
     # To mock the class used in `g_products`, we might need to patch `src.StreamDock.product_ids.g_products` 
     # OR patch `src.StreamDock.device_manager.g_products`.
 
-@patch('src.StreamDock.device_manager.g_products')
+@patch('StreamDock.device_manager.g_products')
 def test_enumerate_uses_g_products(mock_g_products, mock_transport):
     # Setup custom g_products for testing
     mock_cls = MagicMock()
@@ -61,7 +61,7 @@ def test_enumerate_uses_g_products(mock_g_products, mock_transport):
 
 @patch('pyudev.Context')
 @patch('pyudev.Monitor')
-@patch('src.StreamDock.device_manager.g_products')
+@patch('StreamDock.device_manager.g_products')
 def test_listen_add_device(mock_g_products, mock_monitor, mock_context, mock_transport):
     # Setup custom g_products
     vid, pid = 0x1234, 0x5678
@@ -99,7 +99,7 @@ def test_listen_add_device(mock_g_products, mock_monitor, mock_context, mock_tra
 
 @patch('pyudev.Context')
 @patch('pyudev.Monitor')
-@patch('src.StreamDock.device_manager.g_products')
+@patch('StreamDock.device_manager.g_products')
 def test_listen_remove_device(mock_g_products, mock_monitor, mock_context, mock_transport):
     # Setup custom g_products
     vid, pid = 0x1234, 0x5678

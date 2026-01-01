@@ -27,10 +27,10 @@ class ActionType(Enum):
 
 def _launch_detached(command):
     """Launch a command completely detached from the current process.
-    
+
     Uses nohup and shell backgrounding to ensure the process survives
     even if the parent Python process is killed.
-    
+
     :param command: Command as string or list of arguments
     """
     # Build command string for shell execution with proper detachment
@@ -39,11 +39,11 @@ def _launch_detached(command):
     else:
         # Properly quote arguments for shell
         cmd_str = ' '.join(shlex.quote(arg) for arg in command)
-    
+
     # Use nohup and background execution for complete detachment
     # This ensures the process survives even if the parent is killed
     shell_cmd = f"nohup {cmd_str} >/dev/null 2>&1 &"
-    
+
     subprocess.Popen(
         shell_cmd,
         shell=True,
@@ -57,7 +57,7 @@ def _launch_detached(command):
 
 def execute_command(command):
     """Execute a system command using subprocess.Popen.
-    
+
     The command is launched in a completely separate process, detached from Python.
     This means:
     - The command's output won't appear in the Python console
@@ -73,7 +73,7 @@ def execute_command(command):
 def emulate_key_combo(combo_string):
     """
     Emulate a keyboard combination using xdotool.
-    
+
     :param combo_string: String like 'CTRL+C', 'ALT+F4', etc.
     """
     # Mapping of string names to xdotool key names
@@ -122,13 +122,13 @@ def emulate_key_combo(combo_string):
 def type_text(text, delay=0.001):
     """
     Type text using xdotool, ensuring case sensitivity by using key events.
-    
+
     :param text: Text to type (case-sensitive)
     :param delay: Delay between key presses in seconds (default: 0.001s for fast typing)
     """
     if not text:
         return
-        
+
     try:
         # Get the active window ID to ensure we type in the right window
         try:
@@ -137,7 +137,7 @@ def type_text(text, delay=0.001):
         except Exception as e:
             # If we can't get window ID, continue without it (might be slightly less reliable)
             window_args = []
-        
+
         # Prepare all key commands at once
         key_commands = []
         for char in text:
@@ -152,10 +152,10 @@ def type_text(text, delay=0.001):
                 key = char
             else:
                 key = char
-            
+
             # Build the command
             key_commands.append(['xdotool'] + window_args + ['key', '--clearmodifiers', key])
-        
+
         # Execute all commands with minimal delay
         for cmd in key_commands:
             try:
@@ -169,7 +169,7 @@ def type_text(text, delay=0.001):
                 logger.error(f"[ERROR] Failed to type character: {e}")
                 if e.stderr:
                     logger.error(f"[ERROR] stderr: {e.stderr}")
-    
+
     except FileNotFoundError:
         logger.error("[ERROR] xdotool not found. Install with: sudo apt install xdotool")
     except Exception:
@@ -184,27 +184,27 @@ def type_text(text, delay=0.001):
 def adjust_device_brightness(device, amount):
     """
     Adjust the device brightness by a relative amount.
-    
+
     :param device: StreamDock device instance
     :param amount: Amount to adjust brightness (can be positive or negative)
     """
     if device is None:
         logger.error("Error: Device is required for brightness adjustment")
         return
-    
+
     try:
         # Get current brightness (stored as an attribute on the device)
         current_brightness = getattr(device, '_current_brightness', 50)
-        
+
         # Calculate new brightness
         new_brightness = current_brightness + amount
-        
+
         # Clamp to valid range (0-100)
         new_brightness = max(0, min(100, new_brightness))
-        
+
         # Set new brightness
         device.set_brightness(new_brightness)
-        
+
         # Store the new brightness value
         device._current_brightness = new_brightness
     except Exception:
@@ -214,13 +214,13 @@ def adjust_device_brightness(device, amount):
 def send_dbus_command(dbus_command):
     """
     Send a D-Bus command for controlling media players, volume, and system services.
-    
+
     :param dbus_command: Either a string command to execute or a dict with D-Bus parameters
-    
+
     Examples:
         # String command (will be executed directly)
         "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause"
-        
+
         # Dict with predefined shortcuts
         {"action": "play_pause"}
         {"action": "next"}
@@ -240,7 +240,7 @@ def send_dbus_command(dbus_command):
         "volume_down": "pactl set-sink-volume @DEFAULT_SINK@ -5%",
         "mute": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
     }
-    
+
     try:
         # Handle dict format with shortcuts
         if isinstance(dbus_command, dict):
@@ -264,10 +264,10 @@ def send_dbus_command(dbus_command):
 def parse_desktop_file(desktop_file):
     """
     Parse a .desktop file and extract application launch information.
-    
+
     :param desktop_file: Path to .desktop file or just the filename (e.g., 'firefox.desktop')
     :return: Dict with 'command', 'class_name', and 'name' or None if parsing fails
-    
+
     Example:
         parse_desktop_file('firefox.desktop')
         # Returns: {'command': ['firefox'], 'class_name': 'firefox', 'name': 'Firefox'}
@@ -280,9 +280,9 @@ def parse_desktop_file(desktop_file):
         '/var/lib/flatpak/exports/share/applications/',
         os.path.expanduser('~/.local/share/flatpak/exports/share/applications/'),
     ]
-    
+
     desktop_path = None
-    
+
     # If it's an absolute path and exists, use it directly
     if os.path.isabs(desktop_file) and os.path.exists(desktop_file):
         desktop_path = desktop_file
@@ -294,51 +294,51 @@ def parse_desktop_file(desktop_file):
             if os.path.exists(potential_path):
                 desktop_path = potential_path
                 break
-    
+
     if not desktop_path:
         logger.warning(f"Desktop file not found: {desktop_file}")
         return None
-    
+
     try:
         # Parse the .desktop file
         config = configparser.ConfigParser(interpolation=None)
         config.read(desktop_path)
-        
+
         if 'Desktop Entry' not in config:
             logger.error(f"Invalid desktop file (no [Desktop Entry] section): {desktop_path}")
             return None
-        
+
         entry = config['Desktop Entry']
-        
+
         # Get the Exec command
         exec_line = entry.get('Exec', '')
         if not exec_line:
             logger.error(f"No Exec field in desktop file: {desktop_path}")
             return None
-        
+
         # Remove field codes (%f, %F, %u, %U, %i, %c, %k, etc.)
         # These are placeholders for files, URLs, etc. that we don't need
         import re
         exec_line = re.sub(r'%[fFuUdDnNickvm]', '', exec_line).strip()
-        
+
         # Parse the command using shlex to handle quotes properly
         command = shlex.split(exec_line)
-        
+
         # Get the window class name (StartupWMClass) or derive from command
         class_name = entry.get('StartupWMClass', '')
         if not class_name and command:
             # Use the basename of the first command as class name
             class_name = os.path.basename(command[0])
-        
+
         # Get the application name
         app_name = entry.get('Name', '')
-        
+
         return {
             'command': command,
             'class_name': class_name.lower(),
             'name': app_name
         }
-    
+
     except Exception:
         logger.exception(f"Error parsing desktop file {desktop_path}")
         return None
@@ -347,7 +347,7 @@ def parse_desktop_file(desktop_file):
 def launch_or_focus_application(app_config):
     """
     Launch an application if not running, or focus its window if already running.
-    
+
     :param app_config: Dict with application configuration
         {
             "command": ["firefox"],              # Command to launch (option 1: direct command)
@@ -357,17 +357,17 @@ def launch_or_focus_application(app_config):
             "force_new": false                   # Always launch new instance (default: false)
         }
         Or a simple string/list representing the command
-    
+
     Examples:
         # Simple command
         "firefox"
-        
+
         # Desktop file (searches standard locations)
         {"desktop_file": "firefox.desktop"}
-        
+
         # Full path to desktop file
         {"desktop_file": "/usr/share/applications/org.kde.kate.desktop"}
-        
+
         # Command with options
         {"command": ["firefox", "--private-window"], "force_new": true}
     """
@@ -376,7 +376,7 @@ def launch_or_focus_application(app_config):
     command = None
     class_name = None
     match_type = "contains"
-    
+
     if isinstance(app_config, str):
         # Simple string command
         command = [app_config]
@@ -388,7 +388,7 @@ def launch_or_focus_application(app_config):
     elif isinstance(app_config, dict):
         # Full configuration - check for desktop_file first
         desktop_file = app_config.get("desktop_file")
-        
+
         if desktop_file:
             # Parse desktop file
             desktop_info = parse_desktop_file(desktop_file)
@@ -412,17 +412,17 @@ def launch_or_focus_application(app_config):
                 command = [command]
             if command:
                 class_name = app_config.get("class_name", command[0]).lower()
-        
+
         match_type = app_config.get("match_type", "contains")
         force_new = app_config.get("force_new", False)
     else:
         logger.error(f"Invalid LAUNCH_APPLICATION parameter: {app_config}")
         return
-    
+
     if not command:
         logger.error("Error: LAUNCH_APPLICATION requires either 'command' or 'desktop_file'")
         return
-    
+
     # If force_new is True, skip window detection and always launch
     if force_new:
         try:
@@ -432,13 +432,13 @@ def launch_or_focus_application(app_config):
         except Exception:
             logger.exception("Error launching application")
             return
-    
+
     try:
         # Quick check: is the process already running?
         process_name = command[0] if isinstance(command, list) else command
         # Extract just the executable name (remove path)
         process_name = os.path.basename(process_name)
-        
+
         try:
             # Check if process exists
             result = subprocess.run(
@@ -447,17 +447,17 @@ def launch_or_focus_application(app_config):
                 text=True,
                 timeout=1
             )
-            
+
             if result.returncode != 0 or not result.stdout.strip():
                 # Process not running, launch it (detached from Python)
                 _launch_detached(command)
                 return
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass  # pgrep not available, continue with window detection
-        
+
         # Process is running, try to find and focus window
         window_found = False
-        
+
         # For Chrome/Chromium apps, also try searching by name (from desktop file)
         search_by_name = None
         if 'chromium' in command[0].lower() or 'chrome' in command[0].lower():
@@ -467,7 +467,7 @@ def launch_or_focus_application(app_config):
                 desktop_info = parse_desktop_file(app_config.get('desktop_file'))
                 if desktop_info:
                     search_by_name = desktop_info['name']
-        
+
         # Try kdotool first (KDE Wayland)
         try:
             # Search for window by class name
@@ -477,7 +477,7 @@ def launch_or_focus_application(app_config):
                 text=True,
                 timeout=2
             )
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 # Window found, get the window ID
                 window_id = result.stdout.strip().split('\n')[0]
@@ -506,62 +506,73 @@ def launch_or_focus_application(app_config):
                         timeout=2
                     )
                     window_found = True
-        
+
         except FileNotFoundError:
             # kdotool not available, try other methods
             pass
         except subprocess.TimeoutExpired:
             pass
-        
-        # Try xdotool as fallback (for X11 sessions)
+
+        # Try xdotool as fallback (for X11 sessions only)
+        # Note: xdotool windowactivate doesn't work properly on Wayland
         if not window_found:
-            try:
-                # Search for windows by class name (search all desktops)
-                result = subprocess.run(
-                    ['xdotool', 'search', '--all', '--onlyvisible', '--class', class_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    # Window found, focus it
-                    window_ids = result.stdout.strip().split('\n')
-                    if window_ids:
-                        logger.info(f"Found window (xdotool): {window_ids[0]} for class '{class_name}'")
-                        # Focus the first matching window
-                        subprocess.run(
-                            ['xdotool', 'windowactivate', window_ids[0]],
-                            check=True,
-                            timeout=2
-                        )
-                        window_found = True
-                elif search_by_name and not window_found:
-                    # Fallback: Try searching by window name for Chrome apps
+            # Check if we're on X11 before trying xdotool windowactivate
+            session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+            is_wayland = session_type == 'wayland'
+
+            if is_wayland:
+                logger.debug("Skipping xdotool windowactivate on Wayland (already tried kdotool)")
+            else:
+                try:
+                    # Search for windows by class name (search all desktops)
                     result = subprocess.run(
-                        ['xdotool', 'search', '--all', '--name', search_by_name],
+                        ['xdotool', 'search', '--all', '--onlyvisible', '--class', class_name],
                         capture_output=True,
                         text=True,
                         timeout=2
                     )
+
                     if result.returncode == 0 and result.stdout.strip():
+                        # Window found, focus it
                         window_ids = result.stdout.strip().split('\n')
                         if window_ids:
-                            logger.info(f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'")
+                            logger.info(f"Found window (xdotool): {window_ids[0]} for class '{class_name}'")
+                            # Focus the first matching window
+                            # Note: suppress stderr to avoid X11 property errors on Wayland
                             subprocess.run(
                                 ['xdotool', 'windowactivate', window_ids[0]],
                                 check=True,
-                                timeout=2
+                                timeout=2,
+                                stderr=subprocess.DEVNULL  # Suppress _NET_WM_DESKTOP errors on Wayland
                             )
                             window_found = True
-            
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-        
+                    elif search_by_name and not window_found:
+                        # Fallback: Try searching by window name for Chrome apps
+                        result = subprocess.run(
+                            ['xdotool', 'search', '--all', '--name', search_by_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=2
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            window_ids = result.stdout.strip().split('\n')
+                            if window_ids:
+                                logger.info(f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'")
+                                subprocess.run(
+                                    ['xdotool', 'windowactivate', window_ids[0]],
+                                    check=True,
+                                    timeout=2,
+                                    stderr=subprocess.DEVNULL  # Suppress _NET_WM_DESKTOP errors on Wayland
+                                )
+                                window_found = True
+
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
         # If we found a window, we're done
         if window_found:
             return
-        
+
         # Last resort: try wmctrl (works on some Wayland compositors)
         try:
             result = subprocess.run(
@@ -574,13 +585,13 @@ def launch_or_focus_application(app_config):
                 return
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
-        
+
         # If we got here, window detection failed but process is running
         # Launch new instance anyway (user may have minimized or hidden it)
         logger.warning(f"Window not found for class '{class_name}', launching new instance")
         # Launch in a completely separate process (detached from Python)
         _launch_detached(command)
-    
+
     except Exception:
         logger.exception("Error in LAUNCH_APPLICATION")
 
@@ -588,7 +599,7 @@ def launch_or_focus_application(app_config):
 def execute_action(action, device=None, key_number=None):
     """
     Execute a single action.
-    
+
     :param action: Tuple of (ActionType, parameter)
     :param device: StreamDock device instance (required for CHANGE_KEY_IMAGE, CHANGE_KEY, CHANGE_LAYOUT)
     :param key_number: Key number (required for CHANGE_KEY_IMAGE)
@@ -601,27 +612,27 @@ def execute_action(action, device=None, key_number=None):
 
     if action_type == ActionType.EXECUTE_COMMAND:
         execute_command(parameter)
-    
+
     elif action_type == ActionType.KEY_PRESS:
         emulate_key_combo(parameter)
-    
+
     elif action_type == ActionType.TYPE_TEXT:
         type_text(parameter)
-    
+
     elif action_type == ActionType.WAIT:
         time.sleep(parameter)
-    
+
     elif action_type == ActionType.CHANGE_KEY_IMAGE:
         if device is None or key_number is None:
             logger.error("Error: CHANGE_KEY_IMAGE requires device and key_number")
             return
         device.set_key_image(key_number, parameter)
-    
+
     elif action_type == ActionType.CHANGE_KEY_TEXT:
         if device is None or key_number is None:
             logger.error("Error: CHANGE_KEY_TEXT requires device and key_number")
             return
-        
+
         # Parameter should be a dict with text and optional styling
         if isinstance(parameter, dict):
             text = parameter.get('text', '')
@@ -639,13 +650,13 @@ def execute_action(action, device=None, key_number=None):
         else:
             logger.error(f"Error: CHANGE_KEY_TEXT parameter must be dict or string")
             return
-        
+
         # Generate text image
         import os
         import tempfile
 
         from .image_helpers.pil_helper import create_text_image
-        
+
         try:
             text_image = create_text_image(
                 text=text,
@@ -655,15 +666,15 @@ def execute_action(action, device=None, key_number=None):
                 font_size=font_size,
                 bold=bold
             )
-            
+
             # Save to temporary file
             temp_fd, temp_path = tempfile.mkstemp(suffix='.png', prefix='key_text_')
             os.close(temp_fd)
             text_image.save(temp_path)
-            
+
             # Set the key image
             device.set_key_image(key_number, temp_path)
-            
+
             # Clean up temp file after a short delay (let device load it first)
             # Note: In production, you might want to manage this better
             import threading
@@ -674,95 +685,95 @@ def execute_action(action, device=None, key_number=None):
                 except Exception:
                     pass
             threading.Thread(target=cleanup, daemon=True).start()
-            
+
         except Exception:
             logger.exception("Error creating text image")
-    
+
     elif action_type == ActionType.CHANGE_KEY:
         if device is None:
             logger.error("Error: CHANGE_KEY requires device")
             return
-            
+
         # Avoid circular import
         from .key import Key
-        
+
         target_key = None
-        
+
         # Case 1: Parameter is already a Key object
         if isinstance(parameter, Key):
             target_key = parameter
-            
+
         # Case 2: Parameter is a string (Image Path)
         elif isinstance(parameter, str):
             if key_number is None:
                 logger.error("Error: CHANGE_KEY with string/image path requires key_number context")
                 return
             target_key = Key(device, key_number, image_path=parameter)
-            
+
         # Case 3: Parameter is a dict (Full configuration)
         elif isinstance(parameter, dict):
             if key_number is None:
                 logger.error("Error: CHANGE_KEY with dict config requires key_number context")
                 return
-            
+
             image_path = parameter.get('image', '')
             on_press = parameter.get('actions') # classic config uses 'actions' for press
             if not on_press:
                 on_press = parameter.get('on_press')
-            
+
             on_release = parameter.get('on_release')
             on_double_press = parameter.get('on_double_press')
-            
+
             target_key = Key(
-                device, 
-                key_number, 
+                device,
+                key_number,
                 image_path=image_path,
-                on_press=on_press, 
-                on_release=on_release, 
+                on_press=on_press,
+                on_release=on_release,
                 on_double_press=on_double_press
             )
-            
+
         else:
             logger.error(f"Error: CHANGE_KEY parameter has invalid type: {type(parameter)}")
             return
 
         if target_key:
             target_key._configure()
-    
+
     elif action_type == ActionType.CHANGE_LAYOUT:
         if device is None:
             logger.error("Error: CHANGE_LAYOUT requires device")
             return
-        
+
         # Parameter is a dict with layout and options
         layout = parameter["layout"]
         action_clear_all = parameter.get("clear_all", False)
-        
+
         # Action's clear_all overrides layout's clear_all if explicitly set to True
         if action_clear_all and not layout.clear_all:
             device.clear_all_icons()
-        
+
         # Apply the layout (which will also check layout's clear_all setting)
         layout.apply()
-    
+
     elif action_type == ActionType.DBUS:
         send_dbus_command(parameter)
-    
+
     elif action_type == ActionType.DEVICE_BRIGHTNESS_UP:
         if device is None:
             logger.error("Error: DEVICE_BRIGHTNESS_UP requires device")
             return
         adjust_device_brightness(device, 10)
-    
+
     elif action_type == ActionType.DEVICE_BRIGHTNESS_DOWN:
         if device is None:
             logger.error("Error: DEVICE_BRIGHTNESS_DOWN requires device")
             return
         adjust_device_brightness(device, -10)
-    
+
     elif action_type == ActionType.LAUNCH_APPLICATION:
         launch_or_focus_application(parameter)
-    
+
     else:
         logger.error(f"Unknown action type: {action_type}")
 
@@ -770,13 +781,13 @@ def execute_action(action, device=None, key_number=None):
 def execute_actions(actions, device=None, key_number=None):
     """
     Execute a list of actions sequentially.
-    
+
     :param actions: List of action tuples [(ActionType, parameter), ...]
     :param device: StreamDock device instance
     :param key_number: Key number for CHANGE_KEY_IMAGE actions
     """
     if not isinstance(actions, list):
         actions = [actions]
-    
+
     for action in actions:
         execute_action(action, device=device, key_number=key_number)

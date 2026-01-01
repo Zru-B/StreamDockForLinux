@@ -56,9 +56,10 @@ def test_file_not_found():
     with pytest.raises(FileNotFoundError):
         loader.load()
 
-@patch('src.StreamDock.image_helpers.pil_helper.create_text_image')
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
 def test_apply_valid_config(mock_create_text_image):
     from PIL import Image
+
     # Setup mocks
     mock_create_text_image.return_value = Image.new('RGB', (112, 112))
     
@@ -80,9 +81,10 @@ def test_apply_valid_config(mock_create_text_image):
     # Verify device brightness was set
     mock_device.set_brightness.assert_called_with(50)
 
-@patch('src.StreamDock.image_helpers.pil_helper.create_text_image')
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
 def test_apply_with_window_rules(mock_create_text_image):
     from PIL import Image
+
     # Setup mocks for image creation
     mock_create_text_image.return_value = Image.new('RGB', (112, 112))
     

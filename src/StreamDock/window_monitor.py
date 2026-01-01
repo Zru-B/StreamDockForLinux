@@ -10,8 +10,8 @@ import threading
 import time
 from typing import Callable, Optional
 
-from StreamDock.Models import WindowInfo, AppPattern
-from StreamDock.WindowUtils import WindowUtils
+from StreamDock.Models import AppPattern, WindowInfo
+from StreamDock.window_utils import WindowUtils
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,9 @@ class WindowMonitor:
         self.default_callback: Optional[Callable[[WindowInfo], None]] = None
         self.simulation_mode: bool = simulation_mode
         self.simulated_window_file: str = "/tmp/streamdock_fake_window"
-        self.kdotool_available: bool = False
-        
+
         if self.simulation_mode:
-            self.kdotool_available = False
             logger.info(f"WindowMonitor running in SIMULATION MODE. Reading from {self.simulated_window_file}")
-        else:
-            # Use WindowUtils for tool availability checking
-            self.kdotool_available = WindowUtils.is_kdotool_available()
 
     def get_active_window_info(self) -> WindowInfo | None:
         """
@@ -60,18 +55,18 @@ class WindowMonitor:
             return self._try_simulation()
 
         # Try multiple methods in order of reliability
-        # Method 1: Try kdotool (best for KDE Wayland)
-        if self.kdotool_available:
-            window_info = WindowUtils.kdotool_get_active_window()
-            if window_info:
-                self.current_window_detection_method = "kdotool"
-                return window_info
-
-        # Method 2: Try KWin D-Bus scripting interface
+        # Method 1: Try KWin DBus scripting (Plasma 6 Wayland)
         window_info = self._try_kwin_scripting()
         if window_info:
             self.current_window_detection_method = "kwin_scripting"
             return window_info
+
+        # Method 2: Try kdotool (legacy fallback)
+        if WindowUtils.is_kdotool_available():
+            window_info = WindowUtils.kdotool_get_active_window()
+            if window_info:
+                self.current_window_detection_method = "kdotool"
+                return window_info
 
         # Method 3: Try parsing plasma-workspace
         window_info = self._try_plasma_taskmanager()
@@ -93,13 +88,13 @@ class WindowMonitor:
         try:
             if not os.path.exists(self.simulated_window_file):
                 return None
-                
+
             with open(self.simulated_window_file, 'r') as f:
                 content = f.read().strip()
-                
+
             if not content:
                 return None
-                
+
             # Content format: "Title|Class" or just "Class"
             parts = content.split('|')
             if len(parts) == 2:
@@ -107,10 +102,10 @@ class WindowMonitor:
             else:
                 title = content
                 win_class = content
-                
+
             return WindowInfo(
                 title=title,
-                class_name=win_class,
+                class_=win_class,
                 raw=content,
                 method="simulation"
             )
@@ -119,36 +114,123 @@ class WindowMonitor:
             return None
 
     def _try_kwin_scripting(self) -> WindowInfo | None:
-        """Try using KWin scripting D-Bus interface."""
-        try:
-            # Use KWin's client API through D-Bus
-            script = """
-            var client = workspace.activeClient;
-            if (client) {
-                print(client.caption + '|||' + client.resourceClass);
-            }
-            """
+        """
+        Try using KWin DBus scripting without user intervention.
+        Loads a temporary script that prints active window info to the journal.
+        """
+        import os
+        import tempfile
 
-            result = subprocess.run(
-                [
-                    "qdbus",
-                    "org.kde.KWin",
-                    "/Scripting",
-                    "org.kde.kwin.Scripting.loadScript",
-                    script,
-                    "temp",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
+        # 1. Prepare the script content
+        try:
+            # Locate the source script in the package
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            script_source = os.path.join(base_dir, "scripts", "kwin_detect.js")
+
+            if not os.path.exists(script_source):
+                logger.error(f"KWin script not found at {script_source}")
+                return None
+
+            with open(script_source, "r") as f:
+                content = f.read()
+
+            # Inject unique marker
+            marker = f"STREAMDOCK_QUERY_{int(time.time() * 1000)}"
+            content = content.replace("MARKER_ID", marker)
+
+            # Write to a temporary file in the system temp dir
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False) as tmp_script:
+                tmp_script.write(content)
+                script_path = tmp_script.name
+
+        except Exception as e:
+            logger.error(f"Failed to prepare KWin script: {e}")
+            return None
+
+        plugin_name = "streamdock_query"
+
+        try:
+            # 2. Ensure scripting is started
+            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.start"],
+                         capture_output=True, timeout=1, check=False)
+
+            # 3. Unload existing script if any (clean state)
+            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
+                         capture_output=True, timeout=1, check=False)
+
+            # 4. Load the script
+            # Note: loadScript returns the script ID (integer)
+            res = subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", script_path, plugin_name],
+                capture_output=True, text=True, timeout=1, check=False
             )
 
-            # This method might not work directly, skip for now
+            if res.returncode != 0:
+                # Try 'qdbus' fallback for older KDE versions
+                res = subprocess.run(
+                    ["qdbus", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", script_path, plugin_name],
+                    capture_output=True, text=True, timeout=1, check=False
+                )
+
+            # Check if we got a valid ID
+            if res.returncode != 0 or not res.stdout.strip().lstrip('-').isdigit():
+                logger.debug(f"loadScript failed: {res.stdout.strip()} {res.stderr.strip()}")
+                return None
+
+            script_id = int(res.stdout.strip())
+            if script_id < 0:
+                logger.debug("KWin returned invalid script ID")
+                return None
+
+            script_obj = f"/Scripting/Script{script_id}"
+
+            # 5. Run the script
+            subprocess.run(["qdbus6", "org.kde.KWin", script_obj, "org.kde.kwin.Script.run"],
+                         capture_output=True, timeout=1, check=False)
+
+            # 5. Read from journal (look for our unique marker)
+            # We look at the very last entries to minimize work
+            time.sleep(0.2) # Small grace for journal to sync
+            # Reading small number of lines from end is fast
+            res_journal = subprocess.run(
+                ["journalctl", "--user", "--no-pager", "-n", "100"],
+                capture_output=True, text=True, timeout=5, check=False
+            )
+            logger.debug(f"Journal size: {len(res_journal.stdout)}")
+
+            # 6. Cleanup script immediately
+            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
+                         capture_output=True, timeout=1, check=False)
+
+            if marker in res_journal.stdout:
+                for line in reversed(res_journal.stdout.splitlines()):
+                    if marker in line:
+                        logger.debug(f"Found marker {marker} in line: {line}")
+                        payload = line.split(f"{marker}:")[-1].strip()
+                        if "|" in payload:
+                            title, raw_class = payload.split("|", 1)
+                            if title == "None" and raw_class == "None":
+                                return None
+                            window_class = WindowUtils.normalize_class_name(raw_class, title)
+                            return WindowInfo(
+                                title=title,
+                                class_=window_class,
+                                raw=payload,
+                                method="kwin_scripting"
+                            )
+            else:
+                logger.debug(f"Marker {marker} not found in journal. Output snippet: {res_journal.stdout[:200]}...")
             return None
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        except Exception as e:
+            logger.debug(f"kwin_scripting failed: {e}")
             return None
+        finally:
+            if os.path.exists(script_path):
+                try:
+                    os.unlink(script_path)
+                except:
+                    pass
 
     def _try_plasma_taskmanager(self) -> WindowInfo | None:
         """Try getting info from plasma task manager."""
@@ -206,7 +288,7 @@ class WindowMonitor:
 
                     return WindowInfo(
                         title=window_title,
-                        class_name=window_class,
+                        class_=window_class,
                         raw=window_title,
                         method="kwin_plasma6",
                     )
@@ -239,7 +321,7 @@ class WindowMonitor:
 
                 return WindowInfo(
                     title=window_title,
-                    class_name=window_class,
+                    class_=window_class,
                     raw=window_title,
                     method="busctl",
                 )
@@ -284,7 +366,7 @@ class WindowMonitor:
 
                 return WindowInfo(
                     title=window_title,
-                    class_name=window_class,
+                    class_=window_class,
                     raw=window_title,
                     method="kwin_basic",
                 )
@@ -331,15 +413,11 @@ class WindowMonitor:
 
         for rule in self.window_rules:
             # Get field value from WindowInfo dataclass
-            if rule["match_field"] == "class":
-                field_value = window_info.class_name
-            elif rule["match_field"] == "title":
-                field_value = window_info.title
-            elif rule["match_field"] == "raw":
-                field_value = window_info.raw
-            else:
+            try:
+                field_value = window_info.get(rule["match_field"])
+            except KeyError:
                 field_value = ""
-            
+
             pattern = rule["pattern"]
 
             # Check if pattern matches
@@ -373,16 +451,14 @@ class WindowMonitor:
         while self.running:
             try:
                 window_info = self.get_active_window_info()
-
                 # Check if window has changed
                 if window_info:
                     window_id = window_info.class_name
 
                     if window_id != self.current_window_id:
-                        logger.info("Window changed: (detected by %s) %s", self.current_window_detection_method, window_info.class_name)
+                        logger.debug("Window changed: %s. Detected by %s", window_info.class_name, self.current_window_detection_method)
                         self.current_window_id = window_id
                         self._check_rules(window_info)
-
                 time.sleep(self.poll_interval)
 
             except Exception as exc:

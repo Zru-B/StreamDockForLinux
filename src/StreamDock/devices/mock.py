@@ -9,7 +9,7 @@ class MockDevice(StreamDock):
     Doesn't perform real USB I/O or image processing.
     """
     KEY_MAP = True # Use standard mapping
-    
+
     def __init__(self, transport, dev_info):
         super().__init__(transport, dev_info)
         self.logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class MockDevice(StreamDock):
     def set_brightness(self, percent):
         self.logger.info(f"Setting brightness to {percent}")
         return self.transport.set_brightness(percent)
-    
+
     def set_touchscreen_image(self, path):
         self.logger.info(f"Setting touchscreen image from {path}")
         return 1 # Success
@@ -31,7 +31,7 @@ class MockDevice(StreamDock):
 
     def set_key_image_data(self, key, path):
         pass
-    
+
     def get_serial_number(self, length=32):
         return b'MOCKSERIAL123'
 
@@ -42,7 +42,7 @@ class MockDevice(StreamDock):
             'rotation': 180,
             'flip': (False, False)
         }
-    
+
     def touchscreen_image_format(self):
         return {
             'size': (800, 480),
@@ -50,21 +50,12 @@ class MockDevice(StreamDock):
             'rotation': 180,
             'flip': (False, False)
         }
-        
+
     # Simulation helpers
     def simulate_press(self, key_number):
         """Simulate a physical key press."""
-        # Map physical key to hardware index if needed
-        # But MockTransport expects raw hardware index.
-        # StreamDock.key() maps logical->hardware.
-        # But wait, StreamDock.read() does: k = KEY_MAPPING[arr[9]]
-        # So transport should send HARDWARE index.
-        # KEY_MAPPING reverse map?
-        # KEY_MAPPING: {1: 11, ...} means Hardware 1 -> Logical 11
-        # StreamDock check: if arr[9] (hardware) is in KEY_MAPPING keys.
-        
         self.transport.simulate_key_press(key_number)
-        
+
     def simulate_release(self, key_number):
         """Simulate a physical key release."""
         self.transport.simulate_key_release(key_number)

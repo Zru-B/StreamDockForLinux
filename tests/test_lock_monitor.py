@@ -1,14 +1,15 @@
-import unittest
-from unittest.mock import MagicMock, patch, call
 import sys
 import threading
 import time
+import unittest
+from unittest.mock import MagicMock, call, patch
+
+from StreamDock.lock_monitor import LockMonitor
 
 # Mock dbus before importing LockMonitor if possible, or patch it during setup
 # Since LockMonitor imports dbus at module level inside __init__ (wait, no, inside __init__ try-except)
 # We can just patch sys.modules or use patch.dict.
 
-from StreamDock.lock_monitor import LockMonitor
 
 class TestLockMonitor(unittest.TestCase):
 

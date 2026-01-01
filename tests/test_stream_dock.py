@@ -1,8 +1,11 @@
-import unittest
-from unittest.mock import MagicMock, patch, ANY
 import threading
 import time
-from StreamDock.devices.stream_dock import StreamDock, DEFAULT_DOUBLE_PRESS_INTERVAL
+import unittest
+from unittest.mock import ANY, MagicMock, patch
+
+from StreamDock.devices.stream_dock import (DEFAULT_DOUBLE_PRESS_INTERVAL,
+                                            StreamDock)
+
 
 # Concrete implementation for testing abstract base class
 class ConcreteStreamDock(StreamDock):
@@ -87,6 +90,13 @@ class TestStreamDock(unittest.TestCase):
         self.device.screen_on()
         self.mock_transport.screen_on.assert_called_once()
         
+    def _process_queue(self):
+        """Helper to process all events in the queue."""
+        while not self.device._event_queue.empty():
+            func, args = self.device._event_queue.get()
+            func(*args)
+            self.device._event_queue.task_done()
+
     def test_read_callback_dispatch(self):
         """Test that read loop dispatches single key press correctly."""
         # Data for Key 5 (mapped to 15) Pressed
@@ -98,7 +108,7 @@ class TestStreamDock(unittest.TestCase):
         self.device.set_key_callback(callback_mock)
         
         # Mock read behavior
-        def read_mock():
+        def read_mock(*args, **kwargs):
              if getattr(read_mock, 'called', False):
                  self.device.run_read_thread = False
                  return None
@@ -117,6 +127,8 @@ class TestStreamDock(unittest.TestCase):
              mock_thread_cls.side_effect = side_effect
              
              self.device._read()
+             
+             self._process_queue()
              
              # Default KEY_MAP is False, so key 5 maps to 15 via KEY_MAPPING (unconditional)
              callback_mock.assert_called_with(self.device, 15, 1)
@@ -137,7 +149,7 @@ class TestStreamDock(unittest.TestCase):
         # Helper to stop loop after one read
         def create_read_mock(data):
             m = MagicMock()
-            def side_effect():
+            def side_effect(*args, **kwargs):
                 if getattr(m, 'called_once', False):
                     self.device.run_read_thread = False
                     return None
@@ -167,6 +179,8 @@ class TestStreamDock(unittest.TestCase):
              self.device.run_read_thread = True
              self.device._read()
              
+             self._process_queue()
+
              # Verify: Timer started for delayed single press
              # Because we have a double press callback, it delays the single press
              mock_timer.assert_called() 
@@ -186,6 +200,8 @@ class TestStreamDock(unittest.TestCase):
              self.device.run_read_thread = True
              self.device._read()
              
+             self._process_queue()
+
              # Verify: Timer started for delayed release
              delayed_release_callback = mock_timer.call_args[0][1]
              on_release.assert_not_called()
@@ -206,6 +222,8 @@ class TestStreamDock(unittest.TestCase):
              
              self.device._read()
              
+             self._process_queue()
+             
              # Verify: Double press callback called
              on_double.assert_called_with(self.device, key_mapped)
              
@@ -222,6 +240,8 @@ class TestStreamDock(unittest.TestCase):
              self.device.run_read_thread = True
              
              self.device._read()
+             
+             self._process_queue()
              
              # Verify on_release STILL not called (skipped)
              on_release.assert_not_called()
@@ -241,7 +261,7 @@ class TestStreamDock(unittest.TestCase):
         # Helper to stop loop after one read
         def create_read_mock(data):
             m = MagicMock()
-            def side_effect():
+            def side_effect(*args, **kwargs):
                 if getattr(m, 'called_once', False):
                     self.device.run_read_thread = False
                     return None
@@ -264,6 +284,8 @@ class TestStreamDock(unittest.TestCase):
              self.device.run_read_thread = True
              self.device._read()
              
+             self._process_queue()
+
              # Capture timer
              press_timer_callback = mock_timer.call_args[0][1]
              press_timer_mock = mock_timer.return_value
@@ -275,6 +297,8 @@ class TestStreamDock(unittest.TestCase):
              self.device.run_read_thread = True
              self.device._read()
              
+             self._process_queue()
+             
              # Capture release timer
              release_timer_callback = mock_timer.call_args[0][1]
              
@@ -283,10 +307,12 @@ class TestStreamDock(unittest.TestCase):
              
              # Simulate Press Timer firing
              press_timer_callback()
+             self._process_queue() # Timer puts callback in queue!
              on_press.assert_called_with(self.device, key_mapped)
              
              # Simulate Release Timer firing
              release_timer_callback()
+             self._process_queue() # Timer puts callback in queue!
              on_release.assert_called_with(self.device, key_mapped)
              
              on_double.assert_not_called()

@@ -22,7 +22,20 @@ def convert_svg_to_png(svg_path, target_size=None):
     :return: Path to the temporary PNG file
     """
     if not SVG_SUPPORT:
-        logger.warning("SVG support disabled: cairosvg not found")
+        # Provide clear, highly visible error message
+        error_msg = (
+            "\n" + "="*80 + "\n"
+            "⚠️  ERROR: SVG IMAGE SUPPORT NOT AVAILABLE\n"
+            + "="*80 + "\n"
+            "\nThe 'cairosvg' library is required for SVG image support.\n"
+            "\n📋 SOLUTION:\n"
+            "   Install it with:\n"
+            "   pip install cairosvg\n"
+            "\n   Or activate your virtual environment if you have one.\n"
+            + "="*80 + "\n"
+        )
+        print(error_msg, flush=True)
+        logger.error("SVG support disabled: cairosvg not found")
         raise RuntimeError(
             "SVG support requires cairosvg library. "
             "Install with: pip install cairosvg"
@@ -52,8 +65,23 @@ def convert_svg_to_png(svg_path, target_size=None):
         # Clean up temp file on error
         if os.path.exists(temp_png_path):
             os.remove(temp_png_path)
+        
+        # Provide clear error message
+        error_msg = (
+            "\n" + "="*80 + "\n"
+            "⚠️  SVG CONVERSION FAILED\n"
+            + "="*80 + "\n"
+            f"\nCould not convert SVG file: {svg_path}\n"
+            f"\nReason: {str(e)}\n"
+            "\n📋 POSSIBLE SOLUTIONS:\n"
+            "   1. Ensure cairosvg is installed: pip install cairosvg\n"
+            "   2. Check that the SVG file is valid\n"
+            "   3. Try using a PNG image instead\n"
+            + "="*80 + "\n"
+        )
+        print(error_msg, flush=True)
         logger.error(f"SVG conversion failed for {svg_path}: {e}")
-        raise RuntimeError(f"Failed to convert SVG to PNG: {e}")
+        raise RuntimeError(f"Failed to convert SVG to PNG: {e}") from e
 
 
 def create_text_image(text, size=(112, 112), text_color="white", background_color="black", font_size=20, bold=True):

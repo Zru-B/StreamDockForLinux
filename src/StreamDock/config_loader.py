@@ -35,6 +35,7 @@ import yaml
 from .actions import ActionType
 from .key import Key
 from .layout import Layout
+from .Models import WindowInfo
 
 
 class ConfigValidationError(Exception):
@@ -407,7 +408,7 @@ class ConfigLoader:
         
         return actions
 
-    def switch_to_layout(self, layout, window_info=None):
+    def switch_to_layout(self, layout, window_info: WindowInfo = None):
         """
         Switch to a new layout if it's not already active.
         

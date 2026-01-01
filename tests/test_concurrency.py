@@ -1,10 +1,12 @@
-import unittest
+import logging
+import random
 import threading
 import time
-import random
-import logging
-import pytest
+import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from StreamDock.devices.stream_dock import StreamDock
 
 # Configure logging to capture output during tests

@@ -53,4 +53,4 @@ markers = [
     "stability: marks tests for stability and concurrency"
 ]
 testpaths = ["tests"]
-pythonpath = "src"
+pythonpath = ["src"]

@@ -1,7 +1,7 @@
 import logging
+import queue
 import threading
 import time
-import queue
 from abc import ABC, ABCMeta, abstractmethod
 
 logger = logging.getLogger(__name__)

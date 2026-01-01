@@ -1,8 +1,11 @@
 import unittest
-import pytest
 from unittest.mock import MagicMock
-from StreamDock.actions import execute_action, ActionType
+
+import pytest
+
+from StreamDock.actions import ActionType, execute_action
 from StreamDock.key import Key
+
 
 @pytest.mark.issue
 @pytest.mark.regression

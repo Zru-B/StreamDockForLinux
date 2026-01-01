@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from typing import Optional
 
-from StreamDock.Models import WindowInfo, AppPattern
+from StreamDock.Models import AppPattern, WindowInfo
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ class WindowUtils:
             
             window_info = WindowInfo(
                 title=result.stdout.strip(),
-                class_name="",
+                class_="",
                 raw=result.stdout.strip(),
                 method="kdotool"
             )
@@ -200,12 +200,12 @@ class WindowUtils:
             
             if result_class.returncode == 0 and result_class.stdout.strip():
                 raw_class = result_class.stdout.strip()
-                window_info.class_name = WindowUtils.normalize_class_name(raw_class, window_info.title)
-                logger.debug(f"kdotool: title={window_info.title}, raw_class={raw_class}, normalized={window_info.class_name}")
+                window_info.class_ = WindowUtils.normalize_class_name(raw_class, window_info.title)
+                logger.debug(f"kdotool: title={window_info.title}, raw_class={raw_class}, normalized={window_info.class_}")
             else:
                 # Fallback to extracting from title
-                window_info.class_name = WindowUtils.extract_app_from_title(window_info.title)
-                logger.debug(f"kdotool: title={window_info.title}, class={window_info.class_name}")
+                window_info.class_ = WindowUtils.extract_app_from_title(window_info.title)
+                logger.debug(f"kdotool: title={window_info.title}, class={window_info.class_}")
             
             return window_info
             
@@ -356,7 +356,7 @@ class WindowUtils:
             
             return WindowInfo(
                 title=window_title,
-                class_name=window_class,
+                class_=window_class,
                 raw=window_title,
                 method="xdotool",
             )

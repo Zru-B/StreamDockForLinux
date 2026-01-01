@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from StreamDock.window_monitor import WindowMonitor
 from StreamDock.Models import WindowInfo
+from StreamDock.window_monitor import WindowMonitor
 
 
 @pytest.fixture
@@ -52,7 +52,8 @@ class TestWindowMonitor:
 
     def test_extract_app_from_title(self, monitor):
         """Test app name extraction logic - now in WindowUtils."""
-        from StreamDock.WindowUtils import WindowUtils
+        from StreamDock.window_utils import WindowUtils
+
         # Common separators
         assert WindowUtils.extract_app_from_title("Doc - Word") == "Word"
         assert WindowUtils.extract_app_from_title("Song — Spotify") == "Spotify"
@@ -66,11 +67,12 @@ class TestWindowMonitor:
         assert WindowUtils.extract_app_from_title("Terminal") == "Terminal"
         assert WindowUtils.extract_app_from_title("") == "unknown"
 
-    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
+    @patch('StreamDock.window_utils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
     def test_kdotool_detection_via_utils(self, mock_run, mock_kdotool_check, monitor):
         """Test kdotool method success path via WindowUtils."""
-        from StreamDock.WindowUtils import WindowUtils
+        from StreamDock.window_utils import WindowUtils
+
         # Setup sequence of subprocess calls: 
         # 1. getactivewindow -> "123"
         # 2. getwindowname -> "My Window"
@@ -89,11 +91,11 @@ class TestWindowMonitor:
         assert info.title == "My Window"
         assert info.class_name == "my.class"
 
-    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
+    @patch('StreamDock.window_utils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
     def test_kdotool_fallback_class(self, mock_run, mock_kdotool_check, monitor):
         """Test kdotool relying on title extraction when class lookup fails."""
-        from StreamDock.WindowUtils import WindowUtils
+        from StreamDock.window_utils import WindowUtils
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="123\n"),
             MagicMock(returncode=0, stdout="My Window - Firefox\n"),
@@ -105,13 +107,59 @@ class TestWindowMonitor:
         assert info is not None
         assert info.class_name == "Firefox" # Extracted from title
 
-    @patch('StreamDock.WindowUtils.WindowUtils.is_kdotool_available', return_value=True)
+    @patch('StreamDock.window_utils.WindowUtils.is_kdotool_available', return_value=True)
     @patch('subprocess.run')
     def test_kdotool_failure(self, mock_run, mock_kdotool_check, monitor):
         """Test kdotool returning None on failure."""
-        from StreamDock.WindowUtils import WindowUtils
+        from StreamDock.window_utils import WindowUtils
         mock_run.return_value = MagicMock(returncode=1, stdout="")
         assert WindowUtils.kdotool_get_active_window() is None
+
+        @patch('StreamDock.window_utils.WindowUtils.is_kdotool_available', return_value=False)
+        @patch('subprocess.run')
+        @patch('builtins.open', new_callable=MagicMock)
+        @patch('os.path.exists', return_value=True)
+        @patch('tempfile.NamedTemporaryFile')
+        @patch('time.time')
+        def test_kwin_scripting_native_success(self, mock_time, mock_tempfile, mock_exists, mock_open, mock_run, mock_kdotool_check, monitor):
+            """Test kwin_scripting_native method success."""
+            
+            # Setup time for marker generation
+            mock_time.return_value = 12.345
+        
+            # Mock file read for the source script
+            mock_file_read = MagicMock()
+            mock_file_read.read.return_value = 'print("MARKER_ID:" + "My Window Title|MyClass");'
+        
+            # Mock temp file for writing
+            mock_tmp_file = MagicMock()
+            mock_tmp_file.name = "/tmp/test_script.js"
+            mock_tempfile.return_value.__enter__.return_value = mock_tmp_file
+        
+            # Configure open to return the read mock when reading
+            mock_open.return_value.__enter__.return_value = mock_file_read
+        
+            # Helper to match journalctl command
+            def run_side_effect(*args, **kwargs):
+                cmd = args[0]
+                if cmd[0] == 'journalctl':
+                    # Return mocked journal output with marker matching the mocked time
+                    # 12.345 * 1000 = 12345
+                    return MagicMock(returncode=0, stdout="Jan 01 10:00:00 host kwin: js: STREAMDOCK_QUERY_12345:My Window Title|MyClass\n")
+        
+                if 'loadScript' in cmd:
+                    return MagicMock(returncode=0, stdout="1\n")
+        
+                return MagicMock(returncode=0, stdout="")
+        
+            mock_run.side_effect = run_side_effect
+        
+            info = monitor.get_active_window_info()
+        
+            assert info is not None
+            assert info.method == "kwin_scripting_native"
+            assert info.title == "My Window Title"
+            assert info.class_name == "MyClass"
 
     @patch('subprocess.run')
     def test_get_active_window_info_chain(self, mock_run, monitor):
@@ -122,7 +170,7 @@ class TestWindowMonitor:
         # Mock the internal helper methods to verify the chain logic
         with patch.object(monitor, '_try_kwin_scripting', return_value=None) as m2, \
              patch.object(monitor, '_try_plasma_taskmanager', return_value=None) as m3, \
-             patch.object(monitor, '_try_kwin_basic', return_value=WindowInfo(title='Win', class_name='App', raw='Win', method='kwin')) as m4:
+             patch.object(monitor, '_try_kwin_basic', return_value=WindowInfo(title='Win', class_='App', raw='Win', method='kwin')) as m4:
              
              result = monitor.get_active_window_info()
              
@@ -142,7 +190,7 @@ class TestWindowMonitor:
         monitor.set_default_callback(default_cb)
         
         # Case 1: Match first rule
-        info = WindowInfo(title='Page', class_name='Mozilla Firefox', raw='Page', method='test')
+        info = WindowInfo(title='Page', class_='Mozilla Firefox', raw='Page', method='test')
         monitor._check_rules(info)
         callback1.assert_called_with(info)
         callback2.assert_not_called()
@@ -150,7 +198,7 @@ class TestWindowMonitor:
         
         # Case 2: Match no rules (Default)
         callback1.reset_mock()
-        info = WindowInfo(title='Terminal', class_name='Konsole', raw='Terminal', method='test')
+        info = WindowInfo(title='Terminal', class_='Konsole', raw='Terminal', method='test')
         monitor._check_rules(info)
         callback1.assert_not_called()
         default_cb.assert_called_with(info)
@@ -162,12 +210,12 @@ class TestWindowMonitor:
         monitor.add_window_rule(pattern, callback, match_field='title')
         
         # Match
-        monitor._check_rules(WindowInfo(title='test.py - VSCode', class_name='Code', raw='test', method='test'))
+        monitor._check_rules(WindowInfo(title='test.py - VSCode', class_='Code', raw='test', method='test'))
         callback.assert_called()
         
         # No Match
         callback.reset_mock()
-        monitor._check_rules(WindowInfo(title='readme.md - VSCode', class_name='Code', raw='readme', method='test'))
+        monitor._check_rules(WindowInfo(title='readme.md - VSCode', class_='Code', raw='readme', method='test'))
         callback.assert_not_called()
 
     @patch('time.sleep') # Don't actually sleep
@@ -182,8 +230,8 @@ class TestWindowMonitor:
         # 3. Window B (change)
         # 4. Stop
         
-        info_a = WindowInfo(title='A', class_name='AppA', raw='A', method='test')
-        info_b = WindowInfo(title='B', class_name='AppB', raw='B', method='test')
+        info_a = WindowInfo(title='A', class_='AppA', raw='A', method='test')
+        info_b = WindowInfo(title='B', class_='AppB', raw='B', method='test')
         
         mock_get_info.side_effect = [info_a, info_a, info_b]
         
@@ -208,10 +256,10 @@ class TestWindowMonitor:
 
 
     @patch('subprocess.run')
-    def test_xprop_fallback_logic(self, mock_run, monitor):
+    def test_xdotool_fallback_logic(self, mock_run, monitor):
         """
-        Verify that if kdotool/qdbus fail, we fall back to xdotool+xprop 
-        and correctly parse WM_CLASS.
+        Verify that if kdotool/qdbus fail, we fall back to xdotool
+        and correctly parse window class.
         """
         # Setup the sequence of mock responses for subprocess.run
         
@@ -242,10 +290,10 @@ class TestWindowMonitor:
         xdotool_name_success.returncode = 0
         xdotool_name_success.stdout = "My Window Title\n"
         
-        # 4e. xprop -id 12345 WM_CLASS -> Succeeds
-        xprop_success = MagicMock()
-        xprop_success.returncode = 0
-        xprop_success.stdout = 'WM_CLASS(STRING) = "my_app_instance", "MyAppClass"\n'
+        # 4e. xdotool getwindowclassname -> Succeeds
+        xdotool_class_success = MagicMock()
+        xdotool_class_success.returncode = 0
+        xdotool_class_success.stdout = "MyAppClass\n"
         
         # Configure side_effect to return these mocks in order
         def side_effect(*args, **kwargs):
@@ -265,8 +313,8 @@ class TestWindowMonitor:
             if cmd[0] == 'xdotool' and cmd[1] == 'getwindowname':
                 return xdotool_name_success
                 
-            if cmd[0] == 'xprop' and cmd[1] == '-id' and cmd[3] == 'WM_CLASS':
-                return xprop_success
+            if cmd[0] == 'xdotool' and cmd[1] == 'getwindowclassname':
+                return xdotool_class_success
                 
             # Default fail for others
             m = MagicMock()
@@ -280,5 +328,5 @@ class TestWindowMonitor:
         
         # Verify
         assert info is not None, "Should return window info"
-        assert info['class'] == "MyAppClass", "Should parse class from xprop output"
-        assert info['method'] == "xdotool_xprop", "Should use correct fallback method"
+        assert info.class_name == "MyAppClass", "Should parse class from xdotool output"
+        assert info.method == "kwin_basic", "Should use correct fallback method name (kwin_basic wraps xdotool)"

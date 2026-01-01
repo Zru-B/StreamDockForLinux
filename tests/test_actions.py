@@ -1,17 +1,13 @@
-import unittest
-from unittest.mock import MagicMock, patch, call
-import sys
 import subprocess
-from StreamDock.actions import (
-    execute_command,
-    emulate_key_combo,
-    type_text,
-    adjust_device_brightness,
-    send_dbus_command,
-    launch_or_focus_application,
-    execute_action,
-    ActionType
-)
+import sys
+import unittest
+from unittest.mock import MagicMock, call, patch
+
+from StreamDock.actions import (ActionType, adjust_device_brightness,
+                                emulate_key_combo, execute_action,
+                                execute_command, launch_or_focus_application,
+                                send_dbus_command, type_text)
+
 
 class TestActions(unittest.TestCase):
 
@@ -109,9 +105,13 @@ class TestActions(unittest.TestCase):
         
         mock_launch.assert_called_with(["firefox"])
 
+    @patch('StreamDock.actions.os.environ.get')
     @patch('StreamDock.actions.subprocess.run')
-    def test_launch_app_focus_xdotool(self, mock_run):
+    def test_launch_app_focus_xdotool(self, mock_run, mock_env_get):
         """Test focusing existing app using xdotool (fallback)."""
+        # Mock X11 session (not Wayland) so xdotool is used
+        mock_env_get.return_value = 'x11'
+        
         # Mock pgrep success
         # First call is pgrep
         # Second call is kdotool (fail)
@@ -143,7 +143,7 @@ class TestActions(unittest.TestCase):
         # Verify activation called
         mock_run.assert_any_call(
             ['xdotool', 'windowactivate', '99999'],
-            check=True, timeout=2
+            check=True, timeout=2, stderr=subprocess.DEVNULL
         )
 
     @patch('StreamDock.actions.os.path.exists')
