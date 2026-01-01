@@ -1,6 +1,7 @@
 import re
 from unittest.mock import MagicMock, call, patch
 
+import subprocess
 import pytest
 
 from StreamDock.Models import WindowInfo
@@ -330,3 +331,212 @@ class TestWindowMonitor:
         assert info is not None, "Should return window info"
         assert info.class_name == "MyAppClass", "Should parse class from xdotool output"
         assert info.method == "kwin_basic", "Should use correct fallback method name (kwin_basic wraps xdotool)"
+
+    # === Additional Coverage Tests - Page 2 ===
+    
+    def test_simulation_no_file(self, monitor):
+        """Simulation mode - file doesn't exist."""
+        monitor.simulation_mode = True
+        import os
+        if os.path.exists(monitor.simulated_window_file):
+            os.remove(monitor.simulated_window_file)
+        result = monitor.get_active_window_info()
+        assert result is None
+    
+    def test_simulation_empty(self, monitor):
+        """Simulation mode - empty file."""
+        monitor.simulation_mode = True
+        import os
+        with open(monitor.simulated_window_file, 'w') as f:
+            f.write("")
+        try:
+            result = monitor.get_active_window_info()
+            assert result is None
+        finally:
+            os.remove(monitor.simulated_window_file)
+    
+    def test_check_rules_none(self, monitor):
+        """_check_rules with None window."""
+        callback = MagicMock()
+        monitor.add_window_rule("Test", callback)
+        monitor._check_rules(None)
+        callback.assert_not_called()
+    
+    def test_all_methods_fail(self, monitor):
+        """All detection methods fail."""
+        monitor.simulation_mode = False
+        with patch('StreamDock.window_monitor.WindowUtils.is_kdotool_available', return_value=False):
+            with patch.object(monitor, '_try_kwin_scripting', return_value=None):
+                with patch.object(monitor, '_try_plasma_taskmanager', return_value=None):
+                    with patch.object(monitor, '_try_kwin_basic', return_value=None):
+                        result = monitor.get_active_window_info()
+                        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_plasma_timeout(self, mock_run, monitor):
+        """Plasma taskmanager timeout."""
+        mock_run.side_effect = subprocess.TimeoutExpired('cmd', 1)
+        result = monitor._try_plasma_taskmanager()
+        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_kwin_basic_fail(self, mock_run, monitor):
+        """KWin basic all fail."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 1
+        mock_ret.stdout = ""
+        mock_run.return_value = mock_ret
+        result = monitor._try_kwin_basic()
+        assert result is None
+    
+    def test_callback_exception(self, monitor):
+        """Callback exception handling."""
+        def bad_callback(win):
+            raise RuntimeError("Error")
+        monitor.add_window_rule("Test", bad_callback)
+        win_info = WindowInfo(title="Test", class_="test", raw="test", method="test")
+        try:
+            monitor._check_rules(win_info)
+        except RuntimeError:
+            pytest.fail("Should catch exception")
+    
+    def test_window_id_tracking(self, monitor):
+        """Test window ID tracking works."""
+        monitor.simulation_mode = True
+        import os
+        with open(monitor.simulated_window_file, 'w') as f:
+            f.write("Firefox|firefox")
+        try:
+            info1 = monitor.get_active_window_info()
+            info2 = monitor.get_active_window_info()
+            assert info1 is not None
+            assert info2 is not None
+        finally:
+            if os.path.exists(monitor.simulated_window_file):
+                os.remove(monitor.simulated_window_file)
+
+    # === KWin Helper Function Tests ===
+    
+    @patch('os.path.exists')
+    def test_prepare_kwin_script_no_file(self, mock_exists, monitor):
+        """Test _prepare_kwin_script when script file doesn't exist."""
+        mock_exists.return_value = False
+        result = monitor._prepare_kwin_script()
+        assert result is None
+    
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.path.exists')
+    def test_prepare_kwin_script_success(self, mock_exists, mock_tempfile, monitor):
+        """Test _prepare_kwin_script successful execution."""
+        mock_exists.return_value = True
+        
+        # Mock file reading
+        mock_file = MagicMock()
+        mock_file.read.return_value = "MARKER_ID content"
+        
+        # Mock temp file
+        mock_temp = MagicMock()
+        mock_temp.name = "/tmp/test.js"
+        mock_tempfile.return_value.__enter__.return_value = mock_temp
+        
+        with patch('builtins.open', return_value=mock_file):
+            result = monitor._prepare_kwin_script()
+        
+        assert result is not None
+        assert len(result) == 2
+        script_path, marker = result
+        assert script_path == "/tmp/test.js"
+        assert "STREAMDOCK_QUERY" in marker
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_load_kwin_script_success(self, mock_run, monitor):
+        """Test _load_kwin_script successful load."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 0
+        mock_ret.stdout = "123"
+        mock_ret.stderr = ""
+        mock_run.return_value = mock_ret
+        
+        result = monitor._load_kwin_script("/tmp/test.js", "plugin")
+        assert result == 123
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_load_kwin_script_invalid_id(self, mock_run, monitor):
+        """Test _load_kwin_script with invalid script ID."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 0
+        mock_ret.stdout = "-1"
+        mock_ret.stderr = ""
+        mock_run.return_value = mock_ret
+        
+        result = monitor._load_kwin_script("/tmp/test.js", "plugin")
+        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_load_kwin_script_command_fail(self, mock_run, monitor):
+        """Test _load_kwin_script when command fails."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 1
+        mock_ret.stdout = ""
+        mock_ret.stderr = "error"
+        mock_run.return_value = mock_ret
+        
+        result = monitor._load_kwin_script("/tmp/test.js", "plugin")
+        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_parse_journal_marker_found(self, mock_run, monitor):
+        """Test _parse_journal_for_window finds marker."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 0
+        mock_ret.stdout = "TEST_MARKER_123:Firefox|firefox\n"
+        mock_run.return_value = mock_ret
+        
+        result = monitor._parse_journal_for_window("TEST_MARKER_123")
+        assert result is not None
+        assert result.title == "Firefox"
+        assert result.class_ == "Firefox"  # Normalized by WindowUtils
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_parse_journal_marker_not_found(self, mock_run, monitor):
+        """Test _parse_journal_for_window marker not found."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 0
+        mock_ret.stdout = "other log output\n"
+        mock_run.return_value = mock_ret
+        
+        result = monitor._parse_journal_for_window("TEST_MARKER_123")
+        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    def test_parse_journal_none_window(self, mock_run, monitor):
+        """Test _parse_journal_for_window with None|None window."""
+        mock_ret = MagicMock()
+        mock_ret.returncode = 0
+        mock_ret.stdout = "TEST_MARKER_456:None|None\n"
+        mock_run.return_value = mock_ret
+        
+        result = monitor._parse_journal_for_window("TEST_MARKER_456")
+        assert result is None
+    
+    @patch('StreamDock.window_monitor.subprocess.run')
+    @patch('os.path.exists')
+    @patch('os.unlink')
+    def test_cleanup_kwin_script(self, mock_unlink, mock_exists, mock_run, monitor):
+        """Test _cleanup_kwin_script cleans up properly."""
+        mock_exists.return_value = True
+        
+        monitor._cleanup_kwin_script("/tmp/test.js", 123, "plugin")
+        
+        # Should call unload
+        assert any('unloadScript' in str(call) for call in mock_run.call_args_list)
+        # Should delete file
+        mock_unlink.assert_called_with("/tmp/test.js")
+    
+    @patch('os.path.exists')
+    def test_cleanup_kwin_script_no_script_id(self, mock_exists, monitor):
+        """Test _cleanup_kwin_script with no script ID."""
+        mock_exists.return_value = False
+        
+        # Should not crash
+        monitor._cleanup_kwin_script("/tmp/test.js", None, "plugin")

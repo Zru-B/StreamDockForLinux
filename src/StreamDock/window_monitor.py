@@ -113,124 +113,195 @@ class WindowMonitor:
             logger.error(f"Error reading simulation file: {e}")
             return None
 
-    def _try_kwin_scripting(self) -> WindowInfo | None:
+    def _prepare_kwin_script(self):
         """
-        Try using KWin DBus scripting without user intervention.
-        Loads a temporary script that prints active window info to the journal.
+        Prepare KWin script for execution.
+        
+        Returns:
+            tuple[str, str] | None: (script_path, marker) or None on failure
         """
         import os
         import tempfile
-
-        # 1. Prepare the script content
+        
         try:
-            # Locate the source script in the package
+            # Locate the source script
             base_dir = os.path.dirname(os.path.abspath(__file__))
             script_source = os.path.join(base_dir, "scripts", "kwin_detect.js")
-
+            
             if not os.path.exists(script_source):
                 logger.error(f"KWin script not found at {script_source}")
                 return None
-
+            
             with open(script_source, "r") as f:
                 content = f.read()
-
+            
             # Inject unique marker
             marker = f"STREAMDOCK_QUERY_{int(time.time() * 1000)}"
             content = content.replace("MARKER_ID", marker)
-
-            # Write to a temporary file in the system temp dir
+            
+            # Write to temp file
             with tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False) as tmp_script:
                 tmp_script.write(content)
                 script_path = tmp_script.name
-
+            
+            return (script_path, marker)
+        
         except Exception as e:
             logger.error(f"Failed to prepare KWin script: {e}")
             return None
-
-        plugin_name = "streamdock_query"
-
+    
+    def _load_kwin_script(self, script_path, plugin_name):
+        """
+        Load KWin script via DBus.
+        
+        Returns:
+            int | None: script_id or None on failure
+        """
         try:
-            # 2. Ensure scripting is started
-            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.start"],
-                         capture_output=True, timeout=1, check=False)
-
-            # 3. Unload existing script if any (clean state)
-            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
-                         capture_output=True, timeout=1, check=False)
-
-            # 4. Load the script
-            # Note: loadScript returns the script ID (integer)
+            # Start scripting service
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.start"],
+                capture_output=True, timeout=1, check=False
+            )
+            
+            # Unload existing script (clean state)
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
+                capture_output=True, timeout=1, check=False
+            )
+            
+            # Load the script
             res = subprocess.run(
                 ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", script_path, plugin_name],
                 capture_output=True, text=True, timeout=1, check=False
             )
-
+            
             if res.returncode != 0:
-                # Try 'qdbus' fallback for older KDE versions
+                # Fallback to older qdbus for older KDE
                 res = subprocess.run(
                     ["qdbus", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", script_path, plugin_name],
                     capture_output=True, text=True, timeout=1, check=False
                 )
-
-            # Check if we got a valid ID
+            
+            # Validate script ID
             if res.returncode != 0 or not res.stdout.strip().lstrip('-').isdigit():
                 logger.debug(f"loadScript failed: {res.stdout.strip()} {res.stderr.strip()}")
                 return None
-
+            
             script_id = int(res.stdout.strip())
             if script_id < 0:
                 logger.debug("KWin returned invalid script ID")
                 return None
-
-            script_obj = f"/Scripting/Script{script_id}"
-
-            # 5. Run the script
-            subprocess.run(["qdbus6", "org.kde.KWin", script_obj, "org.kde.kwin.Script.run"],
-                         capture_output=True, timeout=1, check=False)
-
-            # 5. Read from journal (look for our unique marker)
-            # We look at the very last entries to minimize work
-            time.sleep(0.2) # Small grace for journal to sync
-            # Reading small number of lines from end is fast
+            
+            return script_id
+        
+        except Exception as e:
+            logger.debug(f"Failed to load KWin script: {e}")
+            return None
+    
+    def _parse_journal_for_window(self, marker):
+        """
+        Parse journal logs for window information.
+        
+        Returns:
+            WindowInfo | None: Parsed window info or None
+        """
+        try:
             res_journal = subprocess.run(
                 ["journalctl", "--user", "--no-pager", "-n", "100"],
                 capture_output=True, text=True, timeout=5, check=False
             )
             logger.debug(f"Journal size: {len(res_journal.stdout)}")
-
-            # 6. Cleanup script immediately
-            subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
-                         capture_output=True, timeout=1, check=False)
-
-            if marker in res_journal.stdout:
-                for line in reversed(res_journal.stdout.splitlines()):
-                    if marker in line:
-                        logger.debug(f"Found marker {marker} in line: {line}")
-                        payload = line.split(f"{marker}:")[-1].strip()
-                        if "|" in payload:
-                            title, raw_class = payload.split("|", 1)
-                            if title == "None" and raw_class == "None":
-                                return None
-                            window_class = WindowUtils.normalize_class_name(raw_class, title)
-                            return WindowInfo(
-                                title=title,
-                                class_=window_class,
-                                raw=payload,
-                                method="kwin_scripting"
-                            )
-            else:
+            
+            if marker not in res_journal.stdout:
                 logger.debug(f"Marker {marker} not found in journal. Output snippet: {res_journal.stdout[:200]}...")
+                return None
+            
+            # Find marker in reversed log
+            for line in reversed(res_journal.stdout.splitlines()):
+                if marker in line:
+                    logger.debug(f"Found marker {marker} in line: {line}")
+                    payload = line.split(f"{marker}:")[-1].strip()
+                    
+                    if "|" in payload:
+                        title, raw_class = payload.split("|", 1)
+                        
+                        if title == "None" and raw_class == "None":
+                            return None
+                        
+                        window_class = WindowUtils.normalize_class_name(raw_class, title)
+                        return WindowInfo(
+                            title=title,
+                            class_=window_class,
+                            raw=payload,
+                            method="kwin_scripting"
+                        )
+            
             return None
+        
+        except Exception as e:
+            logger.debug(f"Failed to parse journal: {e}")
+            return None
+    
+    def _cleanup_kwin_script(self, script_path, script_id, plugin_name):
+        """Cleanup KWin script and temp file."""
+        import os
+        
+        # Unload script if we have an ID
+        if script_id is not None:
+            try:
+                subprocess.run(
+                    ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin_name],
+                    capture_output=True, timeout=1, check=False
+                )
+            except Exception:
+                pass
+        
+        # Delete temp file
+        if script_path and os.path.exists(script_path):
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
 
+    def _try_kwin_scripting(self) -> WindowInfo | None:
+        """
+        Try using KWin DBus scripting to get active window.
+        Orchestrates helper methods for preparation, execution, and parsing.
+        """
+        # Prepare script
+        script_info = self._prepare_kwin_script()
+        if not script_info:
+            return None
+        
+        script_path, marker = script_info
+        plugin_name = "streamdock_query"
+        script_id = None
+        
+        try:
+            # Load script
+            script_id = self._load_kwin_script(script_path, plugin_name)
+            if script_id is None:
+                return None
+            
+            # Run the script
+            script_obj = f"/Scripting/Script{script_id}"
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", script_obj, "org.kde.kwin.Script.run"],
+                capture_output=True, timeout=1, check=False
+            )
+            
+            # Wait for journal to sync
+            time.sleep(0.2)
+            
+            # Parse journal for result
+            return self._parse_journal_for_window(marker)
+        
         except Exception as e:
             logger.debug(f"kwin_scripting failed: {e}")
             return None
         finally:
-            if os.path.exists(script_path):
-                try:
-                    os.unlink(script_path)
-                except:
-                    pass
+            self._cleanup_kwin_script(script_path, script_id, plugin_name)
 
     def _try_plasma_taskmanager(self) -> WindowInfo | None:
         """Try getting info from plasma task manager."""
