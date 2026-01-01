@@ -16,6 +16,20 @@ from StreamDock.window_utils import WindowUtils
 logger = logging.getLogger(__name__)
 
 
+def _timed(func_name=None):
+    """Decorator to log function execution time."""
+    def decorator(func):
+        name = func_name or func.__name__
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            result = func(*args, **kwargs)
+            elapsed = (time.time() - start) * 1000
+            logger.debug(f"{name} took {elapsed:.1f}ms")
+            return result
+        return wrapper
+    return decorator
+
+
 class WindowMonitor:
     """
     Monitor the active window on KDE Plasma (Wayland) and trigger callbacks when focus changes.
@@ -113,6 +127,8 @@ class WindowMonitor:
             logger.error(f"Error reading simulation file: {e}")
             return None
 
+
+    @_timed("KWin script preparation")
     def _prepare_kwin_script(self):
         """
         Prepare KWin script for execution.
@@ -150,6 +166,7 @@ class WindowMonitor:
             logger.error(f"Failed to prepare KWin script: {e}")
             return None
     
+    @_timed("KWin script loading")
     def _load_kwin_script(self, script_path, plugin_name):
         """
         Load KWin script via DBus.
@@ -193,12 +210,14 @@ class WindowMonitor:
                 logger.debug("KWin returned invalid script ID")
                 return None
             
+            logger.debug(f"Loaded script_id={script_id}")
             return script_id
         
         except Exception as e:
             logger.debug(f"Failed to load KWin script: {e}")
             return None
     
+    @_timed("Journal parsing")
     def _parse_journal_for_window(self, marker):
         """
         Parse journal logs for window information.
@@ -211,7 +230,7 @@ class WindowMonitor:
                 ["journalctl", "--user", "--no-pager", "-n", "100"],
                 capture_output=True, text=True, timeout=5, check=False
             )
-            logger.debug(f"Journal size: {len(res_journal.stdout)}")
+            logger.debug(f"Journal size: {len(res_journal.stdout)} chars")
             
             if marker not in res_journal.stdout:
                 logger.debug(f"Marker {marker} not found in journal. Output snippet: {res_journal.stdout[:200]}...")
@@ -243,6 +262,33 @@ class WindowMonitor:
             logger.debug(f"Failed to parse journal: {e}")
             return None
     
+    @_timed("Journal parsing with retry")
+    def _parse_journal_for_kwin_script_res(self, marker: str, wait_times: list[float] = [0.05, 0.05, 0.10]):
+        """
+        Parse journal with adaptive retry for robustness.
+        
+        Tries multiple times to handle async journal writes.
+        
+        Args:
+            marker: Unique marker to search for
+            wait_times: List of wait durations in seconds (default: [0.05, 0.05, 0.10])
+        
+        Returns:
+            WindowInfo | None: Window info if found, None otherwise
+        """
+        for i, wait in enumerate(wait_times, 1):
+            time.sleep(wait)
+            
+            result = self._parse_journal_for_window(marker)
+            if result is not None:
+                total_wait = sum(wait_times[:i]) * 1000
+                logger.debug(f"Found marker after {total_wait:.0f}ms (attempt {i}/{len(wait_times)})")
+                return result
+        
+        logger.debug(f"Marker not found after {sum(wait_times)*1000:.0f}ms and {len(wait_times)} attempts")
+        return None
+    
+    @_timed("KWin script cleanup")
     def _cleanup_kwin_script(self, script_path, script_id, plugin_name):
         """Cleanup KWin script and temp file."""
         import os
@@ -269,6 +315,8 @@ class WindowMonitor:
         Try using KWin DBus scripting to get active window.
         Orchestrates helper methods for preparation, execution, and parsing.
         """
+        total_start = time.time()
+        
         # Prepare script
         script_info = self._prepare_kwin_script()
         if not script_info:
@@ -285,17 +333,21 @@ class WindowMonitor:
                 return None
             
             # Run the script
+            run_start = time.time()
             script_obj = f"/Scripting/Script{script_id}"
             subprocess.run(
                 ["qdbus6", "org.kde.KWin", script_obj, "org.kde.kwin.Script.run"],
                 capture_output=True, timeout=1, check=False
             )
+            run_time = (time.time() - run_start) * 1000
+            logger.debug(f"KWin script execution took {run_time:.1f}ms")
             
-            # Wait for journal to sync
-            time.sleep(0.2)
+            # Parse journal for the result
+            result = self._parse_journal_for_kwin_script_res(marker)
             
-            # Parse journal for result
-            return self._parse_journal_for_window(marker)
+            total_time = (time.time() - total_start) * 1000
+            logger.debug(f"Total _try_kwin_scripting took {total_time:.1f}ms (result={'found' if result else 'not found'})")
+            return result
         
         except Exception as e:
             logger.debug(f"kwin_scripting failed: {e}")
@@ -327,6 +379,7 @@ class WindowMonitor:
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return None
 
+    @_timed("_try_kwin_basic")
     def _try_kwin_basic(self) -> WindowInfo | None:
         """Try basic KWin D-Bus interface - using Plasma 6 compatible method."""
         try:
