@@ -34,8 +34,13 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
 
 **Symptoms:**
 - Device stays on when screen is locked.
+- Device doesn't wake up after unlocking.
 
-**Fix:**
+**How it works:**
+- **On lock:** The device screen is turned off by setting brightness to 0, but the HID connection stays open for fast wake-up.
+- **On unlock:** The application first tries to wake the device using the existing connection. If that fails (e.g., USB was reset during sleep), it automatically falls back to fully reopening the device.
+
+**Fix for "device stays on":**
 - Ensure D-Bus libraries are installed:
   ```bash
   # Arch
@@ -47,6 +52,10 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
   ```bash
   dbus-send --session --print-reply --dest=org.freedesktop.ScreenSaver /ScreenSaver org.freedesktop.ScreenSaver.GetActive
   ```
+
+**Fix for "device doesn't wake":**
+- Check the application logs for errors during unlock.
+- If fallback is consistently failing, ensure udev rules allow device access (see [Device Setup Guide](device_setup.md)).
 
 ## Configuration Errors
 

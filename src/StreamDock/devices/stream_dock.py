@@ -125,9 +125,19 @@ class StreamDock(ABC):
             return k
 
     def open(self):
+        """
+        Open the device for communication.
+        
+        Returns:
+            True if device opened successfully, False otherwise
+        """
         self._start_workers()
-        self.transport.open(bytes(self.path,'utf-8'))
+        result = self.transport.open(bytes(self.path, 'utf-8'))
+        if result != 1:
+            self._stop_workers()
+            return False
         self._setup_reader(self._read)
+        return True
 
     def init(self):
         self.wake_screen()
@@ -136,9 +146,13 @@ class StreamDock(ABC):
         self.refresh()
 
     def close(self):
+        """
+        Close the device and release the HID handle.
+        """
         self._setup_reader(None)
         self._stop_workers()
         self.disconnected()
+        self.transport.close()  # Release the HID handle so device can be reopened
 
     def disconnected(self):
         self.transport.disconnected()

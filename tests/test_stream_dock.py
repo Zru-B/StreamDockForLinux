@@ -48,8 +48,12 @@ class TestStreamDock(unittest.TestCase):
 
     def test_open_close(self):
         """Test open and close lifecycle."""
+        # Mock transport.open to return success (1)
+        self.mock_transport.open.return_value = 1
+        
         # Open
-        self.device.open()
+        result = self.device.open()
+        self.assertTrue(result)
         self.mock_transport.open.assert_called_with(b'test_path')
         self.assertIsNotNone(self.device.read_thread)
         self.assertTrue(self.device.run_read_thread)
@@ -59,7 +63,6 @@ class TestStreamDock(unittest.TestCase):
         # It does NOT stop the thread flag directly (that relies on read failure or __del__)
         self.device.close()
         self.mock_transport.disconnected.assert_called()
-        # self.assertFalse(self.device.run_read_thread) # Removed as it's not guaranteed by close()
 
     def test_context_manager(self):
         """Test with statement lock acquisition."""

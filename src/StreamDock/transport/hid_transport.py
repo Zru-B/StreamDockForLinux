@@ -110,6 +110,16 @@ class HIDTransport:
     DUAL_DATA_CHUNK_SIZE = 1024  # 0x400 - for DualDevice methods
     SIGNATURE = b'CRT'
     
+    # Logger for transport-level debugging
+    _logger = None
+    
+    @classmethod
+    def _get_logger(cls):
+        if cls._logger is None:
+            import logging
+            cls._logger = logging.getLogger(__name__)
+        return cls._logger
+    
     class hid_device_info:
         """
         Structure to match the original hid_device_info for compatibility.
@@ -188,11 +198,13 @@ class HIDTransport:
             
             self._device = _hidapi.hid_open_path(path)
             if not self._device:
+                self._get_logger().debug(f"hid_open_path failed for {path}")
                 return -1
             
             _hidapi.hid_set_nonblocking(self._device, 0)
             return 1
-        except Exception:
+        except Exception as e:
+            self._get_logger().debug(f"open exception: {e}")
             self._device = None
             return -1
     
@@ -738,6 +750,52 @@ class HIDTransport:
         packet[6] = ord('S')
         packet[7] = ord('T')
         packet[8] = ord('P')
+        
+        result = self._write_packet(packet)
+        return 1 if result != -1 else -1
+    
+    def screen_off(self) -> int:
+        """
+        Turn off the screen/backlight.
+        
+        Returns:
+            1 on success, -1 on failure
+        """
+        # Use BRT (backlight) command with state 0 to turn off
+        packet = bytearray(self.PACKET_SIZE)
+        packet[0] = 0  # Report ID
+        packet[1:4] = self.SIGNATURE  # "CRT"
+        packet[4] = 0
+        packet[5] = 0
+        packet[6] = ord('B')
+        packet[7] = ord('R')
+        packet[8] = ord('T')
+        packet[9] = 0
+        packet[10] = 0
+        packet[11] = 0  # Off state
+        
+        result = self._write_packet(packet)
+        return 1 if result != -1 else -1
+    
+    def screen_on(self) -> int:
+        """
+        Turn on the screen/backlight.
+        
+        Returns:
+            1 on success, -1 on failure
+        """
+        # Use BRT (backlight) command with state 1 to turn on
+        packet = bytearray(self.PACKET_SIZE)
+        packet[0] = 0  # Report ID
+        packet[1:4] = self.SIGNATURE  # "CRT"
+        packet[4] = 0
+        packet[5] = 0
+        packet[6] = ord('B')
+        packet[7] = ord('R')
+        packet[8] = ord('T')
+        packet[9] = 0
+        packet[10] = 0
+        packet[11] = 1  # On state
         
         result = self._write_packet(packet)
         return 1 if result != -1 else -1

@@ -104,7 +104,7 @@ class TestLockMonitor(unittest.TestCase):
         
     @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
     def test_on_lock_state_changed_lock(self, mock_sleep):
-        """Test locking the computer."""
+        """Test locking the computer - should turn off screen but keep handle open."""
         monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
         
         # Simulate lock
@@ -112,22 +112,47 @@ class TestLockMonitor(unittest.TestCase):
         
         self.assertTrue(monitor.is_locked)
         
-        # Window monitor execution
+        # Window monitor should be stopped
         self.mock_window_monitor.stop.assert_called_once()
         
-        # Device execution
-        self.mock_device.clear_all_icons.assert_called_once()
-        self.mock_device.close.assert_called_once()
+        # Transport should call disconnected to turn off screen (but NOT close handle)
+        self.mock_device.transport.disconnected.assert_called_once()
+        self.mock_device.close.assert_not_called()  # Handle stays open
 
     @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
-    def test_on_lock_state_changed_unlock(self, mock_sleep):
-        """Test unlocking the computer."""
+    def test_unlock_with_valid_handle(self, mock_sleep):
+        """Test unlocking when existing HID handle is still valid."""
         monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
         monitor.is_locked = True
         monitor._last_state_change = 0
+        monitor.saved_brightness = 80
         
-        # Setup mock transport for re-enumeration
+        # Mock transport.set_brightness to return success (handle is valid)
         mock_transport = self.mock_device.transport
+        mock_transport.set_brightness.return_value = 1
+        
+        # Simulate unlock
+        monitor._on_lock_state_changed(False)
+        
+        self.assertFalse(monitor.is_locked)
+        
+        # Should use existing handle (no device recreation)
+        mock_transport.set_brightness.assert_called_with(80)
+        self.mock_window_monitor.start.assert_called_once()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_unlock_with_stale_handle_fallback(self, mock_sleep):
+        """Test unlocking when existing HID handle is stale - should fallback to reopen."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        monitor.is_locked = True
+        monitor._last_state_change = 0
+        monitor.saved_brightness = 80
+        
+        # Mock transport.set_brightness to return failure (handle is stale)
+        mock_transport = self.mock_device.transport
+        mock_transport.set_brightness.return_value = -1
+        
+        # Setup for fallback reopen
         device_info_dict = {
             'path': self.mock_device.path,
             'vendor_id': self.mock_device.vendor_id,
@@ -135,11 +160,8 @@ class TestLockMonitor(unittest.TestCase):
         }
         mock_transport.enumerate.return_value = [device_info_dict]
         
-        # Setup device class to return a new mock device
         new_mock_device = MagicMock()
-        
-        # Need to patch the class used to create device
-        # In reality monitor.device_class is set from device.__class__
+        new_mock_device.open.return_value = True
         monitor.device_class = MagicMock(return_value=new_mock_device)
         
         # Simulate unlock
@@ -147,16 +169,11 @@ class TestLockMonitor(unittest.TestCase):
         
         self.assertFalse(monitor.is_locked)
         
-        # Verify enumeration
-        mock_transport.enumerate.assert_called()
-        
-        # Verify new device creation and init
+        # Should fallback to device recreation
+        self.mock_device.close.assert_called_once()  # Close old handle
         monitor.device_class.assert_called_with(mock_transport, device_info_dict)
         new_mock_device.open.assert_called_once()
         new_mock_device.init.assert_called_once()
-        new_mock_device.set_brightness.assert_called_with(80) # restored brightness
-        
-        # Verify window monitor restart
         self.mock_window_monitor.start.assert_called_once()
 
     @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
@@ -170,7 +187,7 @@ class TestLockMonitor(unittest.TestCase):
         
         # Should be ignored (no processing)
         self.assertFalse(monitor.is_locked)
-        self.mock_device.close.assert_not_called()
+        self.mock_device.set_brightness.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

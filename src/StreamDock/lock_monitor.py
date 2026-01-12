@@ -216,74 +216,9 @@ class LockMonitor:
             self.is_locked = is_locked
             
             if is_locked:
-                self.logger.info("🔒 Computer locked - turning off StreamDock")
-                self.saved_brightness = getattr(self.device, '_current_brightness', 50)
-                
-                # Stop window monitor if it's running
-                if self.window_monitor and self.window_monitor.running:
-                    self.logger.info("🔒 Stopping window monitor")
-                    self.window_monitor.stop()
-                
-                # Clear all icons before closing
-                self.device.clear_all_icons()
-                time.sleep(0.5)  # Give device time to process clear command
-                self.device.close()
+                self._handle_lock()
             else:
-                self.logger.info("🔓 Computer unlocked - turning on StreamDock")
-                
-                time.sleep(0.5)  # Give device time to be ready
-                
-                # Re-enumerate and find device
-                found_devices = self.device_transport.enumerate(
-                    vid=self.device_vendor_id,
-                    pid=self.device_product_id
-                )
-                
-                device_info = None
-                for dev_info in found_devices:
-                    if dev_info['path'] == self.device_path:
-                        device_info = dev_info
-                        break
-                
-                # Retry once if not found immediately
-                if not device_info:
-                    time.sleep(1)
-                    found_devices = self.device_transport.enumerate(
-                        vid=self.device_vendor_id,
-                        pid=self.device_product_id
-                    )
-                    for dev_info in found_devices:
-                        if dev_info['path'] == self.device_path:
-                            device_info = dev_info
-                            break
-                
-                if not device_info:
-                    raise Exception("Device not found after re-enumeration")
-                
-                # Create fresh device instance
-                self.device = self.device_class(self.device_transport, device_info)
-                
-                # Open and initialize
-                self.device.open()
-                self.device.init()
-
-                # Restore brightness
-                self.device.set_brightness(self.saved_brightness)
-                self.device._current_brightness = self.saved_brightness
-
-                # Update device reference for ALL layouts (not just current)
-                # This is critical for window monitor callbacks to work after unlock
-                for layout_name, layout in self.all_layouts.items():
-                    layout.update_device(self.device)
-                
-                # Now apply the current layout with the updated device reference
-                if self.current_layout:
-                    self.current_layout.apply()
-                
-                # Restart window monitor if it was running before lock
-                if self.window_monitor:
-                    self.logger.info("🔓 Restarting window monitor")
-                    self.window_monitor.start()
+                self._handle_unlock()
             
             # Reset processing flag
             self._processing_state_change = False
@@ -291,6 +226,125 @@ class LockMonitor:
         except Exception:
             self.logger.exception("Error handling lock state change")
             self._processing_state_change = False  # Reset flag even on error
+    
+    def _handle_lock(self):
+        """Handle computer lock - turn off screen but keep HID handle open."""
+        self.logger.info("🔒 Computer locked - turning off StreamDock")
+        self.saved_brightness = getattr(self.device, '_current_brightness', 50)
+        
+        # Stop window monitor if it's running
+        if self.window_monitor and self.window_monitor.running:
+            self.logger.info("🔒 Stopping window monitor")
+            self.window_monitor.stop()
+        
+        # Put device in standby mode (screen goes dark, handle stays open)
+        self.device.transport.disconnected()
+    
+    def _handle_unlock(self):
+        """Handle computer unlock - try existing handle first, fallback to reopen if stale."""
+        self.logger.info("🔓 Computer unlocked - turning on StreamDock")
+        
+        # Try to wake with existing handle
+        if self._try_wake_existing_handle():
+            self.logger.debug("Woke device using existing handle")
+            self._restore_after_unlock()
+        else:
+            self.logger.info("🔓 Existing handle stale, reopening device...")
+            self._reopen_device_and_restore()
+    
+    def _try_wake_existing_handle(self):
+        """
+        Attempt to wake the device using the existing HID handle.
+        
+        :return: True if successful, False if handle is stale
+        """
+        try:
+            # Wake screen from standby and restore brightness
+            self.device.wake_screen()
+            result = self.device.transport.set_brightness(self.saved_brightness)
+            return result == 1
+        except Exception:
+            return False
+    
+    def _restore_after_unlock(self):
+        """Restore device state after successful wake."""
+        self.device._current_brightness = self.saved_brightness
+        
+        # Apply the current layout
+        if self.current_layout:
+            self.current_layout.apply()
+        
+        # Restart window monitor if it was running before lock
+        if self.window_monitor:
+            self.logger.info("🔓 Restarting window monitor")
+            self.window_monitor.start()
+    
+    def _reopen_device_and_restore(self):
+        """Fallback: close current handle (if any), reopen device, and restore."""
+        # Close current handle if it exists
+        try:
+            self.device.close()
+        except Exception:
+            pass  # Ignore errors on close - handle may already be invalid
+        
+        time.sleep(0.5)  # Give device time to be ready
+        
+        # Re-enumerate and find device
+        found_devices = self.device_transport.enumerate(
+            vid=self.device_vendor_id,
+            pid=self.device_product_id
+        )
+        
+        device_info = None
+        for dev_info in found_devices:
+            if dev_info['path'] == self.device_path:
+                device_info = dev_info
+                break
+        
+        # Retry once if not found immediately
+        if not device_info:
+            self.logger.debug(f"Device path '{self.device_path}' not found, retrying...")
+            time.sleep(1)
+            found_devices = self.device_transport.enumerate(
+                vid=self.device_vendor_id,
+                pid=self.device_product_id
+            )
+            for dev_info in found_devices:
+                if dev_info['path'] == self.device_path:
+                    device_info = dev_info
+                    break
+        
+        if not device_info:
+            raise Exception(f"Device not found after re-enumeration (path: {self.device_path})")
+        
+        # Create fresh device instance
+        self.device = self.device_class(self.device_transport, device_info)
+        
+        # Open device with retry logic
+        max_retries = 5
+        retry_delay = 0.5
+        
+        for attempt in range(1, max_retries + 1):
+            if self.device.open():
+                self.logger.debug(f"Device opened on attempt {attempt}")
+                break
+            elif attempt < max_retries:
+                self.logger.debug(f"Device open failed, retry in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay += 0.5
+                self.device = self.device_class(self.device_transport, device_info)
+            else:
+                raise Exception(f"Failed to open device after {max_retries} attempts")
+        
+        self.device.init()
+        self.device.set_brightness(self.saved_brightness)
+        self.device._current_brightness = self.saved_brightness
+
+        # Update device reference for ALL layouts (critical after device recreation)
+        for layout_name, layout in self.all_layouts.items():
+            layout.update_device(self.device)
+        
+        self._restore_after_unlock()
     
     def get_device(self):
         """
