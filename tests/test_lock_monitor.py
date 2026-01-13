@@ -104,20 +104,140 @@ class TestLockMonitor(unittest.TestCase):
         
     @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
     def test_on_lock_state_changed_lock(self, mock_sleep):
-        """Test locking the computer - should turn off screen but keep handle open."""
+        """Test locking schedules verification timer instead of immediate action."""
         monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
         
-        # Simulate lock
+        # Simulate lock signal
         monitor._on_lock_state_changed(True)
+        
+        # Lock should NOT be processed immediately - timer should be scheduled
+        self.assertFalse(monitor.is_locked)  # Not yet locked
+        self.assertIsNotNone(monitor._pending_lock_timer)  # Timer is scheduled
+        
+        # Device should NOT have been turned off yet
+        self.mock_device.transport.disconnected.assert_not_called()
+        self.mock_window_monitor.stop.assert_not_called()
+        
+        # Cancel timer to clean up
+        monitor._pending_lock_timer.cancel()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_verify_and_handle_lock_confirmed(self, mock_sleep):
+        """Test: Lock signal → verification confirms lock → screen turns off."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        
+        # Mock GetActive to return True (locked)
+        mock_interface = MagicMock()
+        mock_interface.GetActive.return_value = True
+        monitor._screensaver_interface = mock_interface
+        
+        # Directly call verification (simulating timer callback)
+        monitor._verify_and_handle_lock()
         
         self.assertTrue(monitor.is_locked)
         
         # Window monitor should be stopped
         self.mock_window_monitor.stop.assert_called_once()
         
-        # Transport should call disconnected to turn off screen (but NOT close handle)
+        # Transport should call disconnected to turn off screen
         self.mock_device.transport.disconnected.assert_called_once()
-        self.mock_device.close.assert_not_called()  # Handle stays open
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_verify_and_handle_lock_aborted(self, mock_sleep):
+        """Test: Lock signal → verification shows NOT locked (aborted) → screen stays on."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        
+        # Mock GetActive to return False (lock was aborted)
+        mock_interface = MagicMock()
+        mock_interface.GetActive.return_value = False
+        monitor._screensaver_interface = mock_interface
+        
+        # Directly call verification (simulating timer callback)
+        monitor._verify_and_handle_lock()
+        
+        self.assertFalse(monitor.is_locked)  # Never locked
+        
+        # Device should NOT have been turned off
+        self.mock_device.transport.disconnected.assert_not_called()
+        self.mock_window_monitor.stop.assert_not_called()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_unlock_cancels_pending_lock_verification(self, mock_sleep):
+        """Test: Lock signal → unlock before verification → timer cancelled.
+        
+        When a lock signal fires and schedules verification, but an unlock signal
+        arrives before verification completes, the timer should be cancelled.
+        Since the lock was never confirmed (is_locked stayed False), no unlock
+        processing should occur - we simply cancel the timer and return.
+        """
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        
+        # Simulate lock signal - schedules timer
+        monitor._on_lock_state_changed(True)
+        timer = monitor._pending_lock_timer
+        self.assertIsNotNone(timer)
+        self.assertFalse(monitor.is_locked)  # Lock not yet confirmed
+        
+        # Simulate quick unlock (user aborted lock)
+        monitor._on_lock_state_changed(False)
+        
+        # Timer should be cancelled
+        self.assertIsNone(monitor._pending_lock_timer)
+        self.assertFalse(monitor.is_locked)  # Still not locked
+        
+        # Since we were never actually locked, unlock handler should NOT run
+        # (no brightness restore, no window monitor restart)
+        self.mock_device.transport.disconnected.assert_not_called()
+        self.mock_window_monitor.stop.assert_not_called()
+        self.mock_window_monitor.start.assert_not_called()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_verify_lock_dbus_failure_fallback(self, mock_sleep):
+        """Test: Verification failure (D-Bus error) → fallback to assuming lock."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        
+        # Mock GetActive to raise exception (D-Bus failure)
+        mock_interface = MagicMock()
+        mock_interface.GetActive.side_effect = Exception("D-Bus error")
+        monitor._screensaver_interface = mock_interface
+        
+        # Should fallback to assuming locked (fail-safe)
+        monitor._verify_and_handle_lock()
+        
+        self.assertTrue(monitor.is_locked)
+        self.mock_device.transport.disconnected.assert_called_once()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_verify_lock_no_interface_fallback(self, mock_sleep):
+        """Test: No screensaver interface available → fallback to assuming lock."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        monitor._screensaver_interface = None  # No interface available
+        
+        # Should fallback to assuming locked (fail-safe)
+        monitor._verify_and_handle_lock()
+        
+        self.assertTrue(monitor.is_locked)
+        self.mock_device.transport.disconnected.assert_called_once()
+    
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_multiple_lock_signals_reset_timer(self, mock_sleep):
+        """Test: Multiple rapid lock signals handled correctly (timer reset)."""
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        
+        # First lock signal
+        monitor._on_lock_state_changed(True)
+        first_timer = monitor._pending_lock_timer
+        self.assertIsNotNone(first_timer)
+        
+        # Second lock signal - should cancel first timer and start new one
+        monitor.is_locked = False  # Reset to allow second signal
+        monitor._on_lock_state_changed(True)
+        
+        # First timer should have been cancelled
+        self.assertIsNotNone(monitor._pending_lock_timer)
+        
+        # Clean up
+        monitor._pending_lock_timer.cancel()
 
     @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
     def test_unlock_with_valid_handle(self, mock_sleep):

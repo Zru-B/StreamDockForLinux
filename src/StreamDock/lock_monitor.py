@@ -17,7 +17,8 @@ class LockMonitor:
     - Other freedesktop.org compliant screen savers
     """
     
-    def __init__(self, device, enabled=True, current_layout=None, all_layouts=None, device_class=None, window_monitor=None):
+    def __init__(self, device, enabled=True, current_layout=None, all_layouts=None, 
+                 device_class=None, window_monitor=None, lock_verification_delay=2.0):
         """
         Initialize the lock monitor.
         
@@ -27,6 +28,7 @@ class LockMonitor:
         :param all_layouts: Dictionary of all layouts {name: Layout} for device reference updates (optional)
         :param device_class: Device class type for recreating device instance
         :param window_monitor: WindowMonitor instance to stop/start on lock/unlock (optional)
+        :param lock_verification_delay: Seconds to wait before confirming lock (default: 2.0)
         """
         self.logger = logging.getLogger(__name__)
         self.device = device
@@ -39,6 +41,11 @@ class LockMonitor:
         self.window_monitor = window_monitor
         self._last_state_change = 0  # Timestamp of last state change for debouncing
         self._processing_state_change = False  # Flag to prevent concurrent processing
+        
+        # Lock verification attributes (to handle aborted lock scenarios)
+        self._lock_verification_delay = lock_verification_delay
+        self._pending_lock_timer = None  # Timer for delayed lock verification
+        self._screensaver_interface = None  # D-Bus interface for GetActive() polling
         
         # Store device info for re-enumeration after close
         self.device_path = device.path
@@ -76,6 +83,10 @@ class LockMonitor:
     def stop(self):
         """Stop monitoring lock/unlock events."""
         self.running = False
+        # Cancel any pending lock verification timer
+        if self._pending_lock_timer:
+            self._pending_lock_timer.cancel()
+            self._pending_lock_timer = None
         if self.monitor_thread:
             self.monitor_thread.join(timeout=2)
         self.logger.info("🔒 Lock monitor stopped")
@@ -106,6 +117,9 @@ class LockMonitor:
                     self._on_lock_state_changed
                 )
                 
+                # Store interface for lock verification polling
+                self._screensaver_interface = screensaver_interface
+                
                 self.logger.info("🔒 Connected to org.freedesktop.ScreenSaver")
                 
             except self.dbus.DBusException as e:
@@ -124,6 +138,9 @@ class LockMonitor:
                         'ActiveChanged',
                         self._on_lock_state_changed
                     )
+                    
+                    # Store interface for lock verification polling
+                    self._screensaver_interface = screensaver_interface
                     
                     self.logger.info("🔒 Connected to org.gnome.ScreenSaver")
                     
@@ -195,37 +212,129 @@ class LockMonitor:
         """
         Callback when lock state changes.
         
+        For lock events: Schedules a verification poll to confirm lock actually
+        completed (handles the case where user aborts lock by moving mouse).
+        
+        For unlock events: Processes immediately and cancels any pending lock
+        verification.
+        
         :param is_locked: True if screen is locked, False if unlocked
         """
         try:
             current_time = time.time()
             
-            # Debounce: Ignore if same state or too soon after last change (within 2 seconds)
-            if self.is_locked == is_locked:
-                return  # Already in this state, ignore duplicate signal
+            # For unlock events: Always cancel any pending lock verification first
+            # This handles the race condition where lock was initiated but user aborted
+            # by moving the mouse before verification could complete
+            if not is_locked and self._pending_lock_timer:
+                self.logger.debug("Unlock signal received while lock verification pending - cancelling timer")
+                self._cancel_pending_lock_verification()
             
-            if current_time - self._last_state_change < 2.0:
-                return  # Too soon after last change, ignore (debounce)
+            # Debounce: Ignore if same state
+            if self.is_locked == is_locked:
+                self.logger.debug(f"Lock state unchanged ({is_locked}), ignoring duplicate signal")
+                return  # Already in this state, ignore duplicate signal
             
             # Prevent concurrent processing
             if self._processing_state_change:
+                self.logger.debug("Already processing state change, ignoring")
                 return
             
-            self._processing_state_change = True
-            self._last_state_change = current_time
-            self.is_locked = is_locked
-            
             if is_locked:
-                self._handle_lock()
+                # Lock event: Schedule verification instead of immediate action
+                # This handles the race condition where user aborts lock by moving mouse
+                self._cancel_pending_lock_verification()
+                self.logger.debug(f"Lock signal received, scheduling verification in {self._lock_verification_delay}s")
+                self._pending_lock_timer = threading.Timer(
+                    self._lock_verification_delay,
+                    self._verify_and_handle_lock
+                )
+                self._pending_lock_timer.daemon = True
+                self._pending_lock_timer.start()
             else:
+                # Unlock event: Process immediately (no debounce needed for unlock)
+                # Also cancel any pending lock verification
+                self._cancel_pending_lock_verification()
+                
+                self._processing_state_change = True
+                self._last_state_change = current_time
+                self.is_locked = False
+                
                 self._handle_unlock()
-            
-            # Reset processing flag
-            self._processing_state_change = False
+                
+                self._processing_state_change = False
                 
         except Exception:
             self.logger.exception("Error handling lock state change")
             self._processing_state_change = False  # Reset flag even on error
+    
+    def _cancel_pending_lock_verification(self):
+        """
+        Cancel any pending lock verification timer.
+        
+        Called when:
+        - A new lock signal arrives (to reset the timer)
+        - An unlock signal arrives (lock was aborted)
+        - Monitor is stopped
+        """
+        if self._pending_lock_timer:
+            self._pending_lock_timer.cancel()
+            self._pending_lock_timer = None
+            self.logger.debug("Cancelled pending lock verification timer")
+    
+    def _verify_and_handle_lock(self):
+        """
+        Verify that the screen is actually locked before turning off the device.
+        
+        This method is called after _lock_verification_delay seconds to handle
+        the race condition where a lock event fires but the user aborts the lock
+        by moving the mouse or pressing a key.
+        
+        Polls GetActive() to confirm the actual lock state:
+        - If locked: Proceed with turning off the StreamDock
+        - If not locked: Log and ignore (lock was aborted)
+        - If poll fails: Fallback to assuming lock is real (fail-safe)
+        """
+        try:
+            self._pending_lock_timer = None  # Timer has fired
+            
+            # Poll D-Bus to verify actual lock state
+            actual_locked = self._poll_lock_state()
+            
+            if actual_locked:
+                self.logger.debug("Lock verification confirmed - screen is locked")
+                self._processing_state_change = True
+                self._last_state_change = time.time()
+                self.is_locked = True
+                self._handle_lock()
+                self._processing_state_change = False
+            else:
+                self.logger.info("🔒 Lock was aborted (user activity detected), ignoring lock event")
+                # Reset state - we never actually locked
+                self.is_locked = False
+                
+        except Exception:
+            self.logger.exception("Error during lock verification")
+            self._processing_state_change = False
+    
+    def _poll_lock_state(self):
+        """
+        Poll the screensaver D-Bus interface to get the actual lock state.
+        
+        :return: True if screen is locked, False if not locked.
+                 Returns True on error (fail-safe: assume locked if we can't verify)
+        """
+        if not self._screensaver_interface:
+            self.logger.warning("Screensaver interface not available, assuming locked")
+            return True  # Fail-safe: assume locked
+        
+        try:
+            is_active = self._screensaver_interface.GetActive()
+            self.logger.debug(f"GetActive() returned: {is_active}")
+            return bool(is_active)
+        except Exception as e:
+            self.logger.warning(f"Failed to poll lock state via GetActive(): {e}")
+            return True  # Fail-safe: assume locked if poll fails
     
     def _handle_lock(self):
         """Handle computer lock - turn off screen but keep HID handle open."""

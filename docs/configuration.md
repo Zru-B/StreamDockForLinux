@@ -38,13 +38,15 @@ Optional global settings for the application.
 
 ```yaml
 settings:
-  brightness: 15                # Device brightness (0-100), default: 50
-  lock_monitor: true            # Auto turn off when computer locked, default: true
-  double_press_interval: 0.3    # Time window in seconds for double-press detection
+  brightness: 15                   # Device brightness (0-100), default: 50
+  lock_monitor: true               # Auto turn off when computer locked, default: true
+  lock_verification_delay: 2.0     # Seconds to wait before confirming lock, default: 2.0
+  double_press_interval: 0.3       # Time window in seconds for double-press detection
 ```
 
 - **brightness:** Controls the LED brightness of the device.
 - **lock_monitor:** Requires `dbus-python`. Turns off screen when system is locked.
+- **lock_verification_delay:** Time to wait before confirming a lock event (0.1-30s). Prevents false lock detection when user aborts lock screen. Higher values are more reliable but slower to respond.
 - **double_press_interval:** Valid range 0.1-2.0s. Lower is faster but harder to trigger.
 
 ---

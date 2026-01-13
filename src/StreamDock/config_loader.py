@@ -5,7 +5,10 @@ Loads keys, layouts, and window rules from YAML configuration file.
 Expected YAML structure:
 streamdock:
   settings:
-    brightness: 15
+    brightness: 15                   # Device brightness (0-100), default: 50
+    lock_monitor: true               # Enable lock detection, default: true  
+    lock_verification_delay: 2.0     # Seconds to verify lock, default: 2.0
+    double_press_interval: 0.3       # Double-press time window, default: 0.3
   keys:
     KeyName:
       icon: "./img/icon.png"
@@ -59,6 +62,7 @@ class ConfigLoader:
         self.default_layout = None
         self.brightness = None
         self.lock_monitor_enabled = True  # Default enabled
+        self.lock_verification_delay = 2.0  # Default 2 seconds before confirming lock
         self.double_press_interval = 0.3  # Default 300ms
         self._temp_text_images = []  # Track temporary text image files
         self.active_layout = None
@@ -154,6 +158,14 @@ class ConfigLoader:
             self.lock_monitor_enabled = lock_monitor
         else:
             self.lock_monitor_enabled = True  # Enabled by default
+        
+        if 'lock_verification_delay' in settings:
+            delay = settings['lock_verification_delay']
+            if not isinstance(delay, (int, float)) or delay < 0.1 or delay > 30.0:
+                raise ConfigValidationError(
+                    "lock_verification_delay must be a number between 0.1 and 30.0 (seconds)"
+                )
+            self.lock_verification_delay = float(delay)
         
         if 'double_press_interval' in settings:
             interval = settings['double_press_interval']

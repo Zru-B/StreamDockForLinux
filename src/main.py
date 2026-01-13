@@ -101,7 +101,8 @@ def main():
                 enabled=config_loader.lock_monitor_enabled, 
                 current_layout=default_layout,
                 all_layouts=all_layouts,
-                window_monitor=window_monitor if config_loader.config.get('windows_rules') else None
+                window_monitor=window_monitor if config_loader.config.get('windows_rules') else None,
+                lock_verification_delay=config_loader.lock_verification_delay
             )
             
             # Apply the default layout
