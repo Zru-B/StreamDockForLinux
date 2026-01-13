@@ -49,6 +49,7 @@ The documentation is organized into the following sections:
 *   [**Installation Guide**](docs/installation.md) - Detailed dependency lists and setup steps.
 *   [**Device Setup**](docs/device_setup.md) - **Important:** `udev` rules and hardware configuration.
 *   [**Troubleshooting**](docs/troubleshooting.md) - Fixes for common issues (Device not found, Permissions).
+*   **Dependency Check**: Run `python src/main.py --check-deps` to verify your environment readiness.
 
 ### Configuration
 *   [**Configuration Guide**](docs/configuration.md) - How to write `config.yml`, define Keys, and create Layouts.

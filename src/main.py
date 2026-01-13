@@ -10,6 +10,7 @@ import threading
 import time
 
 from StreamDock.config_loader import ConfigLoader, ConfigValidationError
+from StreamDock.dependency_check import DependencyChecker
 from StreamDock.device_manager import DeviceManager
 from StreamDock.lock_monitor import LockMonitor
 from StreamDock.window_monitor import WindowMonitor
@@ -19,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="StreamDock Linux Controller")
     parser.add_argument('config', nargs='?', help="Path to configuration file")
     parser.add_argument('--mock', '--headless', action='store_true', help="Run in mock/headless mode without physical device")
+    parser.add_argument('--check-deps', action='store_true', help="Check dependencies and exit")
     return parser.parse_args()
 
 
@@ -32,6 +34,20 @@ def main():
     
     # Initialize argument parser
     args = parse_args()
+    
+    # Run dependency check if requested or on startup
+    dependency_checker = DependencyChecker()
+    if args.check_deps:
+        dependency_checker.print_report()
+        sys.exit(0)
+    
+    # Log summary and check for critical failures
+    dependency_summary = dependency_checker.get_summary()
+    logging.info(dependency_summary)
+    
+    if dependency_checker.has_critical_failures():
+        logging.error("Critical dependencies missing. Run with --check-deps for details.")
+        sys.exit(1)
     
     # Determine config file path
     if args.config:

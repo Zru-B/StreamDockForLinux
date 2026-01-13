@@ -2,6 +2,16 @@
 
 Common issues and solutions for StreamDock.
 
+## Automated Diagnostics
+
+Before manual troubleshooting, run the automated dependency checker to verify your system and Python environment:
+
+```bash
+python3 main.py --check-deps
+```
+
+This tool identifies missing system binaries (like `xdotool` or `kdotool`) and Python packages, providing hints on how to resolve them.
+
 ## Device Not Found / Permission Denied
 
 **Symptoms:**
