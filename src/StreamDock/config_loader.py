@@ -208,7 +208,12 @@ class ConfigLoader:
                     raise ConfigValidationError(f"Icon path for key '{key_name}' must be a string")
                 
                 # Expand environment variables and user path (~)
-                icon_path = os.path.abspath(os.path.expanduser(os.path.expandvars(icon_path.strip())))
+                icon_path = os.path.expanduser(os.path.expandvars(icon_path.strip()))
+                
+                # If path is relative, make it relative to the config file directory
+                if not os.path.isabs(icon_path):
+                    config_dir = os.path.dirname(os.path.abspath(self.config_path))
+                    icon_path = os.path.abspath(os.path.join(config_dir, icon_path))
                 
                 # Update the config with expanded path
                 key_def['icon'] = icon_path

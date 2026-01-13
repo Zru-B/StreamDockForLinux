@@ -152,191 +152,88 @@ class KdotoolDetection(DetectionMethod):
             return None
 
 
-class KWinScriptingDetection(DetectionMethod):
-    """Detection using KWin scripting D-Bus interface (native Python implementation)."""
+class KWinDynamicScriptingDetection(DetectionMethod):
+    """
+    Detection using a dynamically generated KWin script.
+    More robust than kwin_scripting as it uses unique markers per query.
+    """
     
     def __init__(self):
         super().__init__()
-        self._use_qdbus6 = True  # Try qdbus6 first (Plasma 6)
-    
+        self._use_qdbus6 = True
+        
     @property
     def name(self) -> str:
-        return "kwin_scripting"
-    
+        return "kwin_dynamic"
+        
     def detect(self) -> Optional[WindowInfo]:
-        """
-        Detect active window using KWin scripting API.
-        
-        Uses the installed KWin script at ~/.local/share/kwin/scripts/streamdock-activemon/
-        """
+        """Detect active window by loading and running a temporary KWin script."""
         import os
-        from pathlib import Path
+        import tempfile
+        import time
+        import json
         
+        temp_file = None
         try:
-            # Path to installed KWin script
-            script_path = Path.home() / '.local/share/kwin/scripts/streamdock-activemon/contents/code/main.js'
+            # Prepare script with unique marker
+            marker = f"STREAMDOCK_QUERY_{int(time.time() * 1000)}"
+            script_content = f"""
+            var activeClient = workspace.activeWindow;
+            if (activeClient) {{
+                print("{marker}:" + activeClient.caption + "|" + activeClient.resourceClass);
+            }} else {{
+                print("{marker}:None|None");
+            }}
+            """
             
-            if not script_path.exists():
-                self._handle_failure(f"KWin script not installed at {script_path}")
-                return None
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as tf:
+                tf.write(script_content)
+                temp_file = tf
             
             qdbus_cmd = 'qdbus6' if self._use_qdbus6 else 'qdbus'
+            plugin_name = marker  # Use marker as unique plugin name
             
-            # Load the installed script
-            load_result = self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                 'org.kde.kwin.Scripting.loadScript', str(script_path), 'streamdock-activemon'],
-                timeout=2.0,
-                check_returncode=False
-            )
-            
-            # Try qdbus if qdbus6 fails
-            if not load_result and self._use_qdbus6:
-                self.logger.debug("qdbus6 failed, trying qdbus")
-                self._use_qdbus6 = False
-                qdbus_cmd = 'qdbus'
-                load_result = self._run_command(
-                    [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                     'org.kde.kwin.Scripting.loadScript', str(script_path), 'streamdock-activemon'],
+            # Helper to try loading script with a specific dbus command
+            def _load_script_with_command(cmd_name: str) -> Optional[str]:
+                # 1. Start setup: Ensure scripting service is running
+                self._run_command(
+                    [cmd_name, 'org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting.start'],
+                    timeout=1.0,
+                    check_returncode=False
+                )
+
+                # 2. Clean slate: Unload any existing script with same name
+                self._run_command(
+                    [cmd_name, 'org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting.unloadScript', plugin_name],
+                    timeout=1.0,
+                    check_returncode=False
+                )
+                
+                # 3. Load script with plugin name (Required for Plasma 6)
+                res = self._run_command(
+                    [cmd_name, 'org.kde.KWin', '/Scripting',
+                     'org.kde.kwin.Scripting.loadScript', temp_file.name, plugin_name],
                     timeout=2.0,
                     check_returncode=False
                 )
-            
-            if not load_result or load_result.returncode != 0:
-                self._handle_failure("Failed to load KWin script")
+                
+                if res and res.returncode == 0:
+                     sid = res.stdout.strip()
+                     if sid != '-1' and sid.lstrip('-').isdigit():
+                         return sid
                 return None
-            
-            script_id = load_result.stdout.strip()
-            
-            # script_id of -1 means the script failed to load
-            if script_id == '-1':
-                self._handle_failure("KWin rejected script (returned -1)")
-                return None
-            
-            if not script_id or not script_id.lstrip('-').isdigit():
-                self._handle_failure(f"Invalid script ID: {script_id}")
-                return None
-            
-            self.logger.debug(f"KWin script loaded with ID: {script_id}")
-            
-            # Run the script - output will be in journalctl
-            run_result = self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}',
-                 'org.kde.kwin.Script.run'],
-                timeout=2.0,
-                check_returncode=False
-            )
-            
-            # Stop and unload the script
-            self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}',
-                 'org.kde.kwin.Script.stop'],
-                timeout=1.0,
-                check_returncode=False
-            )
-            self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                 'org.kde.kwin.Scripting.unloadScript', 'streamdock-activemon'],
-                timeout=1.0,
-                check_returncode=False
-            )
-            
-            if not run_result or run_result.returncode != 0:
-                error_msg = f"Script execution failed with code {run_result.returncode if run_result else 'N/A'}"
-                self._handle_failure(error_msg)
-                return None
-            
-            # Capture output from journalctl (script output goes there)
-            journal_result = self._run_command(
-                ['journalctl', '--user', '-n', '20', '--since', '2 seconds ago'],
-                timeout=2.0,
-                check_returncode=False
-            )
-            
-            if not journal_result:
-                self._handle_failure("Failed to read journal")
-                return None
-            
-            # Parse JSON output from journal
-            import json
-            try:
-                # Look for our JSON output in recent journal entries
-                for line in journal_result.stdout.split('\n'):
-                    line = line.strip()
-                    # Look for lines containing our JSON (starts with js: and has caption field)
-                    if 'js:' in line and 'caption' in line:
-                        # Extract JSON part after "js: "
-                        json_start = line.find('{')
-                        if json_start != -1:
-                            json_str = line[json_start:]
-                            # Handle potential truncation or extra text
-                            json_end = json_str.rfind('}') + 1
-                            if json_end > 0:
-                                json_str = json_str[:json_end]
-                                
-                                data = json.loads(json_str)
-                                window_class = data.get('resourceClass') or data.get('resourceName') or 'unknown'
-                                window_title = data.get('caption', 'Unknown')
-                                window_id = str(data.get('windowId', ''))
-                                
-                                self.logger.debug(f"Parsed window from journal: {window_title} ({window_class})")
-                                
-                                self._handle_success()
-                                return WindowInfo(
-                                    title=window_title,
-                                    class_=window_class,
-                                    window_id=window_id,
-                                    method=self.name
-                                )
-            except (json.JSONDecodeError, ValueError) as e:
-                self.logger.debug(f"Failed to parse journal output: {e}")
-            
-            self._handle_failure("No valid JSON output found in journal")
-            return None
-            
-        except Exception as e:
-            self._handle_failure(f"Unexpected error: {e}")
-            self.logger.exception(f"Exception in {self.name} detection")
-            return None
 
-
-class PlasmaTaskManagerDetection(DetectionMethod):
-    """Detection using Plasma task manager (experimental)."""
+            # Try primary command
+            script_id = _load_script_with_command(qdbus_cmd)
             
-            # Load script from file
-            load_result = self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                 'org.kde.kwin.Scripting.loadScript', temp_file.name],
-                timeout=2.0,
-                check_returncode=False
-            )
-            
-            # Try qdbus if qdbus6 fails
-            if not load_result and self._use_qdbus6:
-                self.logger.debug("qdbus6 failed, trying qdbus")
+            # Fallback if failed and using qdbus6
+            if not script_id and self._use_qdbus6:
                 self._use_qdbus6 = False
                 qdbus_cmd = 'qdbus'
-                load_result = self._run_command(
-                    [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                     'org.kde.kwin.Scripting.loadScript', temp_file.name],
-                    timeout=2.0,
-                    check_returncode=False
-                )
+                script_id = _load_script_with_command(qdbus_cmd)
             
-            if not load_result or load_result.returncode != 0:
-                self._handle_failure("Failed to load KWin script")
-                return None
-            
-            script_id = load_result.stdout.strip()
-            self.logger.debug(f"KWin script loaded with ID: {script_id}")
-            
-            # script_id of -1 means the script failed to load
-            if script_id == '-1':
-                self._handle_failure("KWin rejected script (returned -1)")
-                return None
-            
-            if not script_id or not script_id.lstrip('-').isdigit():
-                self._handle_failure(f"Invalid script ID: {script_id}")
+            if not script_id:
+                self._handle_failure("Failed to load dynamic script or invalid ID")
                 return None
             
             # Run the script
@@ -347,68 +244,56 @@ class PlasmaTaskManagerDetection(DetectionMethod):
                 check_returncode=False
             )
             
-            # Stop and unload the script (cleanup)
-            self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}',
-                 'org.kde.kwin.Script.stop'],
-                timeout=1.0,
-                check_returncode=False
-            )
-            self._run_command(
-                [qdbus_cmd, 'org.kde.KWin', '/Scripting',
-                 'org.kde.kwin.Scripting.unloadScript', script_id],
-                timeout=1.0,
-                check_returncode=False
-            )
+            # Cleanup script immediately
+            self._run_command([qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}', 'org.kde.kwin.Script.stop'], timeout=0.5)
+            self._run_command([qdbus_cmd, 'org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting.unloadScript', plugin_name], timeout=0.5)
             
             if not run_result or run_result.returncode != 0:
-                error_msg = f"Script execution failed with code {run_result.returncode if run_result else 'N/A'}"
-                if run_result and run_result.stdout:
-                    self.logger.debug(f"Script stdout: {run_result.stdout[:500]}")
-                    error_msg += f": {run_result.stdout[:200]}"
-                if run_result and run_result.stderr:
-                    self.logger.debug(f"Script stderr: {run_result.stderr[:500]}")
-                self._handle_failure(error_msg)
+                self._handle_failure("Script execution failed")
                 return None
             
-            # Parse JSON output from script
-            import json
-            try:
-                output_lines = run_result.stdout.strip().split('\n')
-                for line in output_lines:
-                    line = line.strip()
-                    if line.startswith('{'):
-                        data = json.loads(line)
-                        window_class = data.get('resourceClass') or data.get('resourceName') or 'unknown'
-                        window_title = data.get('caption', 'Unknown')
-                        window_id = str(data.get('windowId', ''))
-                        
-                        self.logger.debug(f"Parsed window: {window_title} ({window_class})")
-                        
-                        self._handle_success()
-                        return WindowInfo(
-                            title=window_title,
-                            class_=window_class,
-                            window_id=window_id,
-                            method=self.name
-                        )
-            except (json.JSONDecodeError, ValueError) as e:
-                self.logger.debug(f"Failed to parse script output: {e}, output: {run_result.stdout[:200]}")
+            # Parse journal with retry
+            wait_times = [0.05, 0.05, 0.10]
+            for i, wait in enumerate(wait_times):
+                time.sleep(wait)
+                
+                # Check recent journal entries
+                journal_result = self._run_command(
+                    ['journalctl', '--user', '-n', '50', '--no-pager'],
+                    timeout=1.0,
+                    check_returncode=False
+                )
+                
+                if journal_result:
+                    # Search reversed to find latest
+                    for line in reversed(journal_result.stdout.splitlines()):
+                        if marker in line:
+                            payload = line.split(f"{marker}:")[-1].strip()
+                            if "|" in payload:
+                                title, raw_class = payload.split("|", 1)
+                                if title == "None" and raw_class == "None":
+                                    return None
+                                
+                                from .window_utils import WindowUtils
+                                window_class = WindowUtils.normalize_class_name(raw_class, title)
+                                
+                                self._handle_success()
+                                return WindowInfo(
+                                    title=title,
+                                    class_=window_class,
+                                    method=self.name
+                                )
             
-            self._handle_failure("No valid JSON output from script")
+            self._handle_failure(f"Marker {marker} not found in journal after retries")
             return None
             
         except Exception as e:
-            self._handle_failure(f"Unexpected error: {e}")
-            self.logger.exception(f"Exception in {self.name} detection")
+            self._handle_failure(f"Dynamic scripting error: {e}")
             return None
         finally:
-            # Clean up temporary file
             if temp_file and os.path.exists(temp_file.name):
-                try:
-                    os.unlink(temp_file.name)
-                except:
-                    pass
+                try: os.unlink(temp_file.name)
+                except: pass
 
 
 class PlasmaTaskManagerDetection(DetectionMethod):
@@ -431,20 +316,124 @@ class KWinBasicDetection(DetectionMethod):
     
     @property
     def name(self) -> str:
-        return "kwin_dbus"
+        return "kwin_basic"
     
     def detect(self) -> Optional[WindowInfo]:
         """
-        Detect active window using KWin D-Bus.
-        
-        Uses ONLY the non-interactive busctl method.
-        NOTE: queryWindowInfo is NOT used as it prompts user to select window.
+        Detect active window using basic KWin D-Bus.
+        Tries multiple approaches for KDE Plasma 6 Wayland compatibility.
         """
-        # The ActiveWindow property doesn't exist on many KWin installations
-        # Disable this method to avoid repeated failures
-        if self._is_available:
-            self.disable("KWin ActiveWindow property not available on this system")
+        from .window_utils import WindowUtils
         
+        # Method 1: Try using qdbus6 (Plasma 6 uses Qt6)
+        try:
+            result = self._run_command(
+                [
+                    "bash",
+                    "-c",
+                    'qdbus6 org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null '
+                    '|| qdbus org.kde.KWin /KWin org.kde.KWin.activeWindow 2>/dev/null || echo ""',
+                ],
+                timeout=1.0,
+                check_returncode=False
+            )
+
+            if result and result.returncode == 0 and result.stdout.strip():
+                raw_output = result.stdout.strip()
+                # Check if the output is actually an error message
+                if "Error" not in raw_output and "No such method" not in raw_output:
+                    window_title = raw_output
+                    window_class = WindowUtils.extract_app_from_title(window_title)
+
+                    self._handle_success()
+                    return WindowInfo(
+                        title=window_title,
+                        class_=window_class,
+                        raw=window_title,
+                        method="kwin_plasma6",
+                    )
+        except Exception as e:
+            self.logger.debug(f"KWin basic method 1 failed: {e}")
+
+        # Method 2: Try using busctl (non-interactive)
+        try:
+            result = self._run_command(
+                [
+                    "bash",
+                    "-c",
+                    'busctl --user get-property org.kde.KWin /KWin org.kde.KWin ActiveWindow '
+                    '2>/dev/null || echo ""',
+                ],
+                timeout=1.0,
+                check_returncode=False
+            )
+
+            if (
+                result
+                and result.returncode == 0
+                and result.stdout.strip()
+                and "Error" not in result.stdout
+            ):
+                window_title = result.stdout.strip()
+                # Remove busctl formatting (e.g., 's "Title"')
+                if window_title.startswith("s "):
+                    window_title = window_title[2:].strip('"')
+
+                window_class = WindowUtils.extract_app_from_title(window_title)
+
+                self._handle_success()
+                return WindowInfo(
+                    title=window_title,
+                    class_=window_class,
+                    raw=window_title,
+                    method="busctl",
+                )
+        except Exception as e:
+            self.logger.debug(f"KWin basic method 2 failed: {e}")
+
+        # Method 3: Fallback to XWindowDetection logic (often works via XWayland)
+        # We invoke xdotool directly here to keep this strategy self-contained for "basic" approaches
+        try:
+            result = self._run_command(
+                ["bash", "-c", 'xdotool getactivewindow 2>/dev/null || echo ""'],
+                timeout=1.0,
+                check_returncode=False
+            )
+
+            if result and result.returncode == 0 and result.stdout.strip():
+                window_id = result.stdout.strip()
+
+                # Get window title
+                result_title = self._run_command(
+                    ["xdotool", "getwindowname", window_id],
+                    check_returncode=False
+                )
+                window_title = result_title.stdout.strip() if result_title and result_title.returncode == 0 else ""
+
+                # Get window class
+                result_class = self._run_command(
+                    ["xdotool", "getwindowclassname", window_id],
+                    check_returncode=False
+                )
+                
+                raw_class = ""
+                if result_class and result_class.returncode == 0 and result_class.stdout.strip():
+                    raw_class = result_class.stdout.strip()
+                    window_class = WindowUtils.normalize_class_name(raw_class, window_title)
+                else:
+                    window_class = WindowUtils.extract_app_from_title(window_title)
+
+                self._handle_success()
+                return WindowInfo(
+                    title=window_title,
+                    class_=window_class,
+                    raw=window_title,
+                    method="kwin_basic_x11",
+                )
+        except Exception as e:
+            self.logger.debug(f"KWin basic method 3 failed: {e}")
+
+        self._handle_failure("All basic KWin methods failed")
         return None
 
 
@@ -472,5 +461,48 @@ class XWindowDetection(DetectionMethod):
             
         except Exception as e:
             self._handle_failure(f"Unexpected error: {e}")
-            self.logger.exception(f"Exception in {self.name} detection")
+            return None
+
+
+class SimulationDetection(DetectionMethod):
+    """Detection for simulation mode (reads from file)."""
+    
+    def __init__(self, file_path: str = "/tmp/streamdock_fake_window"):
+        super().__init__()
+        self.file_path = file_path
+        
+    @property
+    def name(self) -> str:
+        return "simulation"
+        
+    def detect(self) -> Optional[WindowInfo]:
+        """Read active window from simulation file."""
+        import os
+        try:
+            if not os.path.exists(self.file_path):
+                return None
+
+            with open(self.file_path, 'r') as f:
+                content = f.read().strip()
+
+            if not content:
+                return None
+
+            # Content format: "Title|Class" or just "Class"
+            parts = content.split('|')
+            if len(parts) == 2:
+                title, win_class = parts
+            else:
+                title = content
+                win_class = content
+
+            self._handle_success()
+            return WindowInfo(
+                title=title,
+                class_=win_class,
+                raw=content,
+                method="simulation"
+            )
+        except Exception as e:
+            self._handle_failure(f"Error reading simulation file: {e}")
             return None

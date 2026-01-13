@@ -34,7 +34,7 @@ class MockTransport:
         self.logger.info("Closing mock device")
         self._device_open = False
         
-    def read_(self, length: int) -> Optional[Tuple[bytes, str, str, int, int]]:
+    def read_(self, length: int, timeout_ms: int = -1) -> Optional[Tuple[bytes, str, str, int, int]]:
         """
         Read from the simulated input queue.
         Returns tuple format expected by StreamDock.read():
@@ -45,8 +45,12 @@ class MockTransport:
             
         try:
             # Blocking read with timeout to simulate hardware waiting for events
-            # Use a short timeout so we can check for device closure
-            data = self.input_queue.get(timeout=0.5)
+            # Use a default timeout of 0.5s if not specified or infinite
+            timeout = 0.5
+            if timeout_ms > 0:
+                timeout = timeout_ms / 1000.0
+            
+            data = self.input_queue.get(timeout=timeout)
             
             # Parse the data to return the expected tuple format
             # Default empty values
