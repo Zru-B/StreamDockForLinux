@@ -21,19 +21,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('config', nargs='?', help="Path to configuration file")
     parser.add_argument('--mock', '--headless', action='store_true', help="Run in mock/headless mode without physical device")
     parser.add_argument('--check-deps', action='store_true', help="Check dependencies and exit")
+    parser.add_argument('--debug', action='store_true', help="Enable debug logging")
     return parser.parse_args()
 
 
 def main():
     """Main application entry point."""
+    # Initialize argument parser
+    args = parse_args()
+
+    # Set log level
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=log_level,
         format='%(asctime)s %(levelname)s:%(name)s:%(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
-    # Initialize argument parser
-    args = parse_args()
     
     # Run dependency check if requested or on startup
     dependency_checker = DependencyChecker()
