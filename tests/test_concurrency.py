@@ -39,6 +39,8 @@ class TestConcurrencyAndStability(unittest.TestCase):
         }
         # Ensure clean state for threading counts
         self.initial_thread_count = threading.active_count()
+        # Mock transport open success
+        self.mock_transport.open.return_value = 1
 
     def tearDown(self):
         # Ensure we don't leak threads between tests
