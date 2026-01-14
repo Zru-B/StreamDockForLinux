@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Module-level cache for tool availability
 _kdotool_available: Optional[bool] = None
 _xdotool_available: Optional[bool] = None
+_wmctrl_available: Optional[bool] = None
 
 # Application patterns for class name normalization
 # Patterns are checked in order, first match wins
@@ -132,15 +133,39 @@ class WindowUtils:
             return False
 
     @staticmethod
+    def is_wmctrl_available() -> bool:
+        """
+        Check if wmctrl is available and functional.
+        
+        Result is cached on first call for performance.
+        
+        :return: True if wmctrl is available, False otherwise
+        """
+        global _wmctrl_available
+        
+        if _wmctrl_available is not None:
+            return _wmctrl_available
+        
+        # Check if wmctrl exists
+        if shutil.which("wmctrl") is None:
+            logger.debug("wmctrl not found in PATH")
+            _wmctrl_available = False
+            return False
+            
+        _wmctrl_available = True
+        return True
+
+    @staticmethod
     def refresh_tool_cache() -> None:
         """
         Refresh the cached tool availability status.
         
         Call this if tools are installed/uninstalled during runtime.
         """
-        global _kdotool_available, _xdotool_available
+        global _kdotool_available, _xdotool_available, _wmctrl_available
         _kdotool_available = None
         _xdotool_available = None
+        _wmctrl_available = None
         logger.debug("Tool availability cache refreshed")
 
     # ========== kdotool operations ==========
@@ -453,6 +478,99 @@ class WindowUtils:
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
             logger.debug(f"xdotool_activate_window failed: {exc}")
             return False
+
+    # ========== wmctrl operations ==========
+
+    @staticmethod
+    def wmctrl_activate_window(class_name: str) -> bool:
+        """
+        Try to activate window using wmctrl.
+        
+        :param class_name: Window class to search for
+        :return: True if successful, False otherwise
+        """
+        if not WindowUtils.is_wmctrl_available():
+            return False
+
+        try:
+            result = subprocess.run(
+                ['wmctrl', '-xa', class_name],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    # ========== System operations ==========
+
+    @staticmethod
+    def is_process_running(process_name: str) -> bool:
+        """
+        Check if a process is running using pgrep.
+        
+        :param process_name: Process name to search for
+        :return: True if process is running, False otherwise or if pgrep unavailable
+        """
+        try:
+            result = subprocess.run(
+                ['pgrep', '-x', process_name],
+                capture_output=True,
+                text=True,
+                timeout=1
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def activate_window(class_name: str, search_by_name: str = None) -> bool:
+        """
+        Try all available methods to find and focus window.
+        
+        Auto-detects session type (Wayland vs X11) and connects methods accordingly.
+        
+        :param class_name: Window class to search for
+        :param search_by_name: Optional window name for Chrome apps fallback
+        :return: True if window found and focused, False otherwise
+        """
+        import os
+        session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+        
+        # Primary method depends on session
+        if session_type == 'wayland':
+            # Try kdotool first for Wayland
+            window_id = WindowUtils.kdotool_search_by_class(class_name)
+            if window_id:
+                if WindowUtils.kdotool_activate_window(window_id):
+                    return True
+            
+            # Fallback by name using kdotool
+            if search_by_name:
+                window_id = WindowUtils.kdotool_search_by_name(search_by_name)
+                if window_id:
+                    if WindowUtils.kdotool_activate_window(window_id):
+                        return True
+        else:
+            # Try xdotool first for X11 / other
+            window_id = WindowUtils.xdotool_search_by_class(class_name)
+            if window_id:
+                if WindowUtils.xdotool_activate_window(window_id):
+                    return True
+                    
+            # Fallback by name using xdotool
+            if search_by_name:
+                window_id = WindowUtils.xdotool_search_by_name(search_by_name)
+                if window_id:
+                    if WindowUtils.xdotool_activate_window(window_id):
+                        return True
+
+        # Last resort: wmctrl (works on both if XWayland is active)
+        if WindowUtils.wmctrl_activate_window(class_name):
+            return True
+
+        return False
 
     # ========== Utility functions ==========
 

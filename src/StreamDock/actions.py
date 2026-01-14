@@ -6,8 +6,10 @@ import subprocess
 import time
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+from StreamDock.Models import WindowInfo
+from StreamDock.window_utils import WindowUtils
 
+logger = logging.getLogger(__name__)
 
 class ActionType(Enum):
     """Enumeration of supported StreamDock actions."""
@@ -111,10 +113,12 @@ def emulate_key_combo(combo_string):
             logger.error(f"Unknown key: {key}")
             return
 
+    if not WindowUtils.is_xdotool_available():
+        logger.error("Error: xdotool not found. Install with: sudo apt install xdotool")
+        return
+
     try:
         subprocess.run(['xdotool', 'key', '+'.join(xdotool_keys)], check=True)
-    except FileNotFoundError:
-        logger.error("Error: xdotool not found. Install with: sudo apt install xdotool")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error pressing key combination: {e}")
 
@@ -129,9 +133,25 @@ def type_text(text, delay=0.001):
     if not text:
         return
 
+    if not WindowUtils.is_xdotool_available():
+        logger.error("[ERROR] xdotool not found. Install with: sudo apt install xdotool")
+        return
+
     try:
         # Get the active window ID to ensure we type in the right window
         try:
+            window_info = WindowUtils.xdotool_get_active_window()
+            if window_info:
+                 # We need the ID for windowactivate. xdotool_get_active_window returns info,
+                 # but internally it gets the ID. To be safe and simple, let's just re-fetch ID or just trust focus.
+                 # Actually, better to just let xdotool work on current focus without explicit activation if simple.
+                 # But original code used windowactivate --sync.
+                 # Let's try raw xdotool call for ID to keep behavior exactly consistent for now,
+                 # or we can assume if xdotool is available we can run the command.
+                 pass
+            
+            # Reverting to direct call for ID purely for the --sync behavior which is specific here
+            # But checking availability first.
             window_id = subprocess.check_output(['xdotool', 'getactivewindow']).decode('utf-8').strip()
             window_args = ['windowactivate', '--sync', window_id]
         except Exception as e:
@@ -170,8 +190,6 @@ def type_text(text, delay=0.001):
                 if e.stderr:
                     logger.error(f"[ERROR] stderr: {e.stderr}")
 
-    except FileNotFoundError:
-        logger.error("[ERROR] xdotool not found. Install with: sudo apt install xdotool")
     except Exception:
         logger.exception("[ERROR] Unexpected error while typing text")
         # Try fallback method if the main method fails
@@ -423,210 +441,6 @@ def _parse_app_config(app_config):
         'process_name': process_name
     }
 
-
-def _is_process_running(process_name):
-    """
-    Check if a process is running using pgrep.
-
-    Args:
-        process_name: Process name to search for
-
-    Returns:
-        True if process is running, False otherwise or if pgrep unavailable
-    """
-    try:
-        result = subprocess.run(
-            ['pgrep', '-x', process_name],
-            capture_output=True,
-            text=True,
-            timeout=1
-        )
-        return result.returncode == 0 and bool(result.stdout.strip())
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # pgrep not available or timeout
-        return None  # Return None to indicate we can't determine
-
-
-def _try_kdotool_activation(class_name, search_by_name=None):
-    """
-    Try to find and activate window using kdotool (KDE Wayland).
-
-    Args:
-        class_name: Window class to search for
-        search_by_name: Optional window name to search for (Chrome apps)
-
-    Returns:
-        True if window found and activated, False otherwise
-    """
-    try:
-        # Search for window by class name
-        result = subprocess.run(
-            ['kdotool', 'search', '--class', class_name],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, get the window ID
-            window_id = result.stdout.strip().split('\n')[0]
-            logger.info(f"Found window (kdotool): {window_id} for class '{class_name}'")
-            # Activate the window
-            subprocess.run(
-                ['kdotool', 'windowactivate', window_id],
-                check=True,
-                timeout=2
-            )
-            return True
-        elif search_by_name:
-            # Fallback: Try searching by window name for Chrome apps
-            result = subprocess.run(
-                ['kdotool', 'search', '--name', search_by_name],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                window_id = result.stdout.strip().split('\n')[0]
-                logger.info(f"Found window (kdotool by name): {window_id} for '{search_by_name}'")
-                subprocess.run(
-                    ['kdotool', 'windowactivate', window_id],
-                    check=True,
-                    timeout=2
-                )
-                return True
-
-        return False
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def _try_xdotool_activation(class_name, search_by_name=None):
-    """
-    Try to find and activate window using xdotool (X11 only).
-
-    Args:
-        class_name: Window class to search for
-        search_by_name: Optional window name to search for (Chrome apps)
-
-    Returns:
-        True if window found and activated, False otherwise
-    """
-    try:
-        # Search for windows by class name (search all desktops)
-        result = subprocess.run(
-            ['xdotool', 'search', '--all', '--onlyvisible', '--class', class_name],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            # Window found, focus it
-            window_ids = result.stdout.strip().split('\n')
-            if window_ids:
-                logger.info(f"Found window (xdotool): {window_ids[0]} for class '{class_name}'")
-                subprocess.run(
-                    ['xdotool', 'windowactivate', window_ids[0]],
-                    check=True,
-                    timeout=2,
-                    stderr=subprocess.DEVNULL
-                )
-                return True
-        elif search_by_name:
-            # Fallback: Try searching by window name for Chrome apps
-            result = subprocess.run(
-                ['xdotool', 'search', '--all', '--name', search_by_name],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                window_ids = result.stdout.strip().split('\n')
-                if window_ids:
-                    logger.info(f"Found window (xdotool by name): {window_ids[0]} for '{search_by_name}'")
-                    subprocess.run(
-                        ['xdotool', 'windowactivate', window_ids[0]],
-                        check=True,
-                        timeout=2,
-                        stderr=subprocess.DEVNULL
-                    )
-                    return True
-
-        return False
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def _try_wmctrl_activation(class_name):
-    """
-    Try to activate window using wmctrl.
-
-    Args:
-        class_name: Window class to search for
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        result = subprocess.run(
-            ['wmctrl', '-xa', class_name],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def _get_chrome_app_name(command, app_config):
-    """
-    Get Chrome/Chromium app name for search by name fallback.
-
-    Args:
-        command: Command list
-        app_config: Original app config (may contain desktop_file)
-
-    Returns:
-        App name if Chrome app with desktop file, None otherwise
-    """
-    if 'chromium' not in command[0].lower() and 'chrome' not in command[0].lower():
-        return None
-
-    # Extract app name from desktop file if we have it
-    if isinstance(app_config, dict) and app_config.get('desktop_file'):
-        desktop_info = parse_desktop_file(app_config.get('desktop_file'))
-        if desktop_info:
-            return desktop_info['name']
-
-    return None
-
-
-def _find_and_focus_window(class_name, search_by_name=None):
-    """
-    Try all available methods to find and focus window.
-
-    Args:
-        class_name: Window class to search for
-        search_by_name: Optional window name for Chrome apps
-
-    Returns:
-        True if window found and focused, False otherwise
-    """
-    session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
-    activation_method = _try_kdotool_activation if session_type == 'wayland' else _try_xdotool_activation
-
-    if activation_method(class_name, search_by_name):
-        return True
-
-    # Try wmctrl as last resort
-    if _try_wmctrl_activation(class_name):
-        return True
-
-    return False
-
-
 def launch_or_focus_application(app_config):
     """
     Launch an application if not running, or focus its window if already running.
@@ -667,13 +481,21 @@ def launch_or_focus_application(app_config):
             return
 
     try:
-        if not _is_process_running(process_name):
+        if not WindowUtils.is_process_running(process_name):
             _launch_detached(command)
             return
 
-        search_by_name = _get_chrome_app_name(command, app_config)
+        # Need to reconstruct search_by_name logic or use WindowUtils capability
+        # _get_chrome_app_name used to be local. Let's recreate simple logic here or assume
+        # app name from desktop file if available.
+        search_by_name = None
+        if 'chromium' in command[0].lower() or 'chrome' in command[0].lower():
+            if isinstance(app_config, dict) and app_config.get('desktop_file'):
+                desktop_info = parse_desktop_file(app_config.get('desktop_file'))
+                if desktop_info:
+                    search_by_name = desktop_info['name']
 
-        if not _find_and_focus_window(class_name, search_by_name):
+        if not WindowUtils.activate_window(class_name, search_by_name):
             # Launch new instance anyway (user may have minimized or hidden it)
             logger.warning(f"Window not found for class '{class_name}', launching a new instance")
             _launch_detached(command)

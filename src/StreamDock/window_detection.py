@@ -137,7 +137,6 @@ class KdotoolDetection(DetectionMethod):
         from .window_utils import WindowUtils
         
         try:
-            # Delegate to WindowUtils which has the full implementation
             window_info = WindowUtils.kdotool_get_active_window()
             
             if window_info:
@@ -449,7 +448,6 @@ class XWindowDetection(DetectionMethod):
         from .window_utils import WindowUtils
         
         try:
-            # Delegate to WindowUtils which has the full implementation
             window_info = WindowUtils.xdotool_get_active_window()
             
             if window_info:

@@ -25,20 +25,29 @@ class TestActions(unittest.TestCase):
         self.assertTrue(kwargs['start_new_session'])
         self.assertTrue(kwargs['close_fds'])
 
+    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
     @patch('StreamDock.actions.subprocess.run')
-    def test_emulate_key_combo(self, mock_run):
+    def test_emulate_key_combo(self, mock_run, mock_is_available):
         """Test key combination emulation."""
+        mock_is_available.return_value = True
+        
         emulate_key_combo("CTRL+C")
         mock_run.assert_called_with(['xdotool', 'key', 'ctrl+c'], check=True)
         
         emulate_key_combo("ALT+F4")
         mock_run.assert_called_with(['xdotool', 'key', 'alt+F4'], check=True)
 
-    @patch('StreamDock.actions.subprocess.check_output')
+    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
+    @patch('StreamDock.actions.WindowUtils.xdotool_get_active_window')
     @patch('StreamDock.actions.subprocess.run')
-    def test_type_text(self, mock_run, mock_check_output):
+    @patch('StreamDock.actions.subprocess.check_output')
+    def test_type_text(self, mock_check_output, mock_run, mock_get_window, mock_is_available):
         """Test typing text."""
+        # Mock availability
+        mock_is_available.return_value = True
+        
         # Mock getting active window ID
+        mock_get_window.return_value = MagicMock() # Return truthy
         mock_check_output.return_value = b'12345\n'
         
         type_text("Hi")
@@ -94,76 +103,57 @@ class TestActions(unittest.TestCase):
         )
 
     @patch('StreamDock.actions.parse_desktop_file')
-    @patch('StreamDock.actions.subprocess.run')
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
     @patch('StreamDock.actions._launch_detached')
-    def test_launch_app_not_running(self, mock_launch, mock_run, mock_parse):
+    def test_launch_app_not_running(self, mock_launch, mock_is_running, mock_parse):
         """Test launching app when not running."""
         # Mock pgrep to return failure (process not found)
-        mock_run.return_value.returncode = 1
+        mock_is_running.return_value = False
         
         launch_or_focus_application({"command": ["firefox"]})
         
         mock_launch.assert_called_with(["firefox"])
 
-    @patch('StreamDock.actions.os.environ.get')
-    @patch('StreamDock.actions.subprocess.run')
-    def test_launch_app_focus_xdotool(self, mock_run, mock_env_get):
+    @patch('StreamDock.actions.WindowUtils.activate_window')
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_focus_xdotool(self, mock_is_running, mock_activate):
         """Test focusing existing app using xdotool (fallback)."""
-        # Mock X11 session (not Wayland) so xdotool is used
-        mock_env_get.return_value = 'x11'
+        # Mock process running
+        mock_is_running.return_value = True
         
-        # Mock pgrep success
-        # First call is pgrep
-        # Second call is kdotool (fail)
-        # Third call is xdotool search (success)
-        # Fourth call is xdotool windowactivate
-        
-        def run_side_effect(cmd, **kwargs):
-            mock_ret = MagicMock()
-            mock_ret.returncode = 1 # Default fail
-            mock_ret.stdout = ""
-            
-            if cmd[0] == 'pgrep':
-                mock_ret.returncode = 0
-                mock_ret.stdout = "1000\n"
-            elif cmd[0] == 'kdotool':
-                mock_ret.returncode = 1 # kdotool not found
-            elif cmd[0] == 'xdotool' and cmd[1] == 'search':
-                mock_ret.returncode = 0
-                mock_ret.stdout = "99999\n"
-            elif cmd[0] == 'xdotool' and cmd[1] == 'windowactivate':
-                mock_ret.returncode = 0
-            
-            return mock_ret
-            
-        mock_run.side_effect = run_side_effect
+        # Mock activation success
+        mock_activate.return_value = True
         
         launch_or_focus_application("firefox")
         
-        # Verify activation called
-        mock_run.assert_any_call(
-            ['xdotool', 'windowactivate', '99999'],
-            check=True, timeout=2, stderr=subprocess.DEVNULL
-        )
+        # Verify checking and activation called
+        mock_is_running.assert_called_with('firefox')
+        mock_activate.assert_called_with('firefox', None)
 
     @patch('StreamDock.actions._launch_detached')
-    def test_launch_app_string_format(self, mock_launch):
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_string_format(self, mock_is_running, mock_launch):
         """Test simple string command format."""
+        mock_is_running.return_value = False
         launch_or_focus_application("firefox")
-        # Should eventually call launch (no window found in test env)
+        # Should eventually call launch
         # This tests config parsing of string format
         
     @patch('StreamDock.actions._launch_detached')
-    def test_launch_app_list_format(self, mock_launch):
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_list_format(self, mock_is_running, mock_launch):
         """Test list command format."""
+        mock_is_running.return_value = False
         launch_or_focus_application(["firefox", "--private-window"])
         # Should eventually call launch
         # This tests config parsing of list format
         
     @patch('StreamDock.actions.parse_desktop_file')
     @patch('StreamDock.actions._launch_detached')
-    def test_launch_app_dict_with_desktop_file(self, mock_launch, mock_parse):
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_dict_with_desktop_file(self, mock_is_running, mock_launch, mock_parse):
         """Test desktop file loading in dict config."""
+        mock_is_running.return_value = False
         mock_parse.return_value = {
             'command': ['kate'],
             'class_name': 'kate',
@@ -175,8 +165,10 @@ class TestActions(unittest.TestCase):
         mock_parse.assert_called_with("org.kde.kate.desktop")
         
     @patch('StreamDock.actions._launch_detached')
-    def test_launch_app_force_new(self, mock_launch):
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_force_new(self, mock_is_running, mock_launch):
         """Test force_new flag skips window detection."""
+        # Even if we mock process running, force_new should skip it
         launch_or_focus_application({
             "command": ["firefox"],
             "force_new": True
@@ -184,39 +176,24 @@ class TestActions(unittest.TestCase):
         
         # Should launch directly without window detection
         mock_launch.assert_called_once_with(["firefox"])
+        mock_is_running.assert_not_called()
         
-    @patch('StreamDock.actions.subprocess.run')
-    def test_launch_app_focus_kdotool(self, mock_run):
+    @patch('StreamDock.actions.WindowUtils.activate_window')
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_focus_kdotool(self, mock_is_running, mock_activate):
         """Test focusing existing app using kdotool (KDE Wayland)."""
-        def run_side_effect(cmd, **kwargs):
-            mock_ret = MagicMock()
-            mock_ret.returncode = 1  # Default fail
-            mock_ret.stdout = ""
-            
-            if cmd[0] == 'pgrep':
-                mock_ret.returncode = 0
-                mock_ret.stdout = "1000\n"
-            elif cmd[0] == 'kdotool' and cmd[1] == 'search':
-                mock_ret.returncode = 0
-                mock_ret.stdout = "88888\n"
-            elif cmd[0] == 'kdotool' and cmd[1] == 'windowactivate':
-                mock_ret.returncode = 0
-            
-            return mock_ret
-            
-        mock_run.side_effect = run_side_effect
+        mock_is_running.return_value = True
+        mock_activate.return_value = True
         
         launch_or_focus_application("firefox")
         
-        # Verify kdotool activation called
-        mock_run.assert_any_call(
-            ['kdotool', 'windowactivate', '88888'],
-            check=True, timeout=2
-        )
+        # Verify kdotool activation called via activate_window
+        mock_activate.assert_called_with('firefox', None)
         
+    @patch('StreamDock.actions.WindowUtils.activate_window')
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
     @patch('StreamDock.actions.parse_desktop_file')
-    @patch('StreamDock.actions.subprocess.run')
-    def test_launch_app_chrome_by_name(self, mock_run, mock_parse):
+    def test_launch_app_chrome_by_name(self, mock_parse, mock_is_running, mock_activate):
         """Test Chrome app searched by name fallback."""
         # Mock desktop file for Chrome app
         mock_parse.return_value = {
@@ -225,33 +202,13 @@ class TestActions(unittest.TestCase):
             'name': 'My Chrome App'
         }
         
-        def run_side_effect(cmd, **kwargs):
-            mock_ret = MagicMock()
-            mock_ret.returncode = 1  # Default fail
-            mock_ret.stdout = ""
-            
-            if cmd[0] == 'pgrep':
-                mock_ret.returncode = 0
-                mock_ret.stdout = "1000\n"
-            elif cmd[0] == 'kdotool' and cmd[1] == 'search':
-                if '--name' in cmd:
-                    # Found by name
-                    mock_ret.returncode = 0
-                    mock_ret.stdout = "77777\n"
-            elif cmd[0] == 'kdotool' and cmd[1] == 'windowactivate':
-                mock_ret.returncode = 0
-            
-            return mock_ret
-            
-        mock_run.side_effect = run_side_effect
+        mock_is_running.return_value = True
+        mock_activate.return_value = True
         
         launch_or_focus_application({"desktop_file": "chrome_app.desktop"})
         
-        # Verify search by name was attempted
-        mock_run.assert_any_call(
-            ['kdotool', 'search', '--name', 'My Chrome App'],
-            capture_output=True, text=True, timeout=2
-        )
+        # Verify search by name was attempted via activate_window
+        mock_activate.assert_called_with('chromium', 'My Chrome App')
         
     def test_launch_app_invalid_config(self):
         """Test error handling for invalid config."""
@@ -260,23 +217,12 @@ class TestActions(unittest.TestCase):
         launch_or_focus_application({})  # Missing command
         
     @patch('StreamDock.actions._launch_detached')
-    @patch('StreamDock.actions.subprocess.run')
-    def test_launch_app_process_running_no_window(self, mock_run, mock_launch):
+    @patch('StreamDock.actions.WindowUtils.activate_window')
+    @patch('StreamDock.actions.WindowUtils.is_process_running')
+    def test_launch_app_process_running_no_window(self, mock_is_running, mock_activate, mock_launch):
         """Test fallback launch when process exists but window not found."""
-        def run_side_effect(cmd, **kwargs):
-            mock_ret = MagicMock()
-            mock_ret.returncode = 1  # Default fail
-            mock_ret.stdout = ""
-            
-            if cmd[0] == 'pgrep':
-                # Process is running
-                mock_ret.returncode = 0
-                mock_ret.stdout = "1000\n"
-            # All window detection methods fail
-            
-            return mock_ret
-            
-        mock_run.side_effect = run_side_effect
+        mock_is_running.return_value = True
+        mock_activate.return_value = False # Window not found/activated
         
         launch_or_focus_application("firefox")
         
