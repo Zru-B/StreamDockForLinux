@@ -114,3 +114,151 @@ def test_apply_with_window_rules(mock_create_text_image):
     args, kwargs = mock_window_monitor.add_window_rule.call_args
     assert args[0] == 'TestWindow'
     assert kwargs.get('match_field') == 'class'
+
+def test_validate_window_rules_list_valid():
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    # Valid list of strings
+    loader.config = {
+        'streamdock': {
+            'layouts': {'L1': {}},
+            'windows_rules': {
+                'Rule1': {
+                    'window_name': ['Win1', 'Win2'],
+                    'layout': 'L1'
+                }
+            }
+        }
+    }
+    loader.config = loader.config['streamdock']  # Mimic internal structure
+    loader._validate_window_rules()
+
+def test_validate_window_rules_list_invalid_content():
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    # List containing non-string
+    loader.config = {
+        'streamdock': {
+            'layouts': {'L1': {}},
+            'windows_rules': {
+                'Rule1': {
+                    'window_name': ['Win1', 123],
+                    'layout': 'L1'
+                }
+            }
+        }
+    }
+    loader.config = loader.config['streamdock']
+    with pytest.raises(ConfigValidationError) as excinfo:
+        loader._validate_window_rules()
+    assert "must contain only strings" in str(excinfo.value)
+
+def test_validate_window_rules_invalid_type():
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    loader.config = {
+        'streamdock': {
+            'layouts': {'L1': {}},
+            'windows_rules': {
+                'Rule1': {
+                    'window_name': 123,  # Not str or list
+                    'layout': 'L1'
+                }
+            }
+        }
+    }
+    loader.config = loader.config['streamdock']
+    with pytest.raises(ConfigValidationError) as excinfo:
+        loader._validate_window_rules()
+    assert "must be a string or a list of strings" in str(excinfo.value)
+
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
+def test_apply_window_rules_list(mock_create_text_image):
+    from PIL import Image
+    mock_create_text_image.return_value = Image.new('RGB', (112, 112))
+    
+    mock_device = MagicMock()
+    mock_window_monitor = MagicMock()
+    
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    loader.load()
+    
+    # Inject rule with list
+    loader.config['windows_rules'] = {
+        'ListRule': {
+            'window_name': ['App1', 'App2'],
+            'layout': 'Layout1'
+        }
+    }
+    
+    loader.apply(mock_device, mock_window_monitor)
+    
+    # Should call add_window_rule once with list
+    assert mock_window_monitor.add_window_rule.call_count == 1
+    
+    # Verify calls
+    args, _ = mock_window_monitor.add_window_rule.call_args
+    patterns = args[0]
+    assert isinstance(patterns, list)
+    assert 'App1' in patterns
+    assert 'App2' in patterns
+
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
+def test_apply_window_rules_regex(mock_create_text_image):
+    from PIL import Image
+    import re
+    mock_create_text_image.return_value = Image.new('RGB', (112, 112))
+    
+    mock_device = MagicMock()
+    mock_window_monitor = MagicMock()
+    
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    loader.load()
+    
+    # Inject rule with regex
+    loader.config['windows_rules'] = {
+        'RegexRule': {
+            'window_name': '^App.*',
+            'is_regex': True,
+            'layout': 'Layout1'
+        }
+    }
+    
+    loader.apply(mock_device, mock_window_monitor)
+    
+    # Verify add_window_rule called with regex
+    args, kwargs = mock_window_monitor.add_window_rule.call_args
+    pattern = args[0]
+    assert isinstance(pattern, re.Pattern)
+    assert pattern.pattern == '^App.*'
+    assert kwargs.get('is_regex') is True
+
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
+def test_apply_window_rules_regex_list(mock_create_text_image):
+    from PIL import Image
+    import re
+    mock_create_text_image.return_value = Image.new('RGB', (112, 112))
+    
+    mock_device = MagicMock()
+    mock_window_monitor = MagicMock()
+    
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    loader.load()
+    
+    # Inject rule with regex list
+    loader.config['windows_rules'] = {
+        'RegexListRule': {
+            'window_name': ['^App1.*', '^App2.*'],
+            'is_regex': True,
+            'layout': 'Layout1'
+        }
+    }
+    
+    loader.apply(mock_device, mock_window_monitor)
+    
+    # Verify add_window_rule called with list of regexes
+    args, kwargs = mock_window_monitor.add_window_rule.call_args
+    patterns = args[0]
+    assert isinstance(patterns, list)
+    assert len(patterns) == 2
+    assert isinstance(patterns[0], re.Pattern)
+    assert patterns[0].pattern == '^App1.*'
+    assert kwargs.get('is_regex') is True
+

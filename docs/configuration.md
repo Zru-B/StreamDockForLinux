@@ -141,10 +141,32 @@ Automatically switch layouts based on the active window.
 ```yaml
 windows_rules:
   Firefox_Rule:
-    window_name: "Firefox"      # Pattern to match
+    window_name: "Firefox"      # Single string pattern
     layout: "Browser_Layout"    # Layout to activate
     match_field: "class"        # Field to match against
+
+  Browsers_List_Rule:
+    window_name:                # List of strings
+      - "Firefox"
+      - "Chromium"
+      - "Vivaldi"
+    layout: "Browser_Layout"
+
+  Browser_Regex_Rule:
+    window_name: "^Chrom.*"     # Single regex pattern
+    is_regex: true              # Treat patterns as regex (default: false)
+    layout: "Chrome_Layout"
+
+  Browser_List_Regex_Rule:
+    window_name:                # List of strings and regex patterns
+      - "^Chrom.*"
+      - "^Vivaldi.*"
+      - "Firefox"
+    is_regex: true              # Treat list items as regex (default: false)
+    layout: "Browser_Layout"
 ```
+
+> **Note:** When `is_regex` is `true`, all items in the list are compiled as case-insensitive regex pattern. Simple strings (e.g., `"Firefox"`) will still work as expected (matching anywhere in the target field), essentially behaving like a substring match.
 
 **Match fields:**
 - `class` (default): Application class name (e.g., `firefox`, `Code`).

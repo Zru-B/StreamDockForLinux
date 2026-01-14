@@ -357,6 +357,17 @@ class ConfigLoader:
             if 'window_name' not in rule_def:
                 raise ConfigValidationError(f"Window rule '{rule_name}' is missing 'window_name' field")
             
+            # Validate window_name type
+            window_name = rule_def['window_name']
+            if not isinstance(window_name, (str, list)):
+                raise ConfigValidationError(f"Window rule '{rule_name}': 'window_name' must be a string or a list of strings")
+            
+            if isinstance(window_name, list):
+                if not window_name:
+                    raise ConfigValidationError(f"Window rule '{rule_name}': 'window_name' list cannot be empty")
+                if not all(isinstance(item, str) for item in window_name): 
+                    raise ConfigValidationError(f"Window rule '{rule_name}': 'window_name' list must contain only strings")
+            
             if 'layout' not in rule_def:
                 raise ConfigValidationError(f"Window rule '{rule_name}' is missing 'layout' field")
             
@@ -366,6 +377,10 @@ class ConfigLoader:
                 raise ConfigValidationError(
                     f"Window rule '{rule_name}' references undefined layout: '{layout_name}'"
                 )
+            
+            if 'is_regex' in rule_def:
+                if not isinstance(rule_def['is_regex'], bool):
+                    raise ConfigValidationError(f"Window rule '{rule_name}': 'is_regex' must be a boolean")
             
             # Validate match_field (optional)
             if 'match_field' in rule_def:
@@ -636,17 +651,32 @@ class ConfigLoader:
         rules_config = self.config['windows_rules']
         
         for rule_name, rule_def in rules_config.items():
-            pattern = rule_def['window_name']
+            pattern_def = rule_def['window_name']
             layout_name = rule_def['layout']
             match_field = rule_def.get('match_field', 'class')
+            is_regex = rule_def.get('is_regex', False)
             
             layout = self.layouts[layout_name]
             
-            # Add rule to window monitor
+            # Handle regex compilation
+            final_pattern = pattern_def
+            if is_regex:
+                try:
+                    import re
+                    if isinstance(pattern_def, list):
+                        final_pattern = [re.compile(p, re.IGNORECASE) for p in pattern_def]
+                    else:
+                        final_pattern = re.compile(pattern_def, re.IGNORECASE)
+                except re.error as e:
+                    self.logger.error(f"Invalid regex in rule '{rule_name}': {e}")
+                    continue  # Skip invalid rule
+            
+            # Add rule to window monitor 
             window_monitor.add_window_rule(
-                pattern,
+                final_pattern,
                 lambda win_info, layout=layout: self.switch_to_layout(layout, window_info=win_info),
-                match_field=match_field
+                match_field=match_field,
+                is_regex=is_regex
             )
         
         # Set default callback

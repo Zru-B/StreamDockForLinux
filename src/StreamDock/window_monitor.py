@@ -100,21 +100,23 @@ class WindowMonitor:
 
         return None
 
-    def add_window_rule(self, pattern: str | re.Pattern, callback: Callable[[WindowInfo], None], match_field: str = "class") -> None:
+    def add_window_rule(self, pattern: str | re.Pattern | list[str] | list[re.Pattern], callback: Callable[[WindowInfo], None], match_field: str = "class", is_regex: bool = False) -> None:
         """
         Add a rule that triggers a callback when a window matching the pattern is focused.
 
-        :param pattern: String or regex pattern to match against window info
+        :param pattern: String, regex pattern, or list of strings/patterns to match against window info
         :param callback: Function to call when pattern matches. Signature: callback(window_info: WindowInfo)
         :param match_field: Which field to match against: 'title', 'class', or 'raw'
+        :param is_regex: Boolean flag indicating if the pattern is a regex (used for logging/metadata)
         """
         rule = {
             "pattern": pattern,
             "callback": callback,
             "match_field": match_field,
-            "is_regex": isinstance(pattern, re.Pattern),
+            "is_regex": is_regex,
         }
         self.window_rules.append(rule)
+        logger.debug(f"Added window rule: pattern={pattern!r}, match_field='{match_field}', is_regex={is_regex}")
 
     def set_default_callback(self, callback: Callable[[WindowInfo], None]) -> None:
         """
@@ -146,11 +148,21 @@ class WindowMonitor:
 
             # Check if pattern matches
             match = False
-            if rule["is_regex"]:
-                match = pattern.search(field_value) is not None
-            else:
-                match = pattern.lower() in field_value.lower()
-
+            
+            # Polymorphic matching: handle list of mixed types or single item
+            # We treat the input as a list for uniform processing
+            patterns = pattern if isinstance(pattern, list) else [pattern]
+            
+            for p in patterns:
+                if isinstance(p, re.Pattern):
+                    if p.search(field_value) is not None:
+                        match = True
+                        break
+                elif isinstance(p, str):
+                    if p.lower() in field_value.lower():
+                        match = True
+                        break
+                        
             if match:
                 matched = True
                 try:

@@ -35,7 +35,7 @@ class TestWindowMonitor:
 
         # Add regex rule
         regex = re.compile(r"^.* - YouTube$")
-        monitor.add_window_rule(regex, callback)
+        monitor.add_window_rule(regex, callback, is_regex=True)
         assert len(monitor.window_rules) == 2
         assert monitor.window_rules[1]['is_regex'] == True
 
@@ -193,3 +193,26 @@ class TestWindowMonitor:
         
         assert monitor.get_active_window_info() is None
 
+    def test_check_rules_with_list(self, monitor):
+        """Test checking rules with list of patterns."""
+        callback = MagicMock()
+        monitor.add_window_rule(["Firefox", "Chrome"], callback, match_field='class')
+        
+        # Match matches one item in list
+        info = WindowInfo(title="Mozilla Firefox", class_="Firefox", method="test")
+        monitor._check_rules(info)
+        callback.assert_called_once_with(info)
+        
+        callback.reset_mock()
+        
+        # Match matches another item
+        info = WindowInfo(title="Google Chrome", class_="Chrome", method="test")
+        monitor._check_rules(info)
+        callback.assert_called_once_with(info)
+        
+        callback.reset_mock()
+        
+        # No match
+        info = WindowInfo(title="Safari", class_="Safari", method="test")
+        monitor._check_rules(info)
+        callback.assert_not_called()
