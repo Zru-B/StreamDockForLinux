@@ -645,6 +645,23 @@ class ConfigLoader:
                             "layout": self.layouts[layout_name],
                             "clear_all": clear_all
                         })
+                        
+                    elif action_type == ActionType.CHANGE_KEY:
+                        # Resolve key reference if parameter is a string that matches a known key
+                        if isinstance(parameter, str) and parameter in self.keys:
+                            ref_key_def = self.keys[parameter]
+                            
+                            # Construct the config dict expected by actions.py (Case 3)
+                            # Note: We use the pre-parsed values from self.keys
+                            replacement_param = {
+                                'image': ref_key_def['image'],
+                                'on_press': ref_key_def['on_press'],
+                                'on_release': ref_key_def['on_release'],
+                                'on_double_press': ref_key_def['on_double_press']
+                            }
+                            
+                            # Update the action tuple in place
+                            actions[i] = (action_type, replacement_param)
     
     def _apply_window_rules(self, window_monitor):
         """Apply window rules to window monitor."""

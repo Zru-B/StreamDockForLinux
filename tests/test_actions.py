@@ -38,6 +38,28 @@ class TestActions(unittest.TestCase):
         mock_run.assert_called_with(['xdotool', 'key', 'alt+F4'], check=True)
 
     @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
+    @patch('StreamDock.actions.subprocess.run')
+    def test_emulate_key_combo_special_keys(self, mock_run, mock_is_available):
+        """Test key combination emulation with special modifiers."""
+        mock_is_available.return_value = True
+        
+        # Test SHIFT
+        emulate_key_combo("SHIFT+A")
+        mock_run.assert_called_with(['xdotool', 'key', 'shift+a'], check=True)
+        
+        # Test META (should appear as 'super' or 'meta' depending on implementation, usually passed through)
+        emulate_key_combo("META+L")
+        mock_run.assert_called_with(['xdotool', 'key', 'super+l'], check=True)
+        
+        # Test SUPER
+        emulate_key_combo("SUPER+D")
+        mock_run.assert_called_with(['xdotool', 'key', 'super+d'], check=True)
+        
+        # Test Complex Combo
+        emulate_key_combo("CTRL+SHIFT+ESC")
+        mock_run.assert_called_with(['xdotool', 'key', 'ctrl+shift+Escape'], check=True)
+
+    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
     @patch('StreamDock.actions.WindowUtils.xdotool_get_active_window')
     @patch('StreamDock.actions.subprocess.run')
     @patch('StreamDock.actions.subprocess.check_output')

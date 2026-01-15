@@ -262,3 +262,45 @@ def test_apply_window_rules_regex_list(mock_create_text_image):
     assert patterns[0].pattern == '^App1.*'
     assert kwargs.get('is_regex') is True
 
+
+@patch('StreamDock.image_helpers.pil_helper.create_text_image')
+def test_change_key_resolution(mock_create_text_image):
+    from StreamDock.actions import ActionType
+    mock_create_text_image.return_value = MagicMock()
+    
+    loader = ConfigLoader(get_config_path('valid_config.yml'))
+    # Minimal config with two keys, one referencing the other
+    loader.config = {
+        'settings': {'brightness': 50},
+        'keys': {
+            'TargetKey': {
+                'text': 'Target', 
+                'on_press_actions': [{'KEY_PRESS': 'A'}]
+            },
+            'SourceKey': {
+                'text': 'Source',
+                'on_press_actions': [{'CHANGE_KEY': 'TargetKey'}]
+            }
+        },
+        'layouts': {
+            'Main': {
+                'Default': True,
+                'keys': [{1: 'SourceKey'}]
+            }
+        }
+    }
+    
+    mock_device = MagicMock()
+    loader._create_keys(mock_device)
+    loader._create_layouts(mock_device)
+    loader._resolve_layout_references()
+    
+    # Check SourceKey's action
+    source_key_def = loader.keys['SourceKey']
+    action_type, param = source_key_def['on_press'][0]
+    
+    assert action_type == ActionType.CHANGE_KEY
+    assert isinstance(param, dict)
+    assert param['on_press'] is not None  # Should contain TargetKey's actions
+    assert param['image'] is not None     # Should contain TargetKey's image path/obj
+
