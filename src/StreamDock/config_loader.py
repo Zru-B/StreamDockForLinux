@@ -40,6 +40,8 @@ from .key import Key
 from .layout import Layout
 from .Models import WindowInfo
 
+VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions']
+
 
 class ConfigValidationError(Exception):
     """Exception raised when configuration validation fails."""
@@ -233,9 +235,19 @@ class ConfigLoader:
                     raise ConfigValidationError(f"Key '{key_name}' text field must be a string")
                 if not key_def['text'].strip():
                     raise ConfigValidationError(f"Key '{key_name}' text field cannot be empty")
+
+            # Validate unsupported actions
+            # Check for any key starting with 'on_' that is not in VALID_ACTIONS
+            for key in key_def:
+                if (key.startswith('on_') or key == 'actions') and key not in VALID_ACTIONS:
+                    valid_actions_str = ", ".join(f"'{a}'" for a in VALID_ACTIONS)
+                    raise ConfigValidationError(
+                        f"Action '{key}' for key '{key_name}' is not supported. Use any of {valid_actions_str} instead."
+                    )
             
-            # Validate actions (optional)
-            for action_key in ['on_press_actions', 'on_release_actions', 'on_double_press_actions', 'on_double_press']:
+            if not any(action_key in key_def for action_key in VALID_ACTIONS):
+                raise ConfigValidationError(f"Key '{key_name}' must have at least one action")
+            for action_key in VALID_ACTIONS:
                 if action_key in key_def:
                     self._validate_actions(key_def[action_key], f"Key '{key_name}' {action_key}")
     
@@ -564,8 +576,6 @@ class ConfigLoader:
             
             if 'on_double_press_actions' in key_def:
                 on_double_press = self._parse_actions(key_def['on_double_press_actions'])
-            elif 'on_double_press' in key_def:
-                on_double_press = self._parse_actions(key_def['on_double_press'])
             
             # Store key definition (will get number when added to layout)
             self.keys[key_name] = {
