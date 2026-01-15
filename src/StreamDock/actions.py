@@ -117,10 +117,7 @@ def emulate_key_combo(combo_string):
         logger.error("Error: xdotool not found. Install with: sudo apt install xdotool")
         return
 
-    try:
-        subprocess.run(['xdotool', 'key', '+'.join(xdotool_keys)], check=True)
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error pressing key combination: {e}")
+    WindowUtils.xdotool_key('+'.join(xdotool_keys))
 
 
 def type_text(text, delay=0.001):
@@ -133,70 +130,7 @@ def type_text(text, delay=0.001):
     if not text:
         return
 
-    if not WindowUtils.is_xdotool_available():
-        logger.error("[ERROR] xdotool not found. Install with: sudo apt install xdotool")
-        return
-
-    try:
-        # Get the active window ID to ensure we type in the right window
-        try:
-            window_info = WindowUtils.xdotool_get_active_window()
-            if window_info:
-                 # We need the ID for windowactivate. xdotool_get_active_window returns info,
-                 # but internally it gets the ID. To be safe and simple, let's just re-fetch ID or just trust focus.
-                 # Actually, better to just let xdotool work on current focus without explicit activation if simple.
-                 # But original code used windowactivate --sync.
-                 # Let's try raw xdotool call for ID to keep behavior exactly consistent for now,
-                 # or we can assume if xdotool is available we can run the command.
-                 pass
-            
-            # Reverting to direct call for ID purely for the --sync behavior which is specific here
-            # But checking availability first.
-            window_id = subprocess.check_output(['xdotool', 'getactivewindow']).decode('utf-8').strip()
-            window_args = ['windowactivate', '--sync', window_id]
-        except Exception as e:
-            # If we can't get window ID, continue without it (might be slightly less reliable)
-            window_args = []
-
-        # Prepare all key commands at once
-        key_commands = []
-        for char in text:
-            # Handle special characters
-            if char == ' ':
-                key = 'space'
-            elif char == '\n':
-                key = 'Return'
-            elif char == '\t':
-                key = 'Tab'
-            elif char in "!@#$%^&*()_+{}|:\"<>?~`-=[]\\;',./":
-                key = char
-            else:
-                key = char
-
-            # Build the command
-            key_commands.append(['xdotool'] + window_args + ['key', '--clearmodifiers', key])
-
-        # Execute all commands with minimal delay
-        for cmd in key_commands:
-            try:
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, text=True, timeout=0.5)
-                if delay > 0:
-                    time.sleep(delay)
-            except subprocess.TimeoutExpired:
-                logger.warning(f"[WARNING] Timeout while typing character")
-                continue
-            except subprocess.CalledProcessError as e:
-                logger.error(f"[ERROR] Failed to type character: {e}")
-                if e.stderr:
-                    logger.error(f"[ERROR] stderr: {e.stderr}")
-
-    except Exception:
-        logger.exception("[ERROR] Unexpected error while typing text")
-        # Try fallback method if the main method fails
-        try:
-            subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text], check=True)
-        except Exception:
-            logger.exception("[ERROR] Fallback typing also failed")
+    WindowUtils.xdotool_type(text, delay)
 
 
 def adjust_device_brightness(device, amount):
@@ -259,22 +193,38 @@ def send_dbus_command(dbus_command):
         "mute": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
     }
 
+
+
     try:
+        # Check tool availability before attempting execution
+        # Helper to check command prefix
+        def check_tool(cmd_str):
+            if cmd_str.startswith("dbus-send"):
+                if not WindowUtils.is_dbus_available():
+                    logger.error("Error: dbus-send not found. Install dbus.")
+                    return False
+            elif cmd_str.startswith("pactl"):
+                if not WindowUtils.is_pactl_available():
+                    logger.error("Error: pactl not found. Install pulseaudio-utils.")
+                    return False
+            return True
+
         # Handle dict format with shortcuts
         if isinstance(dbus_command, dict):
             action = dbus_command.get("action")
             if action in shortcuts:
                 command = shortcuts[action]
-                subprocess.run(command, shell=True, check=True, capture_output=True)
+                if check_tool(command):
+                    subprocess.run(command, shell=True, check=True, capture_output=True)
             else:
                 logger.error(f"Unknown D-Bus shortcut: {action}")
         # Handle string format (direct command)
         elif isinstance(dbus_command, str):
-            subprocess.run(dbus_command, shell=True, check=True, capture_output=True)
+            if check_tool(dbus_command):
+                subprocess.run(dbus_command, shell=True, check=True, capture_output=True)
         else:
             logger.error(f"Invalid D-Bus command format: {type(dbus_command)}")
-    except FileNotFoundError:
-        logger.error("Error: dbus-send or pactl not found. Install with: sudo apt install dbus pactl")
+            
     except subprocess.CalledProcessError as e:
         logger.error(f"Error executing D-Bus command: {e}")
 

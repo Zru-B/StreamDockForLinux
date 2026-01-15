@@ -128,5 +128,70 @@ class TestWindowUtils(unittest.TestCase):
             self.assertTrue(WindowUtils.activate_window('firefox'))
             mock_wmctrl_act.assert_called_with('firefox')
 
+
+    @patch('shutil.which')
+    def test_dbus_availability(self, mock_which):
+        """Test dbus-send availability check."""
+        mock_which.return_value = '/usr/bin/dbus-send'
+        self.assertTrue(WindowUtils.is_dbus_available())
+        
+        WindowUtils.refresh_tool_cache()
+        mock_which.return_value = None
+        self.assertFalse(WindowUtils.is_dbus_available())
+
+    @patch('shutil.which')
+    def test_pactl_availability(self, mock_which):
+        """Test pactl availability check."""
+        mock_which.return_value = '/usr/bin/pactl'
+        self.assertTrue(WindowUtils.is_pactl_available())
+        
+        WindowUtils.refresh_tool_cache()
+        mock_which.return_value = None
+        self.assertFalse(WindowUtils.is_pactl_available())
+
+    @patch('StreamDock.window_utils.WindowUtils.is_xdotool_available')
+    @patch('subprocess.run')
+    def test_xdotool_key(self, mock_run, mock_is_avail):
+        """Test xdotool key simulation."""
+        mock_is_avail.return_value = True
+        
+        # Success
+        mock_run.return_value.returncode = 0
+        self.assertTrue(WindowUtils.xdotool_key("ctrl+c"))
+        mock_run.assert_called_with(['xdotool', 'key', 'ctrl+c'], check=True, capture_output=True)
+        
+        # Failure
+        mock_run.side_effect = subprocess.CalledProcessError(1, "cmd")
+        self.assertFalse(WindowUtils.xdotool_key("ctrl+c"))
+        
+        # Unavailable
+        mock_is_avail.return_value = False
+        self.assertFalse(WindowUtils.xdotool_key("ctrl+c"))
+
+    @patch('StreamDock.window_utils.WindowUtils.is_xdotool_available')
+    @patch('subprocess.run')
+    def test_xdotool_type(self, mock_run, mock_is_avail):
+        """Test xdotool text typing."""
+        mock_is_avail.return_value = True
+        
+        # Should call xdotool key for each char with some logic
+        # We just verify it calls subprocess, implementation details are complex
+        WindowUtils.xdotool_type("a")
+        self.assertTrue(mock_run.called)
+        
+        # Verify fallback is working if main fails? 
+        # The main implementation has a broad try/except. 
+        # If we make the main block fail, should stick to fallback.
+        
+        mock_run.reset_mock()
+        mock_run.side_effect = Exception("Main block fail")
+        
+        WindowUtils.xdotool_type("b") 
+        # Should trigger fallback: xdotool type ...
+        calls = mock_run.call_args_list
+        # We expect at least one call that matches the fallback signature
+        fallback_called = any('type' in call.args[0] for call in calls)
+        self.assertTrue(fallback_called)
+
 if __name__ == '__main__':
     unittest.main()

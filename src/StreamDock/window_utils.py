@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 _kdotool_available: Optional[bool] = None
 _xdotool_available: Optional[bool] = None
 _wmctrl_available: Optional[bool] = None
+_dbus_available: Optional[bool] = None
+_pactl_available: Optional[bool] = None
 
 # Application patterns for class name normalization
 # Patterns are checked in order, first match wins
@@ -162,11 +164,53 @@ class WindowUtils:
         
         Call this if tools are installed/uninstalled during runtime.
         """
-        global _kdotool_available, _xdotool_available, _wmctrl_available
+        global _kdotool_available, _xdotool_available, _wmctrl_available, _dbus_available, _pactl_available
         _kdotool_available = None
         _xdotool_available = None
         _wmctrl_available = None
+        _dbus_available = None
+        _pactl_available = None
         logger.debug("Tool availability cache refreshed")
+
+    @staticmethod
+    def is_dbus_available() -> bool:
+        """
+        Check if dbus-send is available.
+        
+        :return: True if dbus-send is available, False otherwise
+        """
+        global _dbus_available
+        
+        if _dbus_available is not None:
+            return _dbus_available
+            
+        if shutil.which("dbus-send") is None:
+            logger.debug("dbus-send not found in PATH")
+            _dbus_available = False
+            return False
+            
+        _dbus_available = True
+        return True
+
+    @staticmethod
+    def is_pactl_available() -> bool:
+        """
+        Check if pactl is available.
+        
+        :return: True if pactl is available, False otherwise
+        """
+        global _pactl_available
+        
+        if _pactl_available is not None:
+            return _pactl_available
+            
+        if shutil.which("pactl") is None:
+            logger.debug("pactl not found in PATH")
+            _pactl_available = False
+            return False
+            
+        _pactl_available = True
+        return True
 
     # ========== kdotool operations ==========
 
@@ -478,6 +522,97 @@ class WindowUtils:
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
             logger.debug(f"xdotool_activate_window failed: {exc}")
             return False
+
+    @staticmethod
+    def xdotool_key(key_sequence: str) -> bool:
+        """
+        Simulate key presses using xdotool.
+        
+        :param key_sequence: Key sequence string (e.g. "ctrl+c")
+        :return: True if successful, False otherwise
+        """
+        if not WindowUtils.is_xdotool_available():
+            logger.error("xdotool not found")
+            return False
+
+        try:
+            subprocess.run(['xdotool', 'key', key_sequence], check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error pressing key combination: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error in xdotool_key: {e}")
+            return False
+
+    @staticmethod
+    def xdotool_type(text: str, delay: float = 0.001) -> None:
+        """
+        Type text using xdotool.
+        
+        :param text: Text to type
+        :param delay: Delay between keystrokes
+        """
+        if not WindowUtils.is_xdotool_available():
+            logger.error("xdotool not found")
+            return
+
+        import time
+        
+        try:
+            # Try to get active window ID for synchronization (optional optimization from original code)
+            window_args = []
+            try:
+                # We simply check if we can get the ID, not strictly required but preserved from original logic
+                # which attempted to be 'safe' via windowactivate --sync if possible.
+                # Here we will simplify: just type into current focus.
+                # If we really want the --sync behavior we need the ID.
+                res = subprocess.run(['xdotool', 'getactivewindow'], capture_output=True, text=True, check=True)
+                window_id = res.stdout.strip()
+                if window_id:
+                    window_args = ['windowactivate', '--sync', window_id]
+            except Exception:
+                pass
+
+            # Prepare all key commands at once
+            key_commands = []
+            for char in text:
+                # Handle special characters
+                if char == ' ':
+                    key = 'space'
+                elif char == '\n':
+                    key = 'Return'
+                elif char == '\t':
+                    key = 'Tab'
+                elif char in "!@#$%^&*()_+{}|:\"<>?~`-=[]\\;',./":
+                    key = char
+                else:
+                    key = char
+
+                # Build the command
+                key_commands.append(['xdotool'] + window_args + ['key', '--clearmodifiers', key])
+
+            # Execute all commands
+            for cmd in key_commands:
+                try:
+                    subprocess.run(cmd, check=True, stderr=subprocess.PIPE, text=True, timeout=0.5)
+                    if delay > 0:
+                        time.sleep(delay)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"[WARNING] Timeout while typing character")
+                    continue
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"[ERROR] Failed to type character: {e}")
+                    if e.stderr:
+                        logger.error(f"[ERROR] stderr: {e.stderr}")
+
+        except Exception:
+            logger.exception("[ERROR] Unexpected error while typing text")
+            # Try fallback method
+            try:
+                subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text], check=True)
+            except Exception:
+                logger.exception("[ERROR] Fallback typing also failed")
 
     # ========== wmctrl operations ==========
 

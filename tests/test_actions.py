@@ -25,66 +25,39 @@ class TestActions(unittest.TestCase):
         self.assertTrue(kwargs['start_new_session'])
         self.assertTrue(kwargs['close_fds'])
 
-    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
-    @patch('StreamDock.actions.subprocess.run')
-    def test_emulate_key_combo(self, mock_run, mock_is_available):
+    @patch('StreamDock.actions.WindowUtils.xdotool_key')
+    def test_emulate_key_combo(self, mock_key):
         """Test key combination emulation."""
-        mock_is_available.return_value = True
-        
         emulate_key_combo("CTRL+C")
-        mock_run.assert_called_with(['xdotool', 'key', 'ctrl+c'], check=True)
+        mock_key.assert_called_with('ctrl+c')
         
         emulate_key_combo("ALT+F4")
-        mock_run.assert_called_with(['xdotool', 'key', 'alt+F4'], check=True)
+        mock_key.assert_called_with('alt+F4')
 
-    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
-    @patch('StreamDock.actions.subprocess.run')
-    def test_emulate_key_combo_special_keys(self, mock_run, mock_is_available):
+    @patch('StreamDock.actions.WindowUtils.xdotool_key')
+    def test_emulate_key_combo_special_keys(self, mock_key):
         """Test key combination emulation with special modifiers."""
-        mock_is_available.return_value = True
-        
         # Test SHIFT
         emulate_key_combo("SHIFT+A")
-        mock_run.assert_called_with(['xdotool', 'key', 'shift+a'], check=True)
+        mock_key.assert_called_with('shift+a')
         
-        # Test META (should appear as 'super' or 'meta' depending on implementation, usually passed through)
+        # Test META
         emulate_key_combo("META+L")
-        mock_run.assert_called_with(['xdotool', 'key', 'super+l'], check=True)
+        mock_key.assert_called_with('super+l')
         
         # Test SUPER
         emulate_key_combo("SUPER+D")
-        mock_run.assert_called_with(['xdotool', 'key', 'super+d'], check=True)
+        mock_key.assert_called_with('super+d')
         
         # Test Complex Combo
         emulate_key_combo("CTRL+SHIFT+ESC")
-        mock_run.assert_called_with(['xdotool', 'key', 'ctrl+shift+Escape'], check=True)
+        mock_key.assert_called_with('ctrl+shift+Escape')
 
-    @patch('StreamDock.actions.WindowUtils.is_xdotool_available')
-    @patch('StreamDock.actions.WindowUtils.xdotool_get_active_window')
-    @patch('StreamDock.actions.subprocess.run')
-    @patch('StreamDock.actions.subprocess.check_output')
-    def test_type_text(self, mock_check_output, mock_run, mock_get_window, mock_is_available):
+    @patch('StreamDock.actions.WindowUtils.xdotool_type')
+    def test_type_text(self, mock_type):
         """Test typing text."""
-        # Mock availability
-        mock_is_available.return_value = True
-        
-        # Mock getting active window ID
-        mock_get_window.return_value = MagicMock() # Return truthy
-        mock_check_output.return_value = b'12345\n'
-        
         type_text("Hi")
-        
-        # Verify calls for each character
-        # 'H'
-        mock_run.assert_any_call(
-            ['xdotool', 'windowactivate', '--sync', '12345', 'key', '--clearmodifiers', 'H'],
-            check=True, stderr=subprocess.PIPE, text=True, timeout=0.5
-        )
-        # 'i'
-        mock_run.assert_any_call(
-            ['xdotool', 'windowactivate', '--sync', '12345', 'key', '--clearmodifiers', 'i'],
-            check=True, stderr=subprocess.PIPE, text=True, timeout=0.5
-        )
+        mock_type.assert_called_with("Hi", 0.001)
 
     def test_adjust_device_brightness(self):
         """Test adjusting device brightness."""
@@ -107,8 +80,10 @@ class TestActions(unittest.TestCase):
         adjust_device_brightness(mock_device, 10)
         mock_device.set_brightness.assert_called_with(100)
 
+    @patch('StreamDock.actions.WindowUtils.is_pactl_available', return_value=True)
+    @patch('StreamDock.actions.WindowUtils.is_dbus_available', return_value=True)
     @patch('StreamDock.actions.subprocess.run')
-    def test_send_dbus_command(self, mock_run):
+    def test_send_dbus_command(self, mock_run, mock_dbus_avail, mock_pactl_avail):
         """Test D-Bus commands."""
         # Shortcut
         send_dbus_command({"action": "volume_up"})
