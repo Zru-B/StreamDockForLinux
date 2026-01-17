@@ -135,6 +135,9 @@ This workflow outlines a systematic approach to refactoring code safely, ensurin
   - Configuration schema changes
   - Cross-component dependencies
 
+- [ ] **Document architectural changes**
+  - If refactoring involves a significant shift in design patterns, document it in `docs/architecture/adr/`.
+
 ### 4. Get Approval (for significant refactoring)
 
 - [ ] **For high-risk or large-scale refactoring**
@@ -365,6 +368,7 @@ This workflow outlines a systematic approach to refactoring code safely, ensurin
 - [ ] **Update architecture docs** (if structural changes)
   - README.md if high-level design changed
   - API documentation if public interfaces changed
+  - Update `docs/architecture/AGENT_KNOWLEDGE_BASE.md` and `docs/architecture/DEPENDENCY_MAP.md`.
 
 ### 15. Code Review (self-check)
 
@@ -577,4 +581,7 @@ pylint src/module.py
 
 # Type check
 mypy src/module.py
+
+# Inspect changes without pager (recommended for agents)
+git --no-pager diff
 ```

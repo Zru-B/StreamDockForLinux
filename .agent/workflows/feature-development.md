@@ -99,6 +99,9 @@ This workflow outlines a systematic approach to designing, implementing, and tes
   - Device state changes
   - Configuration variations
 
+- [ ] **Document architectural decisions**
+  - Create a new record in `docs/architecture/adr/` for any significant design choices.
+
 ### 4. Identify Design Contracts to Test
 
 **🔑 CRITICAL: Define WHAT to test based on design requirements, not implementation**
@@ -429,6 +432,10 @@ This workflow outlines a systematic approach to designing, implementing, and tes
   - Configuration guide (if schema changed)
   - Troubleshooting guide (if new errors possible)
 
+- [ ] **Synchronize agent documentation**
+  - Ensure `docs/architecture/AGENT_KNOWLEDGE_BASE.md` and `docs/architecture/DEPENDENCY_MAP.md` are updated.
+  - Verify that code comments and docstrings match the new implementation.
+
 ### 17. Create Walkthrough
 
 - [ ] **Document what was built**
@@ -593,4 +600,7 @@ python -c "from src.StreamDock.DeviceManager import DeviceManager; print(DeviceM
 
 # Quick device test
 python -c "from src.StreamDock import Device; d = Device(); d.open(); d.set_brightness(50); d.close()"
+
+# Inspect changes without pager (recommended for agents)
+git --no-pager diff
 ```

@@ -91,6 +91,9 @@ This approach:
   - Check if there are utility functions or helper classes that can be reused
   - **Prefer adapting existing code over writing new code from scratch**
   
+- [ ] **Document architectural decisions**
+  - If the fix requires a significant architectural change, create a new record in `docs/architecture/adr/`.
+  
 - [ ] **Consider edge cases**
   - What if the referenced item doesn't exist?
   - What if the item is in an unexpected state?
@@ -349,6 +352,10 @@ This approach:
   - Configuration guides
   - User-facing markdown files
   
+- [ ] **Synchronize agent documentation**
+  - Ensure `docs/architecture/AGENT_KNOWLEDGE_BASE.md` is updated if internal logic changed.
+  - Verify that code comments and docstrings match the new implementation.
+  
 - [ ] **Include practical examples**
   - Show the exact scenario that was fixed
   - Provide variations users might need
@@ -431,6 +438,9 @@ find . -name "pattern*"
 
 # Check git history for related changes
 git log --all -- path/to/file
+
+# Inspect changes without pager (recommended for agents)
+git --no-pager diff
 ```
 
 ### Testing
