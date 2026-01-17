@@ -30,7 +30,7 @@ It must not be added to the git repository. Once all tasks are completed and ver
 
 ### 4. Documentation Maintenance Evolution
 - [ ] **Sync Workflows**: Add "Post-Verification Documentation Update" steps to all workflows.
-- [ ] **Audit Workflow**: Create `.agent/workflows/documentation-audit.md`.
+- [x] **Audit Workflow**: Create `.agent/workflows/documentation-audit.md`.
 
 ### 5. Domain Glossary
 - [ ] Future task: Scan codebase in a clean context to generate exhaustive glossary.
