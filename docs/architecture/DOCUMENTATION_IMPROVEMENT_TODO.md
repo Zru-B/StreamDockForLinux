@@ -33,7 +33,7 @@ It must not be added to the git repository. Once all tasks are completed and ver
 - [x] **Audit Workflow**: Create `.agent/workflows/documentation-audit.md`.
 
 ### 5. Domain Glossary
-- [ ] Future task: Scan codebase in a clean context to generate exhaustive glossary.
+- [x] ~~Future task: Scan codebase in a clean context to generate exhaustive glossary.~~ **COMPLETED**: Comprehensive glossary generated with 100+ entries, three refinement iterations, and AI development usage guide.
 
 ---
 
