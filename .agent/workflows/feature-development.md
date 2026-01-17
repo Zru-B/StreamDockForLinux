@@ -434,6 +434,7 @@ This workflow outlines a systematic approach to designing, implementing, and tes
 
 - [ ] **Synchronize agent documentation**
   - Ensure `docs/architecture/AGENT_KNOWLEDGE_BASE.md` and `docs/architecture/DEPENDENCY_MAP.md` are updated.
+  - **Update `docs/architecture/GLOSSARY.md`** if new classes, modules, or domain terminology were introduced.
   - Verify that code comments and docstrings match the new implementation.
 
 ### 17. Create Walkthrough

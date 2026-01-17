@@ -58,6 +58,12 @@ This workflow ensures that the project's internal and external documentation rem
 - [ ] Pick 3 core modules (e.g., `DeviceManager.py`, `actions.py`, `HIDTransport.py`).
 - [ ] Verify that their Google-style docstrings accurately describe the current behavior/parameters.
 
+### 7. Verify Domain Glossary
+- [ ] Compare `docs/architecture/GLOSSARY.md` against current source code.
+- [ ] Verify all documented classes, modules, and terms still exist and are accurately described.
+- [ ] Check if new classes or domain concepts have been introduced without glossary entries.
+- [ ] Ensure cross-references between glossary entries are still valid.
+
 ## Phase 3: Pro-active Cleanup
 - [ ] **Update**: Correct any outdated information found in Phase 2.
 - [ ] **Remove**: Delete stale, irrelevant, or misleading data.

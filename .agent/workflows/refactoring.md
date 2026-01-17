@@ -369,6 +369,7 @@ This workflow outlines a systematic approach to refactoring code safely, ensurin
   - README.md if high-level design changed
   - API documentation if public interfaces changed
   - Update `docs/architecture/AGENT_KNOWLEDGE_BASE.md` and `docs/architecture/DEPENDENCY_MAP.md`.
+  - **Update `docs/architecture/GLOSSARY.md`** if terminology or class names changed.
 
 ### 15. Code Review (self-check)
 

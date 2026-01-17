@@ -354,6 +354,7 @@ This approach:
   
 - [ ] **Synchronize agent documentation**
   - Ensure `docs/architecture/AGENT_KNOWLEDGE_BASE.md` is updated if internal logic changed.
+  - **Update `docs/architecture/GLOSSARY.md`** if new terminology or classes were introduced during the fix.
   - Verify that code comments and docstrings match the new implementation.
   
 - [ ] **Include practical examples**
