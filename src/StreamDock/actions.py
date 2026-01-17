@@ -193,8 +193,6 @@ def send_dbus_command(dbus_command):
         "mute": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
     }
 
-
-
     try:
         # Check tool availability before attempting execution
         # Helper to check command prefix

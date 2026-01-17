@@ -390,48 +390,6 @@ class KWinBasicDetection(DetectionMethod):
         except Exception as e:
             self.logger.debug(f"KWin basic method 2 failed: {e}")
 
-        # Method 3: Fallback to XWindowDetection logic (often works via XWayland)
-        # We invoke xdotool directly here to keep this strategy self-contained for "basic" approaches
-        try:
-            result = self._run_command(
-                ["bash", "-c", 'xdotool getactivewindow 2>/dev/null || echo ""'],
-                timeout=1.0,
-                check_returncode=False
-            )
-
-            if result and result.returncode == 0 and result.stdout.strip():
-                window_id = result.stdout.strip()
-
-                # Get window title
-                result_title = self._run_command(
-                    ["xdotool", "getwindowname", window_id],
-                    check_returncode=False
-                )
-                window_title = result_title.stdout.strip() if result_title and result_title.returncode == 0 else ""
-
-                # Get window class
-                result_class = self._run_command(
-                    ["xdotool", "getwindowclassname", window_id],
-                    check_returncode=False
-                )
-                
-                raw_class = ""
-                if result_class and result_class.returncode == 0 and result_class.stdout.strip():
-                    raw_class = result_class.stdout.strip()
-                    window_class = WindowUtils.normalize_class_name(raw_class, window_title)
-                else:
-                    window_class = WindowUtils.extract_app_from_title(window_title)
-
-                self._handle_success()
-                return WindowInfo(
-                    title=window_title,
-                    class_=window_class,
-                    raw=window_title,
-                    method="kwin_basic_x11",
-                )
-        except Exception as e:
-            self.logger.debug(f"KWin basic method 3 failed: {e}")
-
         self._handle_failure("All basic KWin methods failed")
         return None
 
