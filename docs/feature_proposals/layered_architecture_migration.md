@@ -10,10 +10,61 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 1. **Incremental Migration** - Layer by layer, bottom-up
 2. **Test-Driven** - Write tests before migrating code
-3. **Parallel Operation** - New and old code coexist during transition
-4. **No Big Bang** - Each phase is deployable
-5. **Documentation First** - Update docs before implementation
-6. **Workflow Integration** - Ensure LLM agents follow new architecture
+3. **Parallel Operation** - New and old code coexist during transition via adapters
+4. **Adapter Pattern** - Bridge old and new code with adapter classes for safe rollback
+5. **No Big Bang** - Each phase is deployable
+6. **Documentation First** - Update docs before implementation
+7. **Workflow Integration** - Ensure LLM agents follow new architecture
+
+---
+
+## Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| WindowUtils handling | Absorb into `SystemInterface` | Better encapsulation of OS-level operations |
+| Parallel operation | Adapter pattern | Cleaner separation, easier rollback |
+| HIDTransport | Wrap in `HardwareInterface` | Keep existing USB code unchanged |
+
+---
+
+## Phase -1: Pre-Migration Hardening
+
+**Goal:** Stabilize current codebase and establish baseline before migration
+
+### -1.1 Baseline Test Capture
+
+**Tasks:**
+- [ ] Run existing test suite and capture results
+  ```bash
+  cd /home/speled/git_repositories/StreamDockForLinux
+  python -m pytest tests/ -v --tb=short 2>&1 | tee baseline_test_results.txt
+  ```
+- [ ] Document current test coverage
+- [ ] Identify and document any flaky tests
+
+### -1.2 Integration Test Addition
+
+**Tasks:**
+- [ ] Create `tests/integration/test_lock_unlock_cycle.py`
+  - Test full lock → verify → handle → unlock sequence
+  - Test lock abort scenario  
+- [ ] Create `tests/integration/test_device_reconnection.py`
+  - Test device path change detection
+  - Test state preservation across reconnect
+
+**Git Commit:**
+- [ ] Commit Phase -1 changes
+  ```bash
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  git add tests/integration/ baseline_test_results.txt
+  git commit -m "test: Add pre-migration baseline and integration tests
+
+  - Capture baseline test results
+  - Add lock/unlock cycle integration tests
+  - Add device reconnection tests
+  - Establish pre-migration stability benchmark"
+  ```
 
 ---
 
@@ -192,18 +243,61 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 ---
 
-### 1.2 SystemInterface
+### 1.2 SystemInterface (with WindowUtils Integration)
 
-**Goal:** Abstract D-Bus and OS-level APIs
+**Goal:** Abstract D-Bus and OS-level APIs, absorbing `WindowUtils` functionality
+
+**Design:**
+```python
+# src/StreamDock/infrastructure/system_interface.py
+from abc import ABC, abstractmethod
+from typing import Optional, Callable
+from StreamDock.Models import WindowInfo
+
+class SystemInterface(ABC):
+    """Abstract interface for OS-level operations."""
+    
+    # --- Tool Availability (from WindowUtils) ---
+    @abstractmethod
+    def is_kdotool_available(self) -> bool: ...
+    @abstractmethod
+    def is_xdotool_available(self) -> bool: ...
+    @abstractmethod
+    def is_dbus_available(self) -> bool: ...
+    @abstractmethod
+    def is_pactl_available(self) -> bool: ...
+    
+    # --- Window Operations (from WindowUtils) ---
+    @abstractmethod
+    def get_active_window(self) -> Optional[WindowInfo]: ...
+    @abstractmethod
+    def search_window_by_class(self, class_name: str) -> Optional[str]: ...
+    @abstractmethod
+    def activate_window(self, window_id: str) -> bool: ...
+    
+    # --- Lock Monitoring (from LockMonitor) ---
+    @abstractmethod
+    def monitor_screen_lock(self, callback: Callable[[bool], None]) -> None: ...
+    @abstractmethod
+    def poll_lock_state(self) -> bool: ...
+    
+    # --- Command Execution (from actions.py) ---
+    @abstractmethod
+    def execute_command(self, command: str) -> None: ...
+    @abstractmethod
+    def emulate_key_combo(self, combo: str) -> None: ...
+    @abstractmethod
+    def type_text(self, text: str, delay: float = 0.001) -> None: ...
+```
 
 **Tasks:**
 - [ ] Create `src/StreamDock/infrastructure/system_interface.py`
-  - Define abstract interface
-  - Methods: `monitor_screen_lock()`, `get_active_window()`, etc.
+  - Define abstract interface as shown above
+  - Keep `WindowUtils` unchanged as helper module
   
 - [ ] Create `src/StreamDock/infrastructure/linux_system.py`
-  - Implement using current D-Bus code from `LockMonitor`
-  - Implement using current window detection from `WindowMonitor`
+  - Implement by delegating to `WindowUtils` methods
+  - Extract D-Bus code from `LockMonitor`
   
 - [ ] **Write unit tests:** `tests/infrastructure/test_system_interface.py`
   - Test D-Bus connection mocking
@@ -213,7 +307,7 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 **Deliverables:**
 - `SystemInterface` abstract class
-- `LinuxSystem` implementation  
+- `LinuxSystemInterface` implementation delegating to `WindowUtils`
 - 12+ unit tests
 - 85% code coverage
 
@@ -224,12 +318,12 @@ This plan outlines the step-by-step migration from the current architecture to t
   git add src/StreamDock/infrastructure/system_interface.py \
           src/StreamDock/infrastructure/linux_system.py \
           tests/infrastructure/test_system_interface.py
-  git commit -m "feat(infrastructure): Add SystemInterface for OS-level APIs
+  git commit -m "feat(infrastructure): Add SystemInterface absorbing WindowUtils
 
-  - Add abstract SystemInterface for D-Bus and window management
-  - Implement LinuxSystem extracting logic from LockMonitor/WindowMonitor
-  - Add 12+ unit tests with 85% coverage
-  - Decouple OS operations from business logic"
+  - Add abstract SystemInterface for OS-level operations
+  - Implement LinuxSystemInterface delegating to WindowUtils
+  - Support window detection, lock monitoring, command execution
+  - Add 12+ unit tests with 85% coverage"
   ```
 
 ---
@@ -632,27 +726,75 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 ## Phase 5: Migration & Cleanup
 
-### 5.1 Parallel Operation
+### 5.1 Adapter-Based Parallel Operation
 
-**Goal:** Run old and new architecture side-by-side
+**Goal:** Run old and new architecture side-by-side using adapter pattern
+
+**Design:**
+```python
+# src/StreamDock/adapters/lock_monitor_adapter.py
+class LockMonitorAdapter:
+    """Bridges old LockMonitor with new SystemEventMonitor."""
+    
+    def __init__(self, legacy_lock_monitor, sys_event_monitor):
+        self._legacy = legacy_lock_monitor
+        self._new = sys_event_monitor
+        self._comparison_mode = True  # Log behavior differences
+        
+        # Wire new system events to legacy handlers
+        sys_event_monitor.on_screen_lock(self._on_lock)
+        sys_event_monitor.on_screen_unlock(self._on_unlock)
+    
+    def _on_lock(self):
+        if self._comparison_mode:
+            logger.info("[NEW] Lock event detected")
+        self._legacy._handle_lock()
+    
+    def _on_unlock(self):
+        if self._comparison_mode:
+            logger.info("[NEW] Unlock event detected")
+        self._legacy._handle_unlock()
+
+
+# src/StreamDock/adapters/device_manager_adapter.py
+class DeviceManagerAdapter:
+    """Bridges old DeviceManager with new DeviceRegistry."""
+    
+    def __init__(self, legacy_manager, device_registry):
+        self._legacy = legacy_manager
+        self._registry = device_registry
+    
+    def enumerate(self):
+        # Use new registry but return legacy format
+        device_ids = self._registry.discover_devices()
+        return [self._registry.get_device_handle(did) for did in device_ids]
+```
 
 **Tasks:**
-- [ ] Add feature flag: `USE_LAYERED_ARCHITECTURE`
-- [ ] Update `main.py` to support both modes
-- [ ] Run both test suites in CI
-- [ ] Monitor production behavior
+- [ ] Create `src/StreamDock/adapters/__init__.py`
+- [ ] Create `src/StreamDock/adapters/lock_monitor_adapter.py`
+- [ ] Create `src/StreamDock/adapters/device_manager_adapter.py`
+- [ ] Update `main.py` to wire adapters
+- [ ] Run both architectures with comparison logging
+- [ ] Monitor and fix any behavior differences
+
+**Cutover Strategy:**
+- **Week 1:** New architecture passive (logs only, old handles everything)
+- **Week 2:** New handles non-critical operations
+- **Week 3:** New handles everything, old is fallback
+- **Week 4:** Old architecture removed
 
 **Git Commit:**
 - [ ] Commit Phase 5.1 changes
   ```bash
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
-  git add src/main.py .github/workflows/
-  git commit -m "feat: Enable parallel operation of old and new architecture
+  git add src/StreamDock/adapters/ src/main.py
+  git commit -m "feat: Add adapter pattern for parallel architecture operation
 
-  - Add USE_LAYERED_ARCHITECTURE feature flag
-  - Run both test suites in CI
-  - Enable safe rollback mechanism
-  - Add production monitoring for both modes"
+  - Add LockMonitorAdapter bridging old/new lock handling
+  - Add DeviceManagerAdapter bridging old/new device registry
+  - Enable comparison logging for behavior validation
+  - Support gradual cutover with safe rollback"
   ```
 
 ---
@@ -1033,17 +1175,18 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 | Phase | Duration | Parallel? |
 |-------|----------|-----------|
+| Phase -1: Pre-Migration Hardening | 1 week | No |
 | Phase 0: Preparation | 1 week | No |
 | Phase 1: Infrastructure | 2 weeks | No |
 | Phase 2: Business Logic | 2 weeks | No |
 | Phase 3: Orchestration | 1.5 weeks | No |
 | Phase 4: Application | 1 week | No |
-| Phase 5: Migration | 1 week | Partial |
+| Phase 5: Migration (with Adapters) | 1 week | Partial |
 | Phase 6: Enhanced Testing | 1.5 weeks | Yes |
 | Phase 7: Documentation | 1 week | Yes |
 | Phase 8: Workflows | 0.5 weeks | Yes |
 
-**Total: ~9-10 weeks** (assuming single developer, can be parallelized with multiple developers)
+**Total: ~10-11 weeks** (assuming single developer, can be parallelized)
 
 ---
 
@@ -1051,9 +1194,9 @@ This plan outlines the step-by-step migration from the current architecture to t
 
 ### Risk: Breaking Existing Functionality
 **Mitigation:** 
-- Parallel operation with feature flag
+- Parallel operation with adapter pattern
 - Comprehensive regression tests
-- Gradual rollout
+- Gradual cutover strategy
 
 ### Risk: Test Coverage Gaps
 **Mitigation:**
@@ -1078,8 +1221,8 @@ This plan outlines the step-by-step migration from the current architecture to t
 ## Rollback Plan
 
 If migration fails at any phase:
-1. Disable feature flag (`USE_LAYERED_ARCHITECTURE=False`)
-2. Revert to previous stable version
+1. Disable new architecture in adapters (set comparison_mode only)
+2. Revert to legacy handlers handling all operations
 3. Keep new test suite (still valuable)
 4. Analyze failure and adjust plan
 5. Retry with lessons learned
@@ -1115,3 +1258,82 @@ If migration fails at any phase:
 - Regression: 20 tests
 
 **Total: ~173 tests** (12x increase in test coverage!)
+
+---
+
+## Appendix: File Mapping
+
+### New Files to Create
+
+| Path | Purpose |
+|------|---------|
+| `src/StreamDock/infrastructure/__init__.py` | Package init |
+| `src/StreamDock/infrastructure/system_interface.py` | Abstract OS interface |
+| `src/StreamDock/infrastructure/linux_system.py` | Linux implementation |
+| `src/StreamDock/infrastructure/hardware_interface.py` | Abstract HW interface |
+| `src/StreamDock/infrastructure/usb_hardware.py` | USB implementation |
+| `src/StreamDock/infrastructure/device_registry.py` | Device tracking |
+| `src/StreamDock/business/__init__.py` | Package init |
+| `src/StreamDock/business/layout_config.py` | Data classes |
+| `src/StreamDock/business/system_event_monitor.py` | Event dispatcher |
+| `src/StreamDock/business/layout_manager.py` | Layout logic |
+| `src/StreamDock/business/action_executor.py` | Action handling |
+| `src/StreamDock/orchestration/__init__.py` | Package init |
+| `src/StreamDock/orchestration/device_orchestrator.py` | Coordinator |
+| `src/StreamDock/application/__init__.py` | Package init |
+| `src/StreamDock/application/configuration_manager.py` | Config parsing |
+| `src/StreamDock/application/application.py` | Bootstrap |
+| `src/StreamDock/adapters/__init__.py` | Package init |
+| `src/StreamDock/adapters/lock_monitor_adapter.py` | Migration adapter |
+| `src/StreamDock/adapters/device_manager_adapter.py` | Migration adapter |
+
+### Files to Keep Unchanged
+
+| Path | Reason |
+|------|--------|
+| `src/StreamDock/window_utils.py` | Delegated to by LinuxSystemInterface |
+| `src/StreamDock/transport/hid_transport.py` | Wrapped by USBHardware |
+| `src/StreamDock/Models.py` | Data models still needed |
+| `src/StreamDock/product_ids.py` | Device constants |
+| `src/StreamDock/key.py` | Key data class |
+| `src/StreamDock/layout.py` | Layout data class |
+
+### Files to Eventually Remove (Phase 5.3)
+
+| Path | Replaced By |
+|------|-------------|
+| `src/StreamDock/lock_monitor.py` | `SystemEventMonitor` + `DeviceOrchestrator` |
+| `src/StreamDock/device_manager.py` | `DeviceRegistry` + `DeviceOrchestrator` |
+
+### Data Classes to Add
+
+```python
+# src/StreamDock/business/layout_config.py
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
+@dataclass
+class KeyConfig:
+    """Pure data representation of a key."""
+    key_number: int
+    image_path: Optional[str] = None
+    text: Optional[str] = None
+    on_press_actions: List[Tuple] = field(default_factory=list)
+    on_release_actions: List[Tuple] = field(default_factory=list)
+
+@dataclass
+class LayoutConfig:
+    """Pure data representation of a layout."""
+    name: str
+    keys: List[KeyConfig] = field(default_factory=list)
+    clear_all: bool = False
+
+@dataclass
+class WindowRule:
+    """Rule for window-based layout switching."""
+    pattern: str
+    layout_name: str
+    match_field: str = "class"
+    is_regex: bool = False
+```
+

@@ -116,25 +116,38 @@ class DeviceRegistry:
 
 ### 3. **SystemInterface** (Infrastructure Layer)
 
-**Responsibility:** Abstract OS-level system APIs
+**Responsibility:** Abstract OS-level system APIs (absorbs `WindowUtils` functionality)
 
 ```python
-class SystemInterface:
-    """OS integration - D-Bus, window management, process control."""
+class SystemInterface(ABC):
+    """OS integration - D-Bus, window management, process control.
+    
+    Implemented by LinuxSystemInterface which delegates to WindowUtils.
+    """
+    
+    # Tool Availability (from WindowUtils)
+    def is_kdotool_available(self) -> bool
+    def is_xdotool_available(self) -> bool
+    def is_dbus_available(self) -> bool
+    def is_pactl_available(self) -> bool
     
     # Lock/Unlock monitoring
     def monitor_screen_lock(self, callback) -> None
-    def is_screen_locked(self) -> bool
+    def poll_lock_state(self) -> bool
     
-    # Window monitoring
+    # Window monitoring (delegated to WindowUtils)
     def get_active_window(self) -> WindowInfo
-    def monitor_window_changes(self, callback) -> None
+    def search_window_by_class(self, class_name: str) -> Optional[str]
+    def activate_window(self, window_id: str) -> bool
     
     # Process execution
     def execute_command(self, command) -> None
-    def launch_application(self, app_name) -> None
-    def is_tool_available(self, tool_name) -> bool
+    def execute_detached(self, command) -> None
+    def emulate_key_combo(self, combo: str) -> None
+    def type_text(self, text: str, delay: float = 0.001) -> None
 ```
+
+**Implementation Note:** `LinuxSystemInterface` delegates to the existing `WindowUtils` module, keeping that code unchanged while providing a clean interface.
 
 **Dependencies:** None (pure I/O)
 
@@ -142,6 +155,7 @@ class SystemInterface:
 - Can mock for testing
 - Platform abstraction (Linux → macOS → Windows)
 - All OS-specific code isolated here
+- `WindowUtils` preserved for backward compatibility
 
 ---
 
@@ -485,29 +499,42 @@ graph TD
 
 ## Migration Strategy
 
+> **Detailed Plan:** See [layered_architecture_migration.md](file:///home/speled/git_repositories/StreamDockForLinux/docs/feature_proposals/layered_architecture_migration.md) for complete implementation details.
+
+### Phase -1: Pre-Migration Hardening
+- Capture baseline test results
+- Add integration tests for lock/unlock cycle and device reconnection
+
+### Phase 0: Preparation & Documentation
+- Create architecture documentation
+- Update workflows for architecture compliance
+- Define test strategy
+
 ### Phase 1: Infrastructure Layer
-1. Extract HardwareInterface from current transport classes
+1. Build HardwareInterface wrapping `HIDTransport`
 2. Build DeviceRegistry with path-independent tracking
-3. Build SystemInterface wrapping current D-Bus/window code
+3. Build SystemInterface absorbing `WindowUtils` (delegating, not replacing)
 
 ### Phase 2: Business Logic Layer
-4. Extract LayoutManager from current Layout classes
-5. Extract ActionExecutor from current action handling
-6. Build SystemEventMonitor wrapping lock/window monitors
+4. Add data classes: `KeyConfig`, `LayoutConfig`, `WindowRule`
+5. Extract LayoutManager from current Layout classes
+6. Extract ActionExecutor from current action handling
+7. Build SystemEventMonitor wrapping lock/window monitors
 
 ### Phase 3: Orchestration Layer
-7. Build DeviceOrchestrator
-8. Migrate lock/unlock logic from LockMonitor
-9. Migrate window rules logic
+8. Build DeviceOrchestrator
+9. Migrate lock/unlock logic from LockMonitor
+10. Migrate window rules logic
 
 ### Phase 4: Application Layer
-10. Refactor main.py to use new Application class
-11. Migrate ConfigLoader to ConfigurationManager
+11. Refactor main.py to use new Application class
+12. Migrate ConfigLoader to ConfigurationManager
 
-### Phase 5: Cleanup
-12. Remove old LockMonitor class
-13. Remove old DeviceManager class
-14. Update tests
+### Phase 5: Migration with Adapters
+13. Create `LockMonitorAdapter` bridging old/new code
+14. Create `DeviceManagerAdapter` bridging old/new code
+15. Gradual cutover (4-week strategy)
+16. Remove deprecated components
 
 ---
 
@@ -516,10 +543,18 @@ graph TD
 | Old Name | New Name | Reason |
 |----------|----------|--------|
 | DeviceManager | DeviceRegistry | More accurate - it's a registry, not a manager |
-| LockMonitor | Part of SystemEventMonitor | Just one type of system event |
+| LockMonitor | SystemEventMonitor + DeviceOrchestrator | Logic split: events vs. device operations |
 | WindowMonitor | Part of SystemEventMonitor | Just one type of system event |
 | Layout.apply() | LayoutManager.render_layout() | More descriptive |
 | actions.py | ActionExecutor | Follows class naming pattern |
+| WindowUtils | LinuxSystemInterface (delegates to) | Preserved, exposed via interface |
+
+### Migration Adapters (Temporary)
+
+| Adapter | Purpose |
+|---------|---------|
+| LockMonitorAdapter | Bridges old LockMonitor with new SystemEventMonitor |
+| DeviceManagerAdapter | Bridges old DeviceManager with new DeviceRegistry |
 
 ---
 
