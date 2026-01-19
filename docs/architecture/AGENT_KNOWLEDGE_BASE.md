@@ -15,7 +15,12 @@ A Python-based controller for **MiraBox 293v3 Stream Dock** hardware on Linux. I
 
 ## Architecture Detail
 
-### 1. Hardware Communication (`src/StreamDock/transport/`)
+> [!IMPORTANT]
+> **Migration in Progress**: This project is migrating to a layered architecture. See [LAYERED_ARCHITECTURE_DESIGN.md](file:///home/speled/git_repositories/StreamDockForLinux/docs/architecture/LAYERED_ARCHITECTURE_DESIGN.md) for the target architecture and [MIGRATION_GUIDE.md](file:///home/speled/git_repositories/StreamDockForLinux/docs/architecture/MIGRATION_GUIDE.md) for component mappings.
+
+### Current Architecture (Legacy - Being Migrated)
+
+#### 1. Hardware Communication (`src/StreamDock/transport/`)
 - **`HIDTransport`**: Core protocol implementation. 513-byte packets with `"CRT"` signature.
 - **`MockTransport`**: Headless mode (`--mock`) simulation using internal queues.
 - **Protocol Commands**: 
@@ -25,16 +30,32 @@ A Python-based controller for **MiraBox 293v3 Stream Dock** hardware on Linux. I
   - `DIS`: Wake screen
   - `STP`: Refresh/Stop
 
-### 2. State Management
-- **`DeviceManager`**: Singleton-style manager for hardware discovery and event listening thread.
-- **`ConfigLoader`**: YAML-to-Object mapper. Supports nested `Layout` and `Key` definitions.
-- **`WindowMonitor`**: Background thread polling active window info to trigger layout matches.
+#### 2. State Management
+- **`DeviceManager`**: Singleton-style manager for hardware discovery and event listening thread. *(Migrating to `DeviceRegistry`)*
+- **`ConfigLoader`**: YAML-to-Object mapper. Supports nested `Layout` and `Key` definitions. *(Migrating to `ConfigurationManager`)*
+- **`WindowMonitor`**: Background thread polling active window info to trigger layout matches. *(Migrating to `SystemEventMonitor`)*
 
-### 3. Action Ecosystem (`src/StreamDock/actions.py`)
-Actions are defined as `(ActionType, Parameter)` tuples.
+#### 3. Action Ecosystem (`src/StreamDock/actions.py`)
+Actions are defined as `(ActionType, Parameter)` tuples. *(Migrating to `ActionExecutor`)*
 - **Window Activation**: Complex logic trying `kdotool` (Wayland), `xdotool` (X11), or `wmctrl`.
 - **Media Control**: DBus-based shortcuts for Spotify and generic MPRIS players.
 - **Dynamic Keys**: `CHANGE_KEY` and `CHANGE_KEY_TEXT` allow buttons to update their own visuals/actions at runtime.
+
+### Target Architecture (Layered)
+
+**Four-Layer Design:**
+1. **Infrastructure Layer** - Hardware and OS abstractions (`HardwareInterface`, `SystemInterface`, `DeviceRegistry`)
+2. **Business Logic Layer** - Pure application logic (`LayoutManager`, `ActionExecutor`, `SystemEventMonitor`)
+3. **Orchestration Layer** - Coordination (`DeviceOrchestrator`)
+4. **Application Layer** - Bootstrap (`Application`, `ConfigurationManager`)
+
+**Key Principles:**
+- Dependencies flow downward only
+- Infrastructure has zero business logic
+- Orchestration is the only cross-layer coordinator
+- See [COUPLING_DIAGRAM.md](file:///home/speled/git_repositories/StreamDockForLinux/docs/architecture/COUPLING_DIAGRAM.md) for dependency rules
+
+**Migration Status:** Phase 0 (Documentation) - In Progress
 
 ---
 
