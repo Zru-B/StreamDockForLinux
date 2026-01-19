@@ -135,6 +135,14 @@ This workflow outlines a systematic approach to refactoring code safely, ensurin
   - Configuration schema changes
   - Cross-component dependencies
 
+- [ ] **Verify alignment with layered architecture**
+  - Read `docs/architecture/LAYERED_ARCHITECTURE_DESIGN.md`
+  - Review `docs/architecture/COUPLING_DIAGRAM.md`  
+  - Ensure refactoring doesn't violate layer boundaries
+  - Check that dependencies still flow downward only
+  - Verify business logic still depends only on abstractions
+  - Update component interaction diagrams in `COUPLING_DIAGRAM.md` if needed
+
 - [ ] **Document architectural changes**
   - If refactoring involves a significant shift in design patterns, document it in `docs/architecture/adr/`.
 

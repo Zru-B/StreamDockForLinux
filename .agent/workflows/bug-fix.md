@@ -65,6 +65,17 @@ This approach:
   - Look for type mismatches or missing conversions
 
 ### 3. Root Cause Identification
+
+*- [ ] **Identify which layer contains the bug**
+  - Read `docs/architecture/LAYERED_ARCHITECTURE_DESIGN.md`
+  - Review `docs/architecture/COUPLING_DIAGRAM.md`
+  - Determine the layer:
+    - Infrastructure? (Hardware/OS interaction)
+    - Business Logic? (Layouts, Actions, Events)
+    - Orchestration? (Cross-layer coordination)
+    - Application? (Config loading, bootstrap)
+  - This helps scope the fix to the appropriate layer
+
 - [ ] **Compare with working code patterns**
   - **⚠️ CRITICAL: Search the codebase for similar functionality that already works correctly**
   - Look for resolution/conversion patterns (e.g., how does `CHANGE_LAYOUT` resolve references?)
@@ -98,6 +109,12 @@ This approach:
   - What if the referenced item doesn't exist?
   - What if the item is in an unexpected state?
   - What if the user's config uses a variation of the format?
+
+- [ ] **Verify fix doesn't violate layer boundaries**
+  - Review `docs/architecture/COUPLING_DIAGRAM.md`
+  - Ensure fix doesn't create upward dependencies
+  - Verify business logic still depends only on abstractions
+  - Check that fix is in the appropriate layer
 
 - [ ] **Review the initial implementation plan**
   - Identify additional uncovered edge cases

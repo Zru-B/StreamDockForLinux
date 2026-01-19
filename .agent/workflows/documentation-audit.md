@@ -64,6 +64,19 @@ This workflow ensures that the project's internal and external documentation rem
 - [ ] Check if new classes or domain concepts have been introduced without glossary entries.
 - [ ] Ensure cross-references between glossary entries are still valid.
 
+### 8. Verify Architecture Documentation
+- [ ] **Check layered architecture docs match implementation**:
+  - Verify `docs/architecture/LAYERED_ARCHITECTURE_DESIGN.md` reflects actual architecture
+  - Review `docs/architecture/MIGRATION_GUIDE.md` component mappings are accurate
+  - Check `docs/architecture/COUPLING_DIAGRAM.md` diagrams match actual dependencies
+- [ ] **Verify component placement**:
+  - Ensure components are in documented layers
+  - Check that dependency flows match coupling diagrams
+  - Verify no undocumented layer boundary violations exist
+- [ ] **Check migration status**:
+  - Verify migration status in `AGENT_KNOWLEDGE_BASE.md` is current
+  - Ensure documented phase matches actual implementation progress
+
 ## Phase 3: Pro-active Cleanup
 - [ ] **Update**: Correct any outdated information found in Phase 2.
 - [ ] **Remove**: Delete stale, irrelevant, or misleading data.

@@ -62,13 +62,35 @@ This workflow outlines a systematic approach to designing, implementing, and tes
 
 ### 2. Analyze Architecture Impact
 
+- [ ] **Review Layered Architecture** (MANDATORY)
+  - Read `docs/architecture/LAYERED_ARCHITECTURE_DESIGN.md`
+  - Review `docs/architecture/COUPLING_DIAGRAM.md`
+  - Understand the 4-layer design:
+    - Infrastructure Layer (Hardware/OS abstractions)
+    - Business Logic Layer (Layouts, Actions, Events)
+    - Orchestration Layer (Coordination)
+    - Application Layer (Bootstrap)
+
+- [ ] **Identify Target Layer**
+  - Which layer does this feature belong to?
+  - Does it interact with hardware/OS? → Infrastructure
+  - Is it business logic (layouts, actions)? → Business
+  - Does it coordinate multiple layers? → Orchestration
+  - Is it configuration/startup? → Application
+
+- [ ] **Review Coupling Constraints**
+  - Check dependency matrix in `COUPLING_DIAGRAM.md`
+  - Ensure no upward dependencies (higher → lower only)
+  - Verify business logic depends only on abstractions
+  - Confirm orchestration is the only cross-layer coordinator
+
 - [ ] **Use Codebase Investigator (Recommended)**
   - Use `codebase_investigator` to map existing architecture
   - Identify dependencies and potential impact areas
   - Understand how similar features are implemented
-
+ 
 - [ ] **Identify affected components**
-  - Which modules/classes will be modified?
+  -Which modules/classes will be modified?
   - Which modules will be newly created?
   - Example: `ConfigLoader`, `DeviceManager`, `Layout`, `actions/`
   
