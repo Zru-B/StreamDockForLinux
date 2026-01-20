@@ -7,5 +7,10 @@ following the layered architecture design.
 
 from .hardware_interface import HardwareInterface, DeviceInfo, InputEvent
 from .usb_hardware import USBHardware
+from .system_interface import SystemInterface, WindowInfo
+from .linux_system_interface import LinuxSystemInterface
 
-__all__ = ['HardwareInterface', 'DeviceInfo', 'InputEvent', 'USBHardware']
+__all__ = [
+    'HardwareInterface', 'DeviceInfo', 'InputEvent', 'USBHardware',
+    'SystemInterface', 'WindowInfo', 'LinuxSystemInterface'
+]
