@@ -9,8 +9,10 @@ from .hardware_interface import HardwareInterface, DeviceInfo, InputEvent
 from .usb_hardware import USBHardware
 from .system_interface import SystemInterface, WindowInfo
 from .linux_system_interface import LinuxSystemInterface
+from .device_registry import DeviceRegistry, TrackedDevice
 
 __all__ = [
     'HardwareInterface', 'DeviceInfo', 'InputEvent', 'USBHardware',
-    'SystemInterface', 'WindowInfo', 'LinuxSystemInterface'
+    'SystemInterface', 'WindowInfo', 'LinuxSystemInterface',
+    'DeviceRegistry', 'TrackedDevice'
 ]
