@@ -6,5 +6,6 @@ management and bootstrap.
 """
 
 from .configuration_manager import ConfigurationManager, StreamDockConfig
+from .application import Application
 
-__all__ = ['ConfigurationManager', 'StreamDockConfig']
+__all__ = ['ConfigurationManager', 'StreamDockConfig', 'Application']
