@@ -84,6 +84,9 @@ class DeviceOrchestrator:
         self._default_brightness: int = 100
         self._is_locked: bool = False
         
+        # Device configuration callback (HYBRID: for ConfigLoader integration)
+        self._device_config_callback: Optional[Any] = None
+        
         # Register event handlers with SystemEventMonitor
         self._event_monitor.register_handler(SystemEvent.LOCK, self._on_lock)
         self._event_monitor.register_handler(SystemEvent.UNLOCK, self._on_unlock)
@@ -120,6 +123,19 @@ class DeviceOrchestrator:
         """
         self._default_brightness = max(0, min(100, brightness))
         logger.debug(f"Default brightness set to: {self._default_brightness}")
+    
+    def set_device_config_callback(self, callback: Any) -> None:
+        """
+        Set callback for device configuration (HYBRID).
+        
+        This callback is called when a device connects to apply configuration.
+        Used for integrating ConfigLoader temporarily.
+        
+        Args:
+            callback: Function(device_instance) -> None
+        """
+        self._device_config_callback = callback
+        logger.debug("Device configuration callback registered")
     
     def start(self) -> bool:
         """
@@ -192,12 +208,20 @@ class DeviceOrchestrator:
         
         for tracked_device in tracked_devices:
             device_id = tracked_device.device_info.serial
-            logger.info(f"Initialized device: {device_id}")
+            logger.info(f"Initializing device: {device_id}")
             
             # Store device (future: create actual device instance)
             self._devices[device_id] = tracked_device
             
-            # Apply default layout
+            # HYBRID: Call device config callback if registered
+            if self._device_config_callback and tracked_device.device_instance:
+                try:
+                    logger.debug(f"Calling device config callback for {device_id}")
+                    self._device_config_callback(tracked_device.device_instance)
+                except Exception as e:
+                    logger.exception(f"Error in device config callback for {device_id}: {e}")
+            
+            # Apply default layout (tracked for orchestration)
             default_layout_name = self._layout_manager.get_default_layout()
             self._current_layouts[device_id] = default_layout_name
         

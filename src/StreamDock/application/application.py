@@ -93,7 +93,7 @@ class Application:
         3. Create business logic layer
         4. Create orchestration layer
         5. Configure orchestrator
-        6. Wire window rules (deferred to Phase 5)
+        6. Set up ConfigLoader for object creation (HYBRID)
         
         Raises:
             ConfigValidationError: If configuration is invalid
@@ -148,11 +148,52 @@ class Application:
         # 5. Configure orchestrator
         self._orchestrator.set_default_brightness(self._config.brightness)
         
-        # 6. TODO Phase 5: Create and register layouts
-        # For now, layouts are not created yet - that's Phase 5 work
+        # 6. HYBRID: Set up ConfigLoader for Key/Layout creation
+        # (This will be refactored to factory pattern later)
+        logger.debug("Setting up ConfigLoader for object creation (hybrid mode)...")
+        from StreamDock.config_loader import ConfigLoader
+        self._config_loader = ConfigLoader(self._config_path)
+        self._config_loader.load()
+        logger.debug("ConfigLoader ready for device configuration")
+        
+        # Register device configuration callback with orchestrator
+        self._orchestrator.set_device_config_callback(self._apply_configuration_to_device)
         
         self._initialized = True
         logger.info("StreamDock application initialized successfully")
+    
+    def _apply_configuration_to_device(self, device_instance) -> None:
+        """
+        Apply configuration to a newly connected device.
+        
+        This is called by DeviceOrchestrator when a device connects.
+        Uses ConfigLoader to create Key/Layout objects (hybrid approach).
+        
+        Args:
+            device_instance: The connected device instance
+        """
+        logger.info(f"Applying configuration to device: {device_instance}")
+        
+        try:
+            # Use ConfigLoader to create layouts
+            # Note: window_monitor integration deferred
+            default_layout, all_layouts = self._config_loader.apply(
+                device_instance,
+                window_monitor=None  # TODO: integrate window monitor
+            )
+            
+            logger.info(f"Created {len(all_layouts)} layouts for device")
+            
+            # Apply default layout
+            default_layout.apply()
+            logger.info(f"Applied default layout: {default_layout.name}")
+            
+            # Store layouts for orchestrator (if needed for future operations)
+            # The layouts are already bound to the device via ConfigLoader
+            
+        except Exception as e:
+            logger.exception(f"Failed to apply configuration to device: {e}")
+            raise
     
     def _configure_window_rules(self) -> None:
         """
