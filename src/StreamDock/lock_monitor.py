@@ -1,15 +1,27 @@
 """
 Lock/Unlock monitor for KDE Plasma and other desktop environments.
 Automatically turns off StreamDock device screen when computer is locked.
+
+**DEPRECATED**: This module is deprecated and will be removed in a future version.
+Please use the new layered architecture components instead:
+- StreamDock.business_logic.system_event_monitor.SystemEventMonitor (event monitoring)
+- StreamDock.orchestration.device_orchestrator.DeviceOrchestrator (device coordination)
+
+For migration guide, see: docs/architecture/MIGRATION_GUIDE.md
 """
 import logging
 import threading
 import time
+import warnings
 
 
 class LockMonitor:
     """
     Monitor system lock/unlock state and control device screen accordingly.
+    
+    .. deprecated::
+        This class is deprecated. Use SystemEventMonitor + DeviceOrchestrator instead.
+        See docs/architecture/MIGRATION_GUIDE.md for migration instructions.
     
     Supports:
     - KDE Plasma (via org.freedesktop.ScreenSaver D-Bus interface)
@@ -22,6 +34,9 @@ class LockMonitor:
         """
         Initialize the lock monitor.
         
+        .. deprecated::
+            LockMonitor is deprecated. Use SystemEventMonitor + DeviceOrchestrator instead.
+        
         :param device: StreamDock device instance
         :param enabled: Enable monitoring (default: True)
         :param current_layout: Current layout to reapply after unlock (optional)
@@ -30,6 +45,14 @@ class LockMonitor:
         :param window_monitor: WindowMonitor instance to stop/start on lock/unlock (optional)
         :param lock_verification_delay: Seconds to wait before confirming lock (default: 2.0)
         """
+        warnings.warn(
+            "LockMonitor is deprecated and will be removed in a future version. "
+            "Use StreamDock.business_logic.system_event_monitor.SystemEventMonitor "
+            "with StreamDock.orchestration.device_orchestrator.DeviceOrchestrator instead. "
+            "See docs/architecture/MIGRATION_GUIDE.md",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.logger = logging.getLogger(__name__)
         self.device = device
         self.enabled = enabled

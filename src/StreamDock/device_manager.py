@@ -1,4 +1,15 @@
+"""
+Device manager for StreamDock devices.
+
+**DEPRECATED**: This module is deprecated and will be removed in a future version.
+Please use the new layered architecture components instead:
+- StreamDock.infrastructure.device_registry.DeviceRegistry (device tracking)
+- StreamDock.orchestration.device_orchestrator.DeviceOrchestrator (device coordination)
+
+For migration guide, see: docs/architecture/MIGRATION_GUIDE.md
+"""
 import logging
+import warnings
 
 import pyudev
 
@@ -9,6 +20,11 @@ from .transport.mock_transport import MockTransport
 
 
 class DeviceManager:
+    """
+    .. deprecated::
+        DeviceManager is deprecated. Use DeviceRegistry + DeviceOrchestrator instead.
+        See docs/architecture/MIGRATION_GUIDE.md for migration instructions.
+    """
     streamdocks = list()
 
     @staticmethod
@@ -18,6 +34,14 @@ class DeviceManager:
         return LibUSBHIDAPI()
 
     def __init__(self, transport=None):
+        warnings.warn(
+            "DeviceManager is deprecated and will be removed in a future version. "
+            "Use StreamDock.infrastructure.device_registry.DeviceRegistry "
+            "with StreamDock.orchestration.device_orchestrator.DeviceOrchestrator instead. "
+            "See docs/architecture/MIGRATION_GUIDE.md",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.streamdocks = list()
         self.logger = logging.getLogger(__name__)
         self.transport = self._get_transport(transport)
