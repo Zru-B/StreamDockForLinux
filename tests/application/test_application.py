@@ -76,7 +76,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure constructors
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX: Return empty list
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -92,7 +94,7 @@ streamdock:
         # Verify infrastructure created
         mock_hardware.assert_called_once()
         mock_system.assert_called_once()
-        mock_registry.assert_called_once()
+        # NOTE: DeviceRegistry not called in simplified mode (registry = None)
     
     @patch('StreamDock.application.application.USBHardware')
     @patch('StreamDock.application.application.LinuxSystemInterface')
@@ -107,6 +109,7 @@ streamdock:
         
         # Mock infrastructure
         hardware_instance = Mock()
+        hardware_instance.enumerate_devices = Mock(return_value=[])  # FIX
         system_instance = Mock()
         registry_instance = Mock()
         
@@ -120,7 +123,8 @@ streamdock:
         orchestrator = app.get_orchestrator()
         assert orchestrator._hardware == hardware_instance
         assert orchestrator._system == system_instance
-        assert orchestrator._registry == registry_instance
+        # NOTE: Registry is None in simplified mode
+        assert orchestrator._registry is None
         assert orchestrator._event_monitor == app.get_event_monitor()
         assert orchestrator._layout_manager == app.get_layout_manager()
     
@@ -136,7 +140,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -172,7 +178,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -215,7 +223,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -237,6 +247,7 @@ streamdock:
         
         # Mock infrastructure
         hardware_instance = Mock()
+        hardware_instance.enumerate_devices = Mock(return_value=[])  # FIX
         system_instance = Mock()
         registry_instance = Mock()
         
@@ -272,7 +283,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -296,7 +309,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
@@ -330,7 +345,9 @@ streamdock:
         app = Application(config_path)
         
         # Mock infrastructure
-        mock_hardware.return_value = Mock()
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
         mock_registry.return_value = Mock()
         
