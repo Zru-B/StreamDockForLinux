@@ -112,24 +112,62 @@ class Application:
         logger.debug("Creating infrastructure layer...")
         self._hardware = USBHardware()
         self._system = LinuxSystemInterface()
-        self._registry = DeviceRegistry()
+        self._registry = None  # Simplified: not using registry for now
         logger.debug("Infrastructure layer created")
+        
+        # 2.5. Enumerate and create device
+        logger.debug("Enumerating devices...")
+        # Device VID/PID from lsusb
+        STREAMDECK_VID = 0x6603  # HOTSPOTEKUSB
+        STREAMDECK_PID = 0x1006  # HID DEMO
+        devices = self._hardware.enumerate_devices(STREAMDECK_VID, STREAMDECK_PID)
+        logger.info(f"Found {len(devices)} StreamDeck device(s)")
+        
+        # Create device wrapper for first device
+        self._device = None
+        if devices:
+            device_info = devices[0]
+            logger.info(f"Opening device: {device_info.device_id}")
+            
+            # Open device
+            success = self._hardware.open_device(device_info)
+            if success:
+                logger.info("✓ Device opened successfully")
+                
+                # Create device wrapper
+                # Convert DeviceInfo to dict for legacy StreamDock compatibility
+                device_dict = {
+                    'vendor_id': device_info.vendor_id,
+                    'product_id': device_info.product_id,
+                    'serial_number': device_info.serial_number,
+                    'path': device_info.path,
+                    'manufacturer_string': device_info.manufacturer,
+                    'product_string': device_info.product
+                }
+                
+                from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3
+                self._device = StreamDock293V3(self._hardware, device_dict)
+                
+                # Initialize device
+                self._device.init()
+                logger.info("✓ Device initialized")
+            else:
+                logger.error("✗ Failed to open device")
+        else:
+            logger.warning("No StreamDeck devices found - application will start but device will be inactive")
         
         # 3. Business logic layer
         logger.debug("Creating business logic layer...")
         
-        # SystemEventMonitor configuration
         self._event_monitor = SystemEventMonitor(
             system_interface=self._system,
             verification_delay=self._config.lock_verification_delay
         )
         
-        # LayoutManager configuration
         self._layout_manager = LayoutManager(
             default_layout_name=self._config.default_layout_name
         )
         
-        # Add window rules to layout manager
         self._configure_window_rules()
         
         logger.debug(f"Business logic layer created: {len(self._config.window_rules_config)} window rules")
@@ -139,61 +177,50 @@ class Application:
         self._orchestrator = DeviceOrchestrator(
             hardware=self._hardware,
             system=self._system,
-            registry=self._registry,
+            registry=None,
             event_monitor=self._event_monitor,
             layout_manager=self._layout_manager
         )
         logger.debug("Orchestration layer created")
         
-        # 5. Configure orchestrator
+        # 5. Configure orchestrator  
         self._orchestrator.set_default_brightness(self._config.brightness)
         
-        # 6. HYBRID: Set up ConfigLoader for Key/Layout creation
-        # (This will be refactored to factory pattern later)
-        logger.debug("Setting up ConfigLoader for object creation (hybrid mode)...")
-        from StreamDock.config_loader import ConfigLoader
-        self._config_loader = ConfigLoader(self._config_path)
-        self._config_loader.load()
-        logger.debug("ConfigLoader ready for device configuration")
-        
-        # Register device configuration callback with orchestrator
-        self._orchestrator.set_device_config_callback(self._apply_configuration_to_device)
-        
-        self._initialized = True
-        logger.info("StreamDock application initialized successfully")
-    
-    def _apply_configuration_to_device(self, device_instance) -> None:
-        """
-        Apply configuration to a newly connected device.
-        
-        This is called by DeviceOrchestrator when a device connects.
-        Uses ConfigLoader to create Key/Layout objects (hybrid approach).
-        
-        Args:
-            device_instance: The connected device instance
-        """
-        logger.info(f"Applying configuration to device: {device_instance}")
-        
-        try:
-            # Use ConfigLoader to create layouts
-            # Note: window_monitor integration deferred
-            default_layout, all_layouts = self._config_loader.apply(
-                device_instance,
-                window_monitor=None  # TODO: integrate window monitor
+        # 6. Create layouts using LayoutFactory (if device is ready)
+        if self._device:
+            logger.info("Creating layouts from configuration...")
+            from StreamDock.application.layout_factory import LayoutFactory
+            
+            factory = LayoutFactory(
+                config_data=self._config.raw_config,
+                device=self._device
             )
             
-            logger.info(f"Created {len(all_layouts)} layouts for device")
+            default_layout, all_layouts = factory.create_layouts()
+            logger.info(f"✓ Created {len(all_layouts)} layouts")
             
             # Apply default layout
             default_layout.apply()
-            logger.info(f"Applied default layout: {default_layout.name}")
+            logger.info(f"✓ Applied default layout: {default_layout.name}")
             
-            # Store layouts for orchestrator (if needed for future operations)
-            # The layouts are already bound to the device via ConfigLoader
+            # Store layouts
+            self._layouts = all_layouts
+            self._default_layout = default_layout
             
-        except Exception as e:
-            logger.exception(f"Failed to apply configuration to device: {e}")
-            raise
+            # CRITICAL: Register device and layouts with orchestrator for window switching
+            # Since we're not using DeviceRegistry, we need to manually populate orchestrator
+            device_id = "device_0"  # Simple ID since we only have one device
+            self._orchestrator._devices[device_id] = self._device
+            self._orchestrator._current_layouts[device_id] = default_layout.name
+            
+            # Register all layouts with orchestrator
+            for layout_name, layout in all_layouts.items():
+                self._orchestrator.register_layout(layout_name, layout)
+            
+            logger.info(f"✓ Registered device and {len(all_layouts)} layouts with orchestrator")
+        
+        self._initialized = True
+        logger.info("StreamDock application initialized successfully")
     
     def _configure_window_rules(self) -> None:
         """

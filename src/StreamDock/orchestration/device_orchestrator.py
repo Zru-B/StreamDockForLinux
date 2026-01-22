@@ -52,7 +52,7 @@ class DeviceOrchestrator:
     def __init__(self,
                  hardware: HardwareInterface,
                  system: SystemInterface,
-                 registry: DeviceRegistry,
+                 registry: Optional[DeviceRegistry],
                  event_monitor: SystemEventMonitor,
                  layout_manager: LayoutManager):
         """
@@ -61,7 +61,7 @@ class DeviceOrchestrator:
         Args:
             hardware: Hardware abstraction for device communication
             system: System abstraction for OS interactions
-            registry: Device registry for tracking devices
+            registry: Device registry for tracking devices (optional for simplified mode)
             event_monitor: System event monitor for event routing
             layout_manager: Layout manager for layout selection
             
@@ -73,7 +73,7 @@ class DeviceOrchestrator:
         """
         self._hardware = hardware
         self._system = system
-        self._registry = registry
+        self._registry = registry  # Can be None in simplified mode
         self._event_monitor = event_monitor
         self._layout_manager = layout_manager
         
@@ -199,6 +199,11 @@ class DeviceOrchestrator:
         """
         logger.debug("Initializing devices from registry")
         
+        # Skip if no registry (simplified mode)
+        if self._registry is None:
+            logger.debug("No registry - skipping device initialization (simplified mode)")
+            return
+        
         # Get tracked devices from registry
         tracked_devices = self._registry.get_all_devices()
         
@@ -305,9 +310,16 @@ class DeviceOrchestrator:
         - Applies layout if different from current
         - Skips if locked (no need to switch while screen is off)
         """
+        logger.info("🔄 Window change event received")
+        
         # Skip layout changes while locked
         if self._is_locked:
             logger.debug("Skipping layout change - device is locked")
+            return
+        
+        # Check if we have devices
+        if not self._devices:
+            logger.warning(f"⚠️  No devices registered in orchestrator (count: {len(self._devices)})")
             return
         
         # Get current window info
@@ -321,13 +333,14 @@ class DeviceOrchestrator:
             # Query layout manager for layout selection
             layout_name = self._layout_manager.select_layout(window_info)
             
-            logger.debug(
+            logger.info(
                 f"Window '{window_info.class_}' → Layout '{layout_name}'"
             )
             
             # Apply layout to all devices if changed
             for device_id in self._devices:
                 current = self._current_layouts.get(device_id)
+                logger.debug(f"Device {device_id}: current={current}, new={layout_name}")
                 if current != layout_name:
                     self._apply_layout(device_id, layout_name)
         

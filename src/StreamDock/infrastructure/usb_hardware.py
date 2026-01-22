@@ -211,3 +211,29 @@ class USBHardware(HardwareInterface):
         except Exception as e:
             logger.error(f"Error reading input: {e}", exc_info=True)
             return None
+    
+    def __getattr__(self, name: str):
+        """
+        Delegate missing attributes to underlying HIDTransport.
+        
+        This provides automatic compatibility with legacy StreamDock device
+        classes that expect transport methods like wake_screen(), key_all_clear(),
+        disconnected(), reset(), etc.
+        
+        Args:
+            name: Attribute name
+            
+        Returns:
+            Attribute from HIDTransport if it exists
+            
+        Raises:
+            AttributeError: If attribute doesn't exist on HIDTransport either
+        """
+        # Delegate to underlying transport
+        try:
+            return getattr(self._transport, name)
+        except AttributeError:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}' "
+                f"and underlying transport doesn't provide it either"
+            )
