@@ -53,6 +53,19 @@ class TestActions(unittest.TestCase):
         emulate_key_combo("CTRL+SHIFT+ESC")
         mock_key.assert_called_with('ctrl+shift+Escape')
 
+    @patch('StreamDock.actions.WindowUtils.xdotool_key')
+    def test_emulate_key_combo_punctuation(self, mock_key):
+        """Test key combination emulation with punctuation."""
+        emulate_key_combo("CTRL+,")
+        mock_key.assert_called_with('ctrl+comma')
+        
+        emulate_key_combo("ALT+.")
+        mock_key.assert_called_with('alt+period')
+
+        emulate_key_combo("CTRL+/")
+        mock_key.assert_called_with('ctrl+slash')
+
+
     @patch('StreamDock.actions.WindowUtils.xdotool_type')
     def test_type_text(self, mock_type):
         """Test typing text."""
