@@ -33,7 +33,7 @@ class DeviceManager:
             return MockTransport()
         return LibUSBHIDAPI()
 
-    def __init__(self, transport=None):
+    def __init__(self, transport=None, on_device_added=None):
         warnings.warn(
             "DeviceManager is deprecated and will be removed in a future version. "
             "Use StreamDock.infrastructure.device_registry.DeviceRegistry "
@@ -46,6 +46,7 @@ class DeviceManager:
         self.logger = logging.getLogger(__name__)
         self.transport = self._get_transport(transport)
         self.transport_mode = transport
+        self.on_device_added = on_device_added
 
     def enumerate(self):
         if self.transport_mode == "mock":
@@ -110,7 +111,11 @@ class DeviceManager:
                                 newDevice = class_type(self.transport, d)
                                 self.streamdocks.append(newDevice)
                                 newDevice.open()
+                                
+                                # Notify callback if registered
+                                if self.on_device_added:
+                                    try:
+                                        self.on_device_added(newDevice)
+                                    except Exception as e:
+                                        self.logger.exception(f"Error in on_device_added callback: {e}")
                                 break
-
-            
-

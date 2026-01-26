@@ -74,7 +74,7 @@ class DetectionMethod(ABC):
             CompletedProcess if successful, None on failure
         """
         try:
-            self.logger.debug(f"Running command: {' '.join(cmd)}")
+            # self.logger.debug(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -82,18 +82,16 @@ class DetectionMethod(ABC):
                 timeout=timeout
             )
             
-            self.logger.debug(
-                f"Command {cmd[0]} completed: returncode={result.returncode}, "
-                f"stdout_len={len(result.stdout)}, stderr_len={len(result.stderr)}"
-            )
+            # self.logger.debug(
+            #     f"Command {cmd[0]} completed: returncode={result.returncode}, "
+            #     f"stdout_len={len(result.stdout)}, stderr_len={len(result.stderr)}"
+            # )
             
             if result.stderr:
                 self.logger.debug(f"Command {cmd[0]} stderr: {result.stderr[:200]}")
             
             if check_returncode and result.returncode != 0:
-                self.logger.debug(
-                    f"Command {cmd[0]} returned code {result.returncode}"
-                )
+                self.logger.debug(f"Command {cmd[0]} returned code {result.returncode}")
                 return None
             
             return result

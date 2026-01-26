@@ -125,6 +125,28 @@ def main():
                 lock_verification_delay=config_loader.lock_verification_delay
             )
             
+            # Define callback for device reconnection
+            def on_device_connected(new_device):
+                logging.info("♻️ Device reconnection detected by DeviceManager - Updating application state")
+                try:
+                    # Update config loader with new device (if needed, though it mostly uses it for apply which is done)
+                     # Actually config_loader.apply() returns layouts which hold device refs.
+                     # We need to update THOSE layouts. LockMonitor holds them.
+                    
+                    # Update LockMonitor (this will update layouts and restore state)
+                    lock_monitor.update_device(new_device)
+                    
+                    # Ensure device is initialized (DeviceManager does open, but maybe not init/brightness)
+                    new_device.init()
+                    new_device.wake_screen()
+                    # lock_monitor.update_device does set_brightness
+                    
+                except Exception as e:
+                    logging.exception(f"Error handling device reconnection: {e}") 
+                    
+            # Register callback with DeviceManager
+            deviceManager.on_device_added = on_device_connected
+            
             # Apply the default layout
             default_layout.apply()
             
