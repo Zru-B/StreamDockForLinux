@@ -309,5 +309,98 @@ class TestLockMonitor(unittest.TestCase):
         self.assertFalse(monitor.is_locked)
         self.mock_device.set_brightness.assert_not_called()
 
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    @patch('StreamDock.lock_monitor.time.time')
+    def test_unlock_with_delayed_device_reappearance(self, mock_time, mock_sleep):
+        """
+        Regression test for bug where device reconnection fails if device
+        takes longer than ~1.5s to re-enumerate after unlock.
+        
+        This simulates the scenario from the bug report where the device
+        takes ~9 seconds to reappear after being disconnected and reconnected
+        during sleep/lock.
+        """
+        # Setup monitor with window monitor enabled
+        monitor = LockMonitor(self.mock_device, window_monitor=self.mock_window_monitor)
+        monitor.enabled = True
+        monitor.dbus_available = True
+        monitor._last_state_change = 0  # Allow state change
+        
+        # Mock transport for enumeration
+        mock_transport = MagicMock()
+        monitor.device_transport = mock_transport
+        
+        # Device info that will eventually be returned
+        device_info_dict = {
+            'vendor_id': 0x1234,
+            'product_id': 0x5678,
+            'path': b'test_path'
+        }
+        
+        # Simulate delayed enumeration: first 5 calls return empty, then return device
+        call_count = [0]
+        def delayed_enumerate(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] <= 5:
+                return []  # Device not found yet
+            return [device_info_dict]  # Device appears after 5 attempts
+        
+        mock_transport.enumerate.side_effect = delayed_enumerate
+        
+        # Mock time.time() to simulate passage of time
+        time_values = [0.0]  # Start time
+        def mock_time_func():
+            # Increment by 1 second for each call (simulating enumeration polling interval)
+            time_values[0] += 1.0
+            return time_values[0]
+        
+        mock_time.side_effect = mock_time_func
+        
+        # Create new device instance that will be used after reconnection
+        new_mock_device = MagicMock()
+        new_mock_device.open.return_value = True
+        monitor.device_class = MagicMock(return_value=new_mock_device)
+        
+        # Mock layouts
+        mock_layout = MagicMock()
+        monitor.all_layouts = {'default': mock_layout}
+        monitor.current_layout = mock_layout
+        
+        # Simulate locked state (device was locked before)
+        monitor.is_locked = True
+        monitor.saved_brightness = 80
+        
+        # Now simulate unlock with stale handle (device was disconnected during lock)
+        self.mock_device.wake_screen.side_effect = Exception("Device disconnected")
+        self.mock_device.transport.set_brightness.side_effect = Exception("Device disconnected")
+        
+        # Reset _last_state_change to allow unlock processing
+        monitor._last_state_change = 0
+        
+        # Unlock should trigger reconnection that succeeds after 5 attempts
+        monitor._on_lock_state_changed(False)
+        
+        # Verify device was found after retries
+        self.assertEqual(mock_transport.enumerate.call_count, 6)  # 5 failed + 1 success
+        
+        # Verify new device was created and initialized
+        monitor.device_class.assert_called_once_with(mock_transport, device_info_dict)
+        new_mock_device.open.assert_called()
+        new_mock_device.init.assert_called_once()
+        new_mock_device.set_brightness.assert_called_with(80)  # Restored brightness
+        
+        # Verify layouts were updated with new device reference
+        mock_layout.update_device.assert_called_once_with(new_mock_device)
+        mock_layout.apply.assert_called_once()
+        
+        # Verify window monitor was restarted
+        self.mock_window_monitor.start.assert_called_once()
+        
+        # Verify final state
+        self.assertFalse(monitor.is_locked)
+        self.assertEqual(monitor.device, new_mock_device)
+
+
+
 if __name__ == '__main__':
     unittest.main()

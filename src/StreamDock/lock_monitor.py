@@ -382,7 +382,18 @@ class LockMonitor:
             self._restore_after_unlock()
         else:
             self.logger.info("🔓 Existing handle stale, reopening device...")
-            self._reopen_device_and_restore()
+            try:
+                self._reopen_device_and_restore()
+            except Exception as e:
+                # Device not connected - log warning and continue
+                # The hotplug mechanism will restore when device reconnects
+                self.logger.warning(
+                    f"⚠️  StreamDock device not found after unlock. "
+                    f"The application will continue running and automatically restore "
+                    f"when you reconnect the device. (Details: {e})"
+                )
+                # Mark as unlocked even though device restore failed
+                self.is_locked = False
     
     def _try_wake_existing_handle(self):
         """
@@ -412,8 +423,17 @@ class LockMonitor:
             self.window_monitor.start()
     
     def _reopen_device_and_restore(self):
-        """Fallback: close current handle (if any), reopen device, and restore."""
-        # Close current handle if it exists
+        """Fallback: close current handle (if any), reopen device, and restore.
+        
+        This method handles the complete device reconnection lifecycle:
+        1. Close stale handle
+        2. Wait for device re-enumeration (up to 20s)
+        3. Create and initialize fresh device instance
+        4. Restore all layouts and application state
+        """
+        self.logger.info("Starting device reconnection procedure...")
+        
+        # Phase 1: Close stale handle
         try:
             self.device.close()
         except Exception:
@@ -421,29 +441,20 @@ class LockMonitor:
         
         time.sleep(0.5)  # Give device time to be ready
         
-        # 1. Wait for device to appear in enumeration
+        # Phase 2: Wait for device to re-enumerate
         try:
             device_info = self._wait_for_device_enumeration(timeout=20, interval=1)
         except Exception as e:
             raise Exception(f"Device reconnection failed during enumeration: {e}")
         
-        # 2. Create fresh device instance
-        self.device = self.device_class(self.device_transport, device_info)
+        # Phase 3: Initialize fresh device instance
+        self._initialize_fresh_device(device_info)
         
-        # 3. Open device with retry logic
-        if not self._open_device_with_retry(max_retries=5):
-            raise Exception(f"Failed to open device after retries")
-        
-        # 4. Initialize and restore
-        self.device.init()
-        self.device.set_brightness(self.saved_brightness)
-        self.device._current_brightness = self.saved_brightness
-
-        # Update device reference for ALL layouts (critical after device recreation)
-        for layout_name, layout in self.all_layouts.items():
-            layout.update_device(self.device)
-        
+        # Phase 4: Restore all layouts and application state
+        self._restore_all_layouts()
         self._restore_after_unlock()
+        
+        self.logger.info("✅ Device reconnection completed successfully")
         
     def _wait_for_device_enumeration(self, timeout=20, interval=1):
         """
@@ -454,11 +465,11 @@ class LockMonitor:
         :return: Device info dictionary
         :raises Exception: If device is not found within timeout
         """
-        start_time = time.time()
-        attempts = 0
+        max_attempts = int(timeout / interval)
         
-        while time.time() - start_time < timeout:
-            attempts += 1
+        self.logger.info(f"Waiting for device to re-enumerate (max {max_attempts} attempts, ~{timeout}s)...")
+        
+        for attempt in range(1, max_attempts + 1):
             found_devices = self.device_transport.enumerate(
                 vid=self.device_vendor_id,
                 pid=self.device_product_id
@@ -466,13 +477,22 @@ class LockMonitor:
             
             for dev_info in found_devices:
                 if dev_info['path'] == self.device_path:
-                    self.logger.debug(f"Device found after {attempts} attempts")
+                    elapsed = attempt * interval
+                    self.logger.info(f"✅ Device found after {attempt} attempts (~{elapsed}s)")
                     return dev_info
             
-            self.logger.debug(f"Device path '{self.device_path}' not found, retrying ({attempts})...")
-            time.sleep(interval)
+            # Show progress every 5 attempts or on first attempt
+            if attempt == 1 or attempt % 5 == 0:
+                self.logger.info(f"Waiting for device... (attempt {attempt}/{max_attempts})")
+            else:
+                self.logger.debug(f"Device path '{self.device_path}' not found, retrying ({attempt}/{max_attempts})...")
             
-        raise Exception(f"Device not found after {timeout}s (path: {self.device_path})")
+            # Sleep between attempts (except after last attempt)
+            if attempt < max_attempts:
+                time.sleep(interval)
+            
+        raise Exception(f"Device not found after {max_attempts} attempts (~{timeout}s, path: {self.device_path})")
+
 
     def _open_device_with_retry(self, max_retries=5):
         """
@@ -484,28 +504,53 @@ class LockMonitor:
         retry_delay = 0.5
         
         for attempt in range(1, max_retries + 1):
+            self.logger.debug(f"Attempting to open device (attempt {attempt}/{max_retries})...")
+            
             if self.device.open():
-                self.logger.debug(f"Device opened on attempt {attempt}")
+                self.logger.info(f"✅ Device opened successfully on attempt {attempt}")
                 return True
             elif attempt < max_retries:
                 self.logger.warning(f"Device open failed (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
-                retry_delay += 0.5
-                # Re-create instance on failure (sometimes helps with stale handles)
-                # We need self.device_info logic here if we wanted to be perfectly clean, 
-                # but self.device is already instantiated with it.
-                # However, some HID libraries might need a fresh object.
-                # Let's keep existing logic structure:
-                # self.device = self.device_class(self.device_transport, device_info)
-                # But device_info is local to _reopen... function.
-                # Let's assume just calling open() again is enough or current object is fine.
-                # The original code did re-instantiate. Let's try to preserve that if possible.
-                # But we don't have device_info here easily without passing it.
-                # For now, let's trust simple retry. If needed, I can pass device_info to this method.
+                retry_delay += 0.5  # Exponential backoff
             else:
-                self.logger.error(f"Failed to open device after {max_retries} attempts")
+                self.logger.error(f"❌ Failed to open device after {max_retries} attempts")
         
         return False
+    
+    def _initialize_fresh_device(self, device_info):
+        """
+        Create a fresh device instance and initialize it.
+        
+        :param device_info: Device information dictionary from enumeration
+        """
+        self.logger.info("Creating fresh device instance...")
+        
+        # Create new device instance
+        self.device = self.device_class(self.device_transport, device_info)
+        
+        # Open device with retry logic
+        if not self._open_device_with_retry(max_retries=5):
+            raise Exception("Failed to open device after retries")
+        
+        # Initialize device and restore brightness
+        self.logger.debug("Initializing device and restoring brightness...")
+        self.device.init()
+        self.device.set_brightness(self.saved_brightness)
+        self.device._current_brightness = self.saved_brightness
+    
+    def _restore_all_layouts(self):
+        """
+        Update device reference for all layouts after device recreation.
+        
+        This is critical to ensure all layouts can communicate with the new device instance.
+        """
+        self.logger.debug(f"Updating device reference for {len(self.all_layouts)} layouts...")
+        
+        for layout_name, layout in self.all_layouts.items():
+            layout.update_device(self.device)
+        
+        self.logger.debug("All layouts updated successfully")
     
     def get_device(self):
         """

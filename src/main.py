@@ -129,17 +129,13 @@ def main():
             def on_device_connected(new_device):
                 logging.info("♻️ Device reconnection detected by DeviceManager - Updating application state")
                 try:
-                    # Update config loader with new device (if needed, though it mostly uses it for apply which is done)
-                     # Actually config_loader.apply() returns layouts which hold device refs.
-                     # We need to update THOSE layouts. LockMonitor holds them.
-                    
-                    # Update LockMonitor (this will update layouts and restore state)
-                    lock_monitor.update_device(new_device)
-                    
-                    # Ensure device is initialized (DeviceManager does open, but maybe not init/brightness)
+                    # 1. Initialize device hardware FIRST
+                    # We must init and wake before sending images, otherwise init might clear the screen
                     new_device.init()
                     new_device.wake_screen()
-                    # lock_monitor.update_device does set_brightness
+                    
+                    # 2. Update LockMonitor (this will update layouts and render images to the device)
+                    lock_monitor.update_device(new_device)
                     
                 except Exception as e:
                     logging.exception(f"Error handling device reconnection: {e}") 
@@ -177,9 +173,15 @@ def main():
         except KeyboardInterrupt:
             logging.info("\nShutting down...")
             if config_loader.config.get('windows_rules'):
-                window_monitor.stop()
-            lock_monitor.stop()
-            device.close()
+                try:
+                    window_monitor.stop()
+                except KeyboardInterrupt:
+                    pass
+            try:
+                lock_monitor.stop()
+                device.close()
+            except KeyboardInterrupt:
+                pass
 
 if __name__ == "__main__":
     main()
