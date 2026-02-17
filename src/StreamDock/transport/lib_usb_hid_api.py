@@ -5,7 +5,7 @@ This module now uses a pure Python implementation instead of the native
 libtransport.so library, providing cross-platform compatibility.
 """
 
-from .HIDTransport import HIDTransport
+from .hid_transport import HIDTransport
 
 # Re-export HIDTransport as LibUSBHIDAPI for backward compatibility
 LibUSBHIDAPI = HIDTransport

@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import re
+import logging
 
 
 class WindowMonitor:
@@ -18,6 +19,7 @@ class WindowMonitor:
         
         :param poll_interval: How often to check for window changes (in seconds)
         """
+        self.logger = logging.getLogger(__name__)
         self.poll_interval = poll_interval
         self.current_window = None
         self.window_rules = []
@@ -343,16 +345,16 @@ class WindowMonitor:
                 matched = True
                 try:
                     rule['callback'](window_info)
-                except Exception as e:
-                    print(f"Error executing window rule callback: {e}")
+                except Exception:
+                    self.logger.exception("Error executing window rule callback")
                 break  # Only trigger first matching rule
         
         # If no rules matched, call default callback
         if not matched and self.default_callback:
             try:
                 self.default_callback(window_info)
-            except Exception as e:
-                print(f"Error executing default callback: {e}")
+            except Exception:
+                self.logger.exception("Error executing default callback")
     
     def _monitor_loop(self):
         """
@@ -372,8 +374,8 @@ class WindowMonitor:
                 
                 time.sleep(self.poll_interval)
                 
-            except Exception as e:
-                print(f"Error in window monitor: {e}")
+            except Exception:
+                self.logger.exception("Error in window monitor")
                 time.sleep(self.poll_interval)
     
     def start(self):
