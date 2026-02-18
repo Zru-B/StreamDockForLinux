@@ -382,8 +382,14 @@ def _parse_app_config(app_config):
         return None
 
     # Extract process name for pgrep
-    process_name = command[0] if isinstance(command, list) else command
-    process_name = os.path.basename(process_name)
+    # Extract process name for pgrep
+    process_name = None
+    if isinstance(app_config, dict):
+        process_name = app_config.get("process_name")
+
+    if not process_name:
+        process_name = command[0] if isinstance(command, list) else command
+        process_name = os.path.basename(process_name)
 
     return {
         'command': command,
