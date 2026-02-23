@@ -5,57 +5,58 @@ This module implements a strategy pattern for detecting active windows using
 multiple methods (kdotool, KWin D-Bus, xdotool, etc.) with automatic fallback.
 """
 import logging
+import os
 import subprocess
+import tempfile
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
 from StreamDock.domain.Models import WindowInfo
 
+from .window_utils import WindowUtils
+
 
 class DetectionMethod(ABC):
     """
     Abstract base class for window detection strategies.
-    
+
     Each detection method implements the detect() method and shares
     common subprocess execution logic with proper error handling.
     """
-    
+
     def __init__(self):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._is_available = True
         self._consecutive_failures = 0
         self._max_failures = 3  # Disable after 3 consecutive failures
         self.last_error: Optional[str] = None
-    
+
     @property
     @abstractmethod
     def name(self) -> str:
         """Human-readable name of this detection method."""
-        pass
-    
+
     @property
     def is_available(self) -> bool:
         """Whether this detection method is currently available/enabled."""
         return self._is_available
-    
+
     def disable(self, reason: str):
         """Disable this detection method due to repeated failures."""
         if self._is_available:
             self._is_available = False
-            self.logger.warning(
-                f"Disabling detection method '{self.name}': {reason}"
-            )
-    
+            self.logger.warning("Disabling detection method '%s': %s", self.name, reason)
+
     @abstractmethod
     def detect(self) -> Optional[WindowInfo]:
         """
         Attempt to detect the active window.
-        
+
         Returns:
             WindowInfo if successful, None if detection failed.
         """
-        pass
-    
+
     def _run_command(
         self,
         cmd: list,
@@ -64,12 +65,12 @@ class DetectionMethod(ABC):
     ) -> Optional[subprocess.CompletedProcess]:
         """
         Run a subprocess command with timeout and error handling.
-        
+
         Args:
             cmd: Command and arguments as list
             timeout: Timeout in seconds
             check_returncode: If True, return None on non-zero return code
-            
+
         Returns:
             CompletedProcess if successful, None on failure
         """
@@ -81,41 +82,41 @@ class DetectionMethod(ABC):
                 text=True,
                 timeout=timeout
             )
-            
+
             # self.logger.debug(
             #     f"Command {cmd[0]} completed: returncode={result.returncode}, "
             #     f"stdout_len={len(result.stdout)}, stderr_len={len(result.stderr)}"
             # )
-            
+
             if result.stderr:
-                self.logger.debug(f"Command {cmd[0]} stderr: {result.stderr[:200]}")
-            
+                self.logger.debug("Command %s stderr: %s", cmd[0], result.stderr[:200])
+
             if check_returncode and result.returncode != 0:
-                self.logger.debug(f"Command {cmd[0]} returned code {result.returncode}")
+                self.logger.debug("Command %s returned code %d", cmd[0], result.returncode)
                 return None
-            
+
             return result
-            
+
         except subprocess.TimeoutExpired:
-            self.logger.debug(f"Command {cmd[0]} timed out after {timeout}s")
+            self.logger.debug("Command %s timed out after %.1fs", cmd[0], timeout)
             return None
         except FileNotFoundError:
-            self.logger.debug(f"Command {cmd[0]} not found")
+            self.logger.debug("Command %s not found", cmd[0])
             return None
-        except Exception as e:
-            self.logger.debug(f"Command {cmd[0]} failed: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.debug("Command %s failed: %s", cmd[0], e)
             return None
-    
+
     def _handle_success(self) -> None:
         """Reset failure counter on successful detection."""
         self._consecutive_failures = 0
         self.last_error = None
-    
+
     def _handle_failure(self, error_msg: str) -> None:
         """Handle detection failure with automatic disabling."""
         self._consecutive_failures += 1
         self.last_error = error_msg
-        
+
         if self._consecutive_failures >= self._max_failures:
             self.disable(
                 f"Failed {self._max_failures} consecutive times. "
@@ -125,26 +126,25 @@ class DetectionMethod(ABC):
 
 class KdotoolDetection(DetectionMethod):
     """Detection using kdotool (best for KDE Wayland)."""
-    
+
     @property
     def name(self) -> str:
         return "kdotool"
-    
+
     def detect(self) -> Optional[WindowInfo]:
         """Detect active window using kdotool."""
-        from .window_utils import WindowUtils
-        
+
         try:
             window_info = WindowUtils.kdotool_get_active_window()
-            
+
             if window_info:
                 self._handle_success()
                 return window_info
-            else:
-                self._handle_failure("kdotool detection returned None")
-                return None
             
-        except Exception as e:
+            self._handle_failure("kdotool detection returned None")
+            return None
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
             self._handle_failure(f"Unexpected error: {e}")
             return None
 
@@ -154,22 +154,17 @@ class KWinDynamicScriptingDetection(DetectionMethod):
     Detection using a dynamically generated KWin script.
     More robust than kwin_scripting as it uses unique markers per query.
     """
-    
+
     def __init__(self):
         super().__init__()
         self._use_qdbus6 = True
-        
+
     @property
     def name(self) -> str:
         return "kwin_dynamic"
-        
+
     def detect(self) -> Optional[WindowInfo]:
         """Detect active window by loading and running a temporary KWin script."""
-        import os
-        import tempfile
-        import time
-        import json
-        
         temp_file = None
         try:
             # Prepare script with unique marker
@@ -182,14 +177,14 @@ class KWinDynamicScriptingDetection(DetectionMethod):
                 print("{marker}:None|None");
             }}
             """
-            
+
             with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as tf:
                 tf.write(script_content)
                 temp_file = tf
-            
+
             qdbus_cmd = 'qdbus6' if self._use_qdbus6 else 'qdbus'
             plugin_name = marker  # Use marker as unique plugin name
-            
+
             # Helper to try loading script with a specific dbus command
             def _load_script_with_command(cmd_name: str) -> Optional[str]:
                 # 1. Start setup: Ensure scripting service is running
@@ -205,7 +200,7 @@ class KWinDynamicScriptingDetection(DetectionMethod):
                     timeout=1.0,
                     check_returncode=False
                 )
-                
+
                 # 3. Load script with plugin name (Required for Plasma 6)
                 res = self._run_command(
                     [cmd_name, 'org.kde.KWin', '/Scripting',
@@ -213,7 +208,7 @@ class KWinDynamicScriptingDetection(DetectionMethod):
                     timeout=2.0,
                     check_returncode=False
                 )
-                
+
                 if res and res.returncode == 0:
                      sid = res.stdout.strip()
                      if sid != '-1' and sid.lstrip('-').isdigit():
@@ -222,17 +217,17 @@ class KWinDynamicScriptingDetection(DetectionMethod):
 
             # Try primary command
             script_id = _load_script_with_command(qdbus_cmd)
-            
+
             # Fallback if failed and using qdbus6
             if not script_id and self._use_qdbus6:
                 self._use_qdbus6 = False
                 qdbus_cmd = 'qdbus'
                 script_id = _load_script_with_command(qdbus_cmd)
-            
+
             if not script_id:
                 self._handle_failure("Failed to load dynamic script or invalid ID")
                 return None
-            
+
             # Run the script
             run_result = self._run_command(
                 [qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}',
@@ -240,27 +235,27 @@ class KWinDynamicScriptingDetection(DetectionMethod):
                 timeout=2.0,
                 check_returncode=False
             )
-            
+
             # Cleanup script immediately
             self._run_command([qdbus_cmd, 'org.kde.KWin', f'/Scripting/Script{script_id}', 'org.kde.kwin.Script.stop'], timeout=0.5)
             self._run_command([qdbus_cmd, 'org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting.unloadScript', plugin_name], timeout=0.5)
-            
+
             if not run_result or run_result.returncode != 0:
                 self._handle_failure("Script execution failed")
                 return None
-            
+
             # Parse journal with retry
             wait_times = [0.05, 0.05, 0.10]
-            for i, wait in enumerate(wait_times):
+            for wait in wait_times:
                 time.sleep(wait)
-                
+
                 # Check recent journal entries
                 journal_result = self._run_command(
                     ['journalctl', '--user', '-n', '50', '--no-pager'],
                     timeout=1.0,
                     check_returncode=False
                 )
-                
+
                 if journal_result:
                     # Search reversed to find latest
                     for line in reversed(journal_result.stdout.splitlines()):
@@ -270,58 +265,57 @@ class KWinDynamicScriptingDetection(DetectionMethod):
                                 title, raw_class = payload.split("|", 1)
                                 if title == "None" and raw_class == "None":
                                     return None
-                                
-                                from .window_utils import WindowUtils
+
                                 window_class = WindowUtils.normalize_class_name(raw_class, title)
-                                
+
                                 self._handle_success()
                                 return WindowInfo(
                                     title=title,
                                     class_=window_class,
                                     method=self.name
                                 )
-            
+
             self._handle_failure(f"Marker {marker} not found in journal after retries")
             return None
-            
-        except Exception as e:
-            self._handle_failure(f"Dynamic scripting error: {e}")
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self._handle_failure("Dynamic scripting error: %s", e)
             return None
         finally:
             if temp_file and os.path.exists(temp_file.name):
-                try: os.unlink(temp_file.name)
-                except: pass
+                try:
+                    os.unlink(temp_file.name)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
 
 
 class PlasmaTaskManagerDetection(DetectionMethod):
     """Detection using Plasma task manager (experimental)."""
-    
+
     @property
     def name(self) -> str:
         return "plasma_taskmanager"
-    
+
     def detect(self) -> Optional[WindowInfo]:
         """Detect active window using Plasma task manager."""
         # This method is complex and often unreliable
         # Keeping as placeholder for future implementation
         self._handle_failure("Not implemented - experimental method")
-        return None
 
 
 class KWinBasicDetection(DetectionMethod):
     """Detection using basic KWin D-Bus interface."""
-    
+
     @property
     def name(self) -> str:
         return "kwin_basic"
-    
+
     def detect(self) -> Optional[WindowInfo]:
         """
         Detect active window using basic KWin D-Bus.
         Tries multiple approaches for KDE Plasma 6 Wayland compatibility.
         """
-        from .window_utils import WindowUtils
-        
+
         # Method 1: Try using qdbus6 (Plasma 6 uses Qt6)
         try:
             result = self._run_command(
@@ -349,8 +343,8 @@ class KWinBasicDetection(DetectionMethod):
                         raw=window_title,
                         method="kwin_plasma6",
                     )
-        except Exception as e:
-            self.logger.debug(f"KWin basic method 1 failed: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.debug("KWin basic method 1 failed: %s", e)
 
         # Method 2: Try using busctl (non-interactive)
         try:
@@ -385,8 +379,8 @@ class KWinBasicDetection(DetectionMethod):
                     raw=window_title,
                     method="busctl",
                 )
-        except Exception as e:
-            self.logger.debug(f"KWin basic method 2 failed: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.debug("KWin basic method 2 failed: %s", e)
 
         self._handle_failure("All basic KWin methods failed")
         return None
@@ -394,49 +388,47 @@ class KWinBasicDetection(DetectionMethod):
 
 class XWindowDetection(DetectionMethod):
     """Detection using X11 tools (xdotool + xprop) as fallback."""
-    
+
     @property
     def name(self) -> str:
         return "x11"
-    
+
     def detect(self) -> Optional[WindowInfo]:
         """Detect active window using X11 tools."""
-        from .window_utils import WindowUtils
-        
+
         try:
             window_info = WindowUtils.xdotool_get_active_window()
-            
+
             if window_info:
                 self._handle_success()
                 return window_info
-            else:
-                self._handle_failure("xdotool detection returned None")
-                return None
-            
-        except Exception as e:
+            # Fallback to returning None
+            self._handle_failure("xdotool detection returned None")
+            return None
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
             self._handle_failure(f"Unexpected error: {e}")
             return None
 
 
 class SimulationDetection(DetectionMethod):
     """Detection for simulation mode (reads from file)."""
-    
+
     def __init__(self, file_path: str = "/tmp/streamdock_fake_window"):
         super().__init__()
         self.file_path = file_path
-        
+
     @property
     def name(self) -> str:
         return "simulation"
-        
+
     def detect(self) -> Optional[WindowInfo]:
         """Read active window from simulation file."""
-        import os
         try:
             if not os.path.exists(self.file_path):
                 return None
 
-            with open(self.file_path, 'r') as f:
+            with open(self.file_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
 
             if not content:
@@ -458,5 +450,5 @@ class SimulationDetection(DetectionMethod):
                 method="simulation"
             )
         except Exception as e:
-            self._handle_failure(f"Error reading simulation file: {e}")
+            self._handle_failure("Error reading simulation file: %s", e)
             return None

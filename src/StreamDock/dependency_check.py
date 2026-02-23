@@ -5,9 +5,8 @@ Checks for both system binaries and Python packages.
 import importlib.util
 import logging
 import shutil
-import sys
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,7 @@ class DependencyChecker:
             spec = importlib.util.find_spec(package_name)
             if spec is None:
                 return False
-            
+
             # Try to get version
             try:
                 module = importlib.import_module(package_name)
@@ -66,7 +65,7 @@ class DependencyChecker:
                 dep.version = getattr(module, '__version__', 'unknown')
             except:
                 pass
-                
+
             return True
         except (ImportError, TypeError):
             return False
@@ -74,21 +73,21 @@ class DependencyChecker:
     def run_check(self) -> List[Dependency]:
         """Run all checks and return the results."""
         results = []
-        
+
         for dep in self.python_packages:
             dep.installed = self._check_python_package(dep)
             results.append(dep)
-            
+
         for dep in self.system_tools:
             dep.installed = self._check_system_tool(dep)
             results.append(dep)
-            
+
         return results
 
     def print_report(self):
         """Print a formatted report to the console."""
         results = self.run_check()
-        
+
         print("\n" + "="*60)
         print(" StreamDock Dependency Check ".center(60, "="))
         print("="*60 + "\n")
@@ -114,22 +113,22 @@ class DependencyChecker:
                     print(f"             └─ Impact: {dep.feature} will be disabled")
 
         print("\n" + "="*60)
-        
+
         # Installation Hints
         missing_required = [d for d in results if not d.installed and d.category == "Required"]
         missing_optional = [d for d in results if not d.installed and (d.category == "Optional" or d.category == "System Tool")]
-        
+
         if missing_required:
             print("\n❌ CRITICAL: Missing required Python packages!")
             print("Run: pip install -r requirements.txt")
-        
+
         if missing_optional:
             print("\n💡 Installation Hints:")
             # Simple distro detection (very basic)
             print("  Ubuntu/Debian: sudo apt install xdotool wmctrl dbus-x11 libhidapi-libusb0")
             print("  Arch Linux:    sudo pacman -S xdotool kdotool wmctrl hidapi")
             print("  Fedora:        sudo dnf install xdotool wmctrl hidapi")
-            
+
         print("\n" + "="*60 + "\n")
 
     def has_critical_failures(self) -> bool:
@@ -143,7 +142,7 @@ class DependencyChecker:
         python_ok = all(d.installed for d in results if d.category == "Required")
         sys_tools = [d for d in results if d.category == "System Tool"]
         found_tools = sum(1 for d in sys_tools if d.installed)
-        
+
         status = "OK" if python_ok else "CRITICAL MISSING"
         return f"Dependency Status: {status} (Python: {'OK' if python_ok else 'Missing Required'}, System Tools: {found_tools}/{len(sys_tools)} found)"
 

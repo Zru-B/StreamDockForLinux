@@ -54,3 +54,9 @@ markers = [
 ]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+src_paths = ["src"]
+known_first_party = ["StreamDock"]

@@ -16,17 +16,17 @@ class MockDevice(StreamDock):
         self.logger.info("MockStreamDock initialized")
 
     def set_brightness(self, percent):
-        self.logger.info(f"Setting brightness to {percent}")
+        self.logger.info("Setting brightness to %s", percent)
         return self.transport.set_brightness(percent)
 
     def set_touchscreen_image(self, path):
-        self.logger.info(f"Setting touchscreen image from {path}")
+        self.logger.info("Setting touchscreen image from %s", path)
         return 1 # Success
 
     def set_key_image(self, key, path):
         origin = key
         key = self.key(key)
-        self.logger.info(f"Setting key {origin} (mapped {key}) image from {path}")
+        self.logger.info("Setting key %s (mapped %s) image from %s", origin, key, path)
         return self.transport.set_key_img(path.encode('utf-8'), key)
 
     def set_key_image_data(self, key, path):

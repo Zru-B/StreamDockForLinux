@@ -1,3 +1,7 @@
+from .devices.stream_dock_293_v3 import StreamDock293V3
+
+# pylint: disable=too-few-public-methods
+
 class USBVendorIDs:
     """
     USB Vendor IDs for known StreamDock devices.
@@ -9,8 +13,6 @@ class USBProductIDs:
     USB Product IDs for known StreamDock devices.
     """
     USB_PID_STREAMDOCK_293V3EN = 0x1006
-
-from .devices.stream_dock_293_v3 import StreamDock293V3
 
 g_products = [
     # 293 serial

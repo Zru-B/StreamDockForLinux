@@ -5,19 +5,34 @@ Main window for StreamDock Configuration Editor
 
 from pathlib import Path
 
-from config_editor_dialogs import (AdvancedSettingsDialog, KeyEditorDialog,
-                                   LayoutEditorDialog, ManageKeysDialog,
-                                   WindowRuleDialog)
-from config_editor_models import (KeyDefinition, Layout, StreamDockConfig,
-                                  WindowRule)
-from config_editor_widgets import (KeySquare, LayoutListWidget,
-                                   WindowRulesWidget)
+from config_editor_dialogs import (
+    AdvancedSettingsDialog,
+    KeyEditorDialog,
+    LayoutEditorDialog,
+    ManageKeysDialog,
+    WindowRuleDialog,
+)
+from config_editor_models import KeyDefinition, Layout, StreamDockConfig, WindowRule
+from config_editor_widgets import KeySquare, LayoutListWidget, WindowRulesWidget
 from modern_styles import get_colors, get_stylesheet
 from PyQt6.QtGui import QAction, QCursor, QKeySequence
-from PyQt6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout,
-                             QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
-                             QLabel, QMainWindow, QMenu, QMessageBox, QSpinBox,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class KeySelectionDialog(QMessageBox):

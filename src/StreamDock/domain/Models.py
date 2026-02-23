@@ -14,7 +14,7 @@ from typing import Optional
 class WindowInfo:
     """
     Information about a detected window.
-    
+
     Attributes:
         title: The window title
         class: The window class/application name (simplified from class_name)
@@ -61,12 +61,13 @@ class WindowInfo:
     def get(self, key: str) -> str:
         """
         Get attribute value by key name for backward compatibility.
-        
+
         Supports both 'class' and 'class_name' keys.
         """
         if key == "title":
             return self.title
-        elif key == "class_name" or key == "class":
+        
+        if key == "class_name" or key == "class":
             return self.class_
         elif key == "raw":
             return self.raw
@@ -97,7 +98,7 @@ class WindowInfo:
 class AppPattern:
     """
     Pattern definition for application detection and normalization.
-    
+
     Attributes:
         keywords: List of keywords to search for in class name or title (case-insensitive)
         normalized_name: The normalized application name to return when matched
@@ -115,24 +116,24 @@ class AppPattern:
     def match(self, class_name: str, title: str = "") -> bool:
         """
         Check if the pattern matches the given class name and title.
-        
+
         :param class_name: Raw window class name
         :param title: Optional window title for additional context
         :return: True if the pattern matches, False otherwise
         """
         class_lower = class_name.lower()
         title_lower = title.lower() if title else ""
-        
+
         # Check exact matches first (case-sensitive)
         if self.exact_matches:
             if class_name in self.exact_matches:
                 return True
-        
+
         # Check keywords in both class name and title (case-insensitive)
         for keyword in self.keywords:
             if keyword in class_lower or keyword in title_lower:
                 return True
-        
+
         return False
 
     def __str__(self) -> str:

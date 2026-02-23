@@ -9,9 +9,17 @@ from config_editor_models import KeyDefinition
 from modern_styles import get_colors
 from PyQt6.QtCore import QMimeData, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPixmap
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
-                             QListWidgetItem, QMenu, QPushButton, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 COLORS = get_colors()
 

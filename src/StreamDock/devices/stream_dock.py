@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import queue
 import threading
@@ -18,8 +19,8 @@ class TransportError(Exception):
 
 KEY_MAPPING = {
     1 : 11, 2 : 12, 3 : 13, 4 : 14,
-    5 : 15, 6 : 6,  7 : 7,  8 : 8, 
-    9 : 9,  10 : 10,11 : 1, 12 : 2, 
+    5 : 15, 6 : 6,  7 : 7,  8 : 8,
+    9 : 9,  10 : 10,11 : 1, 12 : 2,
     13 : 3, 14 : 4, 15 : 5
 }
 
@@ -57,8 +58,8 @@ class StreamDock(ABC):
     DECK_TYPE = ""
     DECK_VISUAL = False
     DECK_TOUCH = False
-    
-    __metaclass__ = ABCMeta    
+
+    __metaclass__ = ABCMeta
     __seconds = 300
     def __init__(self,transport1,devInfo):
         self.transport=transport1
@@ -71,22 +72,22 @@ class StreamDock(ABC):
 
         self.key_callback = None
         self.per_key_callbacks = {}  # Dictionary to store per-key callbacks
-        
+
         # event queue and worker threads
         self._event_queue = queue.Queue()
         self._workers = []
-        
+
         # Double-press detection tracking
         self.last_release_time = {}  # Track last release time for each key
         self.pending_single_press = {}  # Track pending single press events
         self.pending_single_release = {}  # Track pending single release events
         self.double_press_detected = {}  # Track which keys had double-press detected
         self.release_skip_count = {}  # Track how many releases to skip after double-press
-        
+
         # Double-press interval (can be configured)
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
         self.screenlicent = None
-        
+
     def __del__(self):
         """
         Delete handler for the StreamDock, automatically closing the transport
@@ -117,17 +118,17 @@ class StreamDock(ABC):
         the deck.
         """
         self.update_lock.release()
-    
+
     def key(self, k):
-        if (self.KEY_MAP):
+        if self.KEY_MAP:
             return KEY_MAPPING[k]
-        else:
-            return k
+        
+        return k
 
     def open(self):
         """
         Open the device for communication.
-        
+
         Returns:
             True if device opened successfully, False otherwise
         """
@@ -161,7 +162,7 @@ class StreamDock(ABC):
         origin = index
         index = self.key(index)
         if index not in range(1, 16):
-            logger.error(f"key '{origin}' out of range. you should set (1 ~ 15)")
+            logger.error("key '%s' out of range. you should set (1 ~ 15)", origin)
             return -1
         self.transport.key_clear(index)
 
@@ -182,7 +183,7 @@ class StreamDock(ABC):
             data = self.transport.read_(13, timeout_ms=timeout_ms)
         else:
             data = self.transport.read_(13)
-        
+
         # read_() returns a tuple: (result_bytes, ack, ok, key, status)
         # Extract only the bytes array
         if data and isinstance(data, tuple):
@@ -198,21 +199,21 @@ class StreamDock(ABC):
                     if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
                         if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            logger.debug(f"Key {key_num} pressed")
+                            logger.debug("Key %s pressed", key_num)
                         elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
                             key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            logger.debug(f"Key {key_num} released")
+                            logger.debug("Key %s released", key_num)
             except Exception as e:
-                logger.exception(f"Error in whileread: {e}")
+                logger.exception("Error in whileread: %s", e)
                 break
 
     def screen_off(self):
-        res=self.transport.screen_off()   
+        res=self.transport.screen_off()
         self.reset_countdown(self.__seconds)
         return res
 
     def screen_on(self):
-        return self.transport.screen_on()  
+        return self.transport.screen_on()
 
     def set_seconds(self,data):
         self.__seconds=data
@@ -221,7 +222,7 @@ class StreamDock(ABC):
     def reset_countdown(self,data):
         if self.screenlicent is not None:
             self.screenlicent.cancel()
-        self.screenlicent=threading.Timer(data,self.screen_off) 
+        self.screenlicent=threading.Timer(data,self.screen_off)
         self.screenlicent.daemon = True
         self.screenlicent.start()
 
@@ -287,12 +288,12 @@ class StreamDock(ABC):
                     # Sentinel to shut down the worker
                     self._event_queue.task_done()
                     break
-                
+
                 func, args = task
                 try:
                     func(*args)
                 except Exception:
-                    logger.exception(f"Error executing callback {func.__name__}")
+                    logger.exception("Error executing callback %s", func.__name__)
                 finally:
                     self._event_queue.task_done()
             except Exception:
@@ -316,8 +317,8 @@ class StreamDock(ABC):
         # Send shutdown sentinels
         for _ in self._workers:
             self._event_queue.put(None)
-        
-        # We don't necessarily join() here because they are daemon threads 
+
+        # We don't necessarily join() here because they are daemon threads
         # and we might want fast shutdown. But for correctness we could.
         # Given StreamDock usage, just clearing the list is enough as they are Daemon.
         # But clearing the list ensures we can restart them if opened again.
@@ -359,8 +360,6 @@ class StreamDock(ABC):
                                         each time a button state changes.
         :param asyncio.loop loop: Asyncio loop to dispatch the callback into
         """
-        import asyncio
-
         loop = loop or asyncio.get_event_loop()
 
         def callback(*args):
@@ -402,8 +401,6 @@ class StreamDock(ABC):
                                         each time a button state changes.
         :param asyncio.loop loop: Asyncio loop to dispatch the callback into
         """
-        import asyncio
-
         loop = loop or asyncio.get_event_loop()
 
         def callback(*args):
@@ -438,27 +435,27 @@ class StreamDock(ABC):
     def clear_key_callback(self, key):
         """
         Clears all callback functions for a specific key on the StreamDock.
-        
+
         :param int key: The key number to clear callbacks for.
         """
         if key in self.per_key_callbacks:
             del self.per_key_callbacks[key]
-        
+
         # Clean up any pending timers for this key
         if key in self.pending_single_press and self.pending_single_press[key] is not None:
             self.pending_single_press[key].cancel()
             del self.pending_single_press[key]
-        
+
         if key in self.pending_single_release and self.pending_single_release[key] is not None:
             self.pending_single_release[key].cancel()
             del self.pending_single_release[key]
-        
+
         if key in self.last_release_time:
             del self.last_release_time[key]
-        
+
         if key in self.double_press_detected:
             del self.double_press_detected[key]
-        
+
         if key in self.release_skip_count:
             del self.release_skip_count[key]
 
@@ -470,11 +467,11 @@ class StreamDock(ABC):
         for key in list(self.pending_single_press.keys()):
             if self.pending_single_press[key] is not None:
                 self.pending_single_press[key].cancel()
-        
+
         for key in list(self.pending_single_release.keys()):
             if self.pending_single_release[key] is not None:
                 self.pending_single_release[key].cancel()
-        
+
         # Clear all callback and tracking dictionaries
         self.per_key_callbacks.clear()
         self.pending_single_press.clear()
@@ -495,49 +492,49 @@ class StreamDock(ABC):
                             new = 0
                         if new == 0x01:
                             new = 1
-                        
+
                         # Call global callback if set (in worker pool)
                         if self.key_callback is not None:
                             self._event_queue.put((self.key_callback, (self, k, new)))
-                        
+
                         # Handle per-key callbacks with double-press detection
                         if k in self.per_key_callbacks:
                             callbacks = self.per_key_callbacks[k]
-                            
+
                             # Check if this key has double-press callback enabled
                             has_double_press = callbacks.get('on_double_press') is not None
-                            
+
                             # Handle key press (new == 1)
                             if new == 1:
                                 # Only use double-press detection if on_double_press is set
                                 if has_double_press:
                                     current_time = time.time()
-                                    
+
                                     # Check if this is a double-press (press within interval after last release)
                                     if k in self.last_release_time:
                                         time_since_last_release = current_time - self.last_release_time[k]
-                                        
+
                                         if time_since_last_release <= self.double_press_interval:
                                             # Double-press detected!
                                             # Cancel any pending single press callback from first press
                                             if k in self.pending_single_press and self.pending_single_press[k] is not None:
                                                 self.pending_single_press[k].cancel()
                                                 self.pending_single_press[k] = None
-                                            
+
                                             # Cancel any pending single release callback from first press
                                             if k in self.pending_single_release and self.pending_single_release[k] is not None:
                                                 self.pending_single_release[k].cancel()
                                                 self.pending_single_release[k] = None
-                                            
+
                                             # Call double-press callback in worker pool
                                             if callbacks.get('on_double_press'):
                                                 self._event_queue.put((callbacks['on_double_press'], (self, k)))
-                                            
+
                                             # Clear the last release time to prevent triple-press from being detected as another double-press
                                             del self.last_release_time[k]
                                             self.release_skip_count[k] = 1  # Skip the next release (from the second press)
                                             continue
-                                    
+
                                     # Not a double-press (yet) - delay on_press callback to wait for potential double-press
                                     if callbacks.get('on_press'):
                                         def delayed_press_callback():
@@ -545,7 +542,7 @@ class StreamDock(ABC):
                                             if k in self.pending_single_press and self.pending_single_press[k] is not None:
                                                 self._event_queue.put((callbacks['on_press'], (self, k)))
                                                 self.pending_single_press[k] = None
-                                        
+
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_press_callback)
                                         self.pending_single_press[k] = timer
                                         timer.daemon = True
@@ -554,7 +551,7 @@ class StreamDock(ABC):
                                     # No double-press callback, use immediate on_press in worker pool
                                     if callbacks.get('on_press'):
                                         self._event_queue.put((callbacks['on_press'], (self, k)))
-                            
+
                             # Handle key release (new == 0)
                             elif new == 0:
                                 # Check if we need to skip this release due to double-press
@@ -569,11 +566,11 @@ class StreamDock(ABC):
                                             del self.double_press_detected[k]
                                     # Skip on_release callback entirely
                                     continue
-                                
+
                                 # Record release time for double-press detection
                                 if has_double_press:
                                     self.last_release_time[k] = time.time()
-                                    
+
                                     # Delay on_release callback to wait for potential double-press
                                     if callbacks.get('on_release'):
                                         def delayed_release_callback():
@@ -581,7 +578,7 @@ class StreamDock(ABC):
                                             if k in self.pending_single_release and self.pending_single_release[k] is not None:
                                                 self._event_queue.put((callbacks['on_release'], (self, k)))
                                                 self.pending_single_release[k] = None
-                                        
+
                                         timer = threading.Timer(self.double_press_interval + 0.01, delayed_release_callback)
                                         self.pending_single_release[k] = timer
                                         timer.daemon = True

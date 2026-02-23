@@ -8,8 +8,10 @@ Tool availability is cached on first use for optimal runtime performance.
 """
 
 import logging
+import os
 import shutil
 import subprocess
+import time
 from typing import Optional
 
 from StreamDock.domain.Models import AppPattern, WindowInfo
@@ -53,43 +55,43 @@ class WindowUtils:
     def is_kdotool_available() -> bool:
         """
         Check if kdotool is available and functional.
-        
+
         Result is cached on first call for performance.
-        
+
         :return: True if kdotool is available and working, False otherwise
         """
         global _kdotool_available
-        
+
         if _kdotool_available is not None:
             return _kdotool_available
-        
+
         # Check if kdotool exists
         if shutil.which("kdotool") is None:
             logger.debug("kdotool not found in PATH")
             _kdotool_available = False
             return False
-        
+
         # Test if kdotool actually works (it might panic on some systems)
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["kdotool", "getactivewindow"],
                 capture_output=True,
                 text=True,
                 timeout=1,
                 check=False,
             )
-            
+
             if result.returncode != 0:
-                logger.debug(f"kdotool test failed with return code {result.returncode}")
+                logger.debug("kdotool test failed with return code %d", result.returncode)
                 _kdotool_available = False
                 return False
-            
+
             logger.info("kdotool found and functional")
             _kdotool_available = True
             return True
-            
-        except Exception as exc:
-            logger.debug(f"kdotool test failed: {exc}")
+
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.debug("kdotool test failed: %s", exc)
             _kdotool_available = False
             return False
 
@@ -97,40 +99,40 @@ class WindowUtils:
     def is_xdotool_available() -> bool:
         """
         Check if xdotool is available and functional.
-        
+
         Result is cached on first call for performance.
-        
+
         :return: True if xdotool is available and working, False otherwise
         """
         global _xdotool_available
-        
+
         if _xdotool_available is not None:
             return _xdotool_available
-        
+
         # Check if xdotool exists
         if shutil.which("xdotool") is None:
             logger.debug("xdotool not found in PATH")
             _xdotool_available = False
             return False
-        
+
         # Test if xdotool actually works
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["xdotool", "getactivewindow"],
                 capture_output=True,
                 text=True,
                 timeout=1,
                 check=False,
             )
-            
+
             # xdotool might return non-zero if no X11 session, but that's ok
             # We just care that it executes without crashing
             logger.info("xdotool found and functional")
             _xdotool_available = True
             return True
-            
-        except Exception as exc:
-            logger.debug(f"xdotool test failed: {exc}")
+
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.debug("xdotool test failed: %s", exc)
             _xdotool_available = False
             return False
 
@@ -138,22 +140,22 @@ class WindowUtils:
     def is_wmctrl_available() -> bool:
         """
         Check if wmctrl is available and functional.
-        
+
         Result is cached on first call for performance.
-        
+
         :return: True if wmctrl is available, False otherwise
         """
         global _wmctrl_available
-        
+
         if _wmctrl_available is not None:
             return _wmctrl_available
-        
+
         # Check if wmctrl exists
         if shutil.which("wmctrl") is None:
             logger.debug("wmctrl not found in PATH")
             _wmctrl_available = False
             return False
-            
+
         _wmctrl_available = True
         return True
 
@@ -161,7 +163,7 @@ class WindowUtils:
     def refresh_tool_cache() -> None:
         """
         Refresh the cached tool availability status.
-        
+
         Call this if tools are installed/uninstalled during runtime.
         """
         global _kdotool_available, _xdotool_available, _wmctrl_available, _dbus_available, _pactl_available
@@ -176,19 +178,19 @@ class WindowUtils:
     def is_dbus_available() -> bool:
         """
         Check if dbus-send is available.
-        
+
         :return: True if dbus-send is available, False otherwise
         """
         global _dbus_available
-        
+
         if _dbus_available is not None:
             return _dbus_available
-            
+
         if shutil.which("dbus-send") is None:
             logger.debug("dbus-send not found in PATH")
             _dbus_available = False
             return False
-            
+
         _dbus_available = True
         return True
 
@@ -196,19 +198,19 @@ class WindowUtils:
     def is_pactl_available() -> bool:
         """
         Check if pactl is available.
-        
+
         :return: True if pactl is available, False otherwise
         """
         global _pactl_available
-        
+
         if _pactl_available is not None:
             return _pactl_available
-            
+
         if shutil.which("pactl") is None:
             logger.debug("pactl not found in PATH")
             _pactl_available = False
             return False
-            
+
         _pactl_available = True
         return True
 
@@ -218,12 +220,12 @@ class WindowUtils:
     def kdotool_get_active_window() -> Optional[WindowInfo]:
         """
         Get the currently active window using kdotool.
-        
+
         :return: WindowInfo object with window details, or None if failed
         """
         if not WindowUtils.is_kdotool_available():
             return None
-        
+
         try:
             # Get window ID
             result = subprocess.run(
@@ -233,12 +235,12 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             if result.returncode != 0:
                 return None
-            
+
             window_id = result.stdout.strip()
-            
+
             # Get window title
             result = subprocess.run(
                 ["kdotool", "getwindowname", window_id],
@@ -247,17 +249,17 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             if result.returncode != 0:
                 return None
-            
+
             window_info = WindowInfo(
                 title=result.stdout.strip(),
                 class_="",
                 raw=result.stdout.strip(),
                 method="kdotool"
             )
-            
+
             # Try to get actual window class
             result_class = subprocess.run(
                 ["kdotool", "getwindowclassname", window_id],
@@ -266,33 +268,34 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             if result_class.returncode == 0 and result_class.stdout.strip():
                 raw_class = result_class.stdout.strip()
                 window_info.class_ = WindowUtils.normalize_class_name(raw_class, window_info.title)
-                logger.debug(f"kdotool: title={window_info.title}, raw_class={raw_class}, normalized={window_info.class_}")
+                logger.debug("kdotool: title=%s, raw_class=%s, normalized=%s",
+                             window_info.title, raw_class, window_info.class_)
             else:
                 # Fallback to extracting from title
                 window_info.class_ = WindowUtils.extract_app_from_title(window_info.title)
-                logger.debug(f"kdotool: title={window_info.title}, class={window_info.class_}")
-            
+                logger.debug("kdotool: title=%s, class=%s", window_info.title, window_info.class_)
+
             return window_info
-            
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
-            logger.debug(f"kdotool_get_active_window failed: {exc}")
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:  # pylint: disable=broad-exception-caught
+            logger.debug("kdotool_get_active_window failed: %s", exc)
             return None
 
     @staticmethod
     def kdotool_search_by_class(class_name: str) -> Optional[str]:
         """
         Search for a window by class name using kdotool.
-        
+
         :param class_name: Window class name to search for
         :return: Window ID if found, None otherwise
         """
         if not WindowUtils.is_kdotool_available():
             return None
-        
+
         try:
             result = subprocess.run(
                 ["kdotool", "search", "--class", class_name],
@@ -301,29 +304,29 @@ class WindowUtils:
                 timeout=2,
                 check=False,
             )
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 window_id = result.stdout.strip().split("\n")[0]
-                logger.debug(f"Found window (kdotool): {window_id} for class '{class_name}'")
+                logger.debug("Found window (kdotool): %s for class '%s'", window_id, class_name)
                 return window_id
-            
+
             return None
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug(f"kdotool_search_by_class failed: {exc}")
+            logger.debug("kdotool_search_by_class failed: %s", exc)
             return None
 
     @staticmethod
     def kdotool_search_by_name(name: str) -> Optional[str]:
         """
         Search for a window by name using kdotool.
-        
+
         :param name: Window name to search for
         :return: Window ID if found, None otherwise
         """
         if not WindowUtils.is_kdotool_available():
             return None
-        
+
         try:
             result = subprocess.run(
                 ["kdotool", "search", "--name", name],
@@ -332,29 +335,29 @@ class WindowUtils:
                 timeout=2,
                 check=False,
             )
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 window_id = result.stdout.strip().split("\n")[0]
-                logger.debug(f"Found window (kdotool): {window_id} for name '{name}'")
+                logger.debug("Found window (kdotool): %s for name '%s'", window_id, name)
                 return window_id
-            
+
             return None
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug(f"kdotool_search_by_name failed: {exc}")
+            logger.debug("kdotool_search_by_name failed: %s", exc)
             return None
 
     @staticmethod
     def kdotool_activate_window(window_id: str) -> bool:
         """
         Activate (focus) a window using kdotool.
-        
+
         :param window_id: Window ID to activate
         :return: True if successful, False otherwise
         """
         if not WindowUtils.is_kdotool_available():
             return False
-        
+
         try:
             result = subprocess.run(
                 ["kdotool", "windowactivate", window_id],
@@ -363,12 +366,12 @@ class WindowUtils:
                 timeout=2,
                 check=True,
             )
-            
-            logger.debug(f"Activated window (kdotool): {window_id}")
+
+            logger.debug("Activated window (kdotool): %s", window_id)
             return True
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
-            logger.debug(f"kdotool_activate_window failed: {exc}")
+            logger.debug("kdotool_activate_window failed: %s", exc)
             return False
 
     # ========== xdotool operations ==========
@@ -377,12 +380,12 @@ class WindowUtils:
     def xdotool_get_active_window() -> Optional[WindowInfo]:
         """
         Get the currently active window using xdotool.
-        
+
         :return: WindowInfo object with window details, or None if failed
         """
         if not WindowUtils.is_xdotool_available():
             return None
-        
+
         try:
             result = subprocess.run(
                 ["xdotool", "getactivewindow"],
@@ -391,12 +394,12 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             if result.returncode != 0 or not result.stdout.strip():
                 return None
-            
+
             window_id = result.stdout.strip()
-            
+
             # Get window title
             result_title = subprocess.run(
                 ["xdotool", "getwindowname", window_id],
@@ -405,9 +408,9 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             window_title = result_title.stdout.strip() if result_title.returncode == 0 else ""
-            
+
             # Get window class (WM_CLASS)
             result_class = subprocess.run(
                 ["xdotool", "getwindowclassname", window_id],
@@ -416,35 +419,35 @@ class WindowUtils:
                 timeout=1,
                 check=False,
             )
-            
+
             if result_class.returncode == 0 and result_class.stdout.strip():
                 raw_class = result_class.stdout.strip()
                 window_class = WindowUtils.normalize_class_name(raw_class, window_title)
             else:
                 window_class = WindowUtils.extract_app_from_title(window_title)
-            
+
             return WindowInfo(
                 title=window_title,
                 class_=window_class,
                 raw=window_title,
                 method="xdotool",
             )
-            
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
-            logger.debug(f"xdotool_get_active_window failed: {exc}")
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:  # pylint: disable=broad-exception-caught
+            logger.debug("xdotool_get_active_window failed: %s", exc)
             return None
 
     @staticmethod
     def xdotool_search_by_class(class_name: str) -> Optional[str]:
         """
         Search for a window by class name using xdotool.
-        
+
         :param class_name: Window class name to search for
         :return: Window ID of the first found window, None otherwise
         """
         if not WindowUtils.is_xdotool_available():
             return None
-        
+
         try:
             result = subprocess.run(
                 ["xdotool", "search", "--all", "--onlyvisible", "--class", class_name],
@@ -453,29 +456,29 @@ class WindowUtils:
                 timeout=2,
                 check=False,
             )
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 window_id = result.stdout.strip().split("\n")[0]
-                logger.debug(f"Found window (xdotool): {window_id} for class '{class_name}'")
+                logger.debug("Found window (xdotool): %s for class '%s'", window_id, class_name)
                 return window_id
-            
+
             return None
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug(f"xdotool_search_by_class failed: {exc}")
+            logger.debug("xdotool_search_by_class failed: %s", exc)
             return None
 
     @staticmethod
     def xdotool_search_by_name(name: str) -> Optional[str]:
         """
         Search for a window by name using xdotool.
-        
+
         :param name: Window name to search for
         :return: Window ID of the first found window, None otherwise
         """
         if not WindowUtils.is_xdotool_available():
             return None
-        
+
         try:
             result = subprocess.run(
                 ["xdotool", "search", "--all", "--name", name],
@@ -484,29 +487,29 @@ class WindowUtils:
                 timeout=2,
                 check=False,
             )
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 window_id = result.stdout.strip().split("\n")[0]
-                logger.debug(f"Found window (xdotool): {window_id} for name '{name}'")
+                logger.debug("Found window (xdotool): %s for name '%s'", window_id, name)
                 return window_id
-            
+
             return None
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug(f"xdotool_search_by_name failed: {exc}")
+            logger.debug("xdotool_search_by_name failed: %s", exc)
             return None
 
     @staticmethod
     def xdotool_activate_window(window_id: str) -> bool:
         """
         Activate (focus) a window using xdotool.
-        
+
         :param window_id: Window ID to activate
         :return: True if successful, False otherwise
         """
         if not WindowUtils.is_xdotool_available():
             return False
-        
+
         try:
             result = subprocess.run(
                 ["xdotool", "windowactivate", window_id],
@@ -515,19 +518,19 @@ class WindowUtils:
                 timeout=2,
                 check=True,
             )
-            
-            logger.debug(f"Activated window (xdotool): {window_id}")
+
+            logger.debug("Activated window (xdotool): %s", window_id)
             return True
-            
+
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
-            logger.debug(f"xdotool_activate_window failed: {exc}")
+            logger.debug("xdotool_activate_window failed: %s", exc)
             return False
 
     @staticmethod
     def xdotool_key(key_sequence: str) -> bool:
         """
         Simulate key presses using xdotool.
-        
+
         :param key_sequence: Key sequence string (e.g. "ctrl+c")
         :return: True if successful, False otherwise
         """
@@ -539,17 +542,17 @@ class WindowUtils:
             subprocess.run(['xdotool', 'key', key_sequence], check=True, capture_output=True)
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error pressing key combination: {e}")
+            logger.error("Error pressing key combination: %s", e)
             return False
-        except Exception as e:
-            logger.error(f"Unexpected error in xdotool_key: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Unexpected error in xdotool_key: %s", e)
             return False
 
     @staticmethod
     def xdotool_type(text: str, delay: float = 0.001) -> None:
         """
         Type text using xdotool.
-        
+
         :param text: Text to type
         :param delay: Delay between keystrokes
         """
@@ -557,8 +560,6 @@ class WindowUtils:
             logger.error("xdotool not found")
             return
 
-        import time
-        
         try:
             # Try to get active window ID for synchronization (optional optimization from original code)
             window_args = []
@@ -599,19 +600,19 @@ class WindowUtils:
                     if delay > 0:
                         time.sleep(delay)
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"[WARNING] Timeout while typing character")
+                    logger.warning("[WARNING] Timeout while typing character")
                     continue
                 except subprocess.CalledProcessError as e:
-                    logger.error(f"[ERROR] Failed to type character: {e}")
+                    logger.error("[ERROR] Failed to type character: %s", e)
                     if e.stderr:
-                        logger.error(f"[ERROR] stderr: {e.stderr}")
+                        logger.error("[ERROR] stderr: %s", e.stderr)
 
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("[ERROR] Unexpected error while typing text")
             # Try fallback method
             try:
                 subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text], check=True)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 logger.exception("[ERROR] Fallback typing also failed")
 
     # ========== wmctrl operations ==========
@@ -620,7 +621,7 @@ class WindowUtils:
     def wmctrl_activate_window(class_name: str) -> bool:
         """
         Try to activate window using wmctrl.
-        
+
         :param class_name: Window class to search for
         :return: True if successful, False otherwise
         """
@@ -644,7 +645,7 @@ class WindowUtils:
     def is_process_running(process_name: str) -> bool:
         """
         Check if a process is running using pgrep.
-        
+
         :param process_name: Process name to search for
         :return: True if process is running, False otherwise or if pgrep unavailable
         """
@@ -663,16 +664,15 @@ class WindowUtils:
     def activate_window(class_name: str, search_by_name: str = None) -> bool:
         """
         Try all available methods to find and focus window.
-        
+
         Auto-detects session type (Wayland vs X11) and connects methods accordingly.
-        
+
         :param class_name: Window class to search for
         :param search_by_name: Optional window name for Chrome apps fallback
         :return: True if window found and focused, False otherwise
         """
-        import os
         session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
-        
+
         # Primary method depends on session
         if session_type == 'wayland':
             # Try kdotool first for Wayland
@@ -680,7 +680,7 @@ class WindowUtils:
             if window_id:
                 if WindowUtils.kdotool_activate_window(window_id):
                     return True
-            
+
             # Fallback by name using kdotool
             if search_by_name:
                 window_id = WindowUtils.kdotool_search_by_name(search_by_name)
@@ -693,7 +693,7 @@ class WindowUtils:
             if window_id:
                 if WindowUtils.xdotool_activate_window(window_id):
                     return True
-                    
+
             # Fallback by name using xdotool
             if search_by_name:
                 window_id = WindowUtils.xdotool_search_by_name(search_by_name)
@@ -713,21 +713,21 @@ class WindowUtils:
     def normalize_class_name(class_name: str, title: str = "") -> str:
         """
         Normalize and translate window class names to human-readable application names.
-        
+
         Handles edge cases and known application patterns using APP_PATTERNS.
-        
+
         :param class_name: Raw window class name
         :param title: Optional window title for additional context
         :return: Normalized application name
         """
         if not class_name:
             return "unknown"
-        
+
         # Iterate through all application patterns to find a match
         for pattern in APP_PATTERNS:
             if pattern.match(class_name, title):
                 return pattern.normalized_name
-        
+
         # Return the class name as-is if no translation found
         return class_name
 
@@ -735,20 +735,20 @@ class WindowUtils:
     def extract_app_from_title(title: str) -> str:
         """
         Extract application name from window title using common patterns.
-        
+
         Common patterns: "Title - Application" or "Application: Title"
-        
+
         :param title: Window title string
         :return: Extracted application name
         """
         if not title:
             return "unknown"
-        
+
         # First try to normalize if the title itself contains recognizable app names
         normalized = WindowUtils.normalize_class_name(title, title)
         if normalized != title:
             return normalized
-        
+
         # Common patterns in window titles
         # "Document Name - Application"
         if " — " in title:
@@ -760,7 +760,7 @@ class WindowUtils:
         if ": " in title:
             extracted = title.split(":")[0].strip()
             return WindowUtils.normalize_class_name(extracted, title)
-        
+
         # Return first word of title as fallback
         fallback = title.split()[0] if title.split() else "unknown"
         return WindowUtils.normalize_class_name(fallback, title)

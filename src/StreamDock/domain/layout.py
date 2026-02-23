@@ -1,3 +1,4 @@
+from .key import Key
 
 
 class Layout:
@@ -51,12 +52,12 @@ class Layout:
             self.device.cleaerIcon(key_number)
             # Get the logical key number for callback clearing
             logical_key = key_number  # Will be mapped in clear_key_callback if needed
-            from .key import Key
             logical_key = Key.KEY_MAPPING.get(key_number, key_number)
             self.device.clear_key_callback(logical_key)
 
         # Configure each key in the layout
         for key in self.keys:
+            # pylint: disable=protected-access
             key._configure()
 
         # Refresh the device display

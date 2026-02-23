@@ -1,5 +1,6 @@
 from enum import Enum, auto
 
+
 class ActionType(Enum):
     EXECUTE_COMMAND = auto()
     KEY_PRESS = auto()

@@ -2,6 +2,8 @@ import logging
 import os
 import tempfile
 
+from StreamDock.image_helpers.pil_helper import render_key_image
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,8 +118,6 @@ class Key:
         if has_icon and not has_text:
             return self.image_path
 
-        # Everything else needs us to generate a composed image
-        from StreamDock.image_helpers.pil_helper import render_key_image
 
         try:
             pil_image = render_key_image(
@@ -132,7 +132,8 @@ class Key:
             )
         except Exception:
             logger.exception(
-                f"Key {self.key_number}: failed to render image (icon={self.image_path!r}, text={self.text!r})"
+                "Key %s: failed to render image (icon=%r, text=%r)",
+                self.key_number, self.image_path, self.text
             )
             return self.image_path  # Fall back to raw icon path (may be empty)
 
@@ -146,7 +147,7 @@ class Key:
             self._rendered_temp_path = tmp_path
             return tmp_path
         except Exception:
-            logger.exception(f"Key {self.key_number}: failed to save rendered image to temp file")
+            logger.exception("Key %s: failed to save rendered image to temp file", self.key_number)
             return self.image_path
 
     def _cleanup_temp(self) -> None:
@@ -178,7 +179,7 @@ class Key:
                 if self.action_executor:
                     self.action_executor.execute_actions(actions_or_callback, device=device, key_number=self.key_number)
                 else:
-                    logger.warning(f"No action_executor available for key {self.key_number}")
+                    logger.warning("No action_executor available for key %s", self.key_number)
             return action_callback
 
         if isinstance(actions_or_callback, tuple):
@@ -186,7 +187,7 @@ class Key:
                 if self.action_executor:
                     self.action_executor.execute_actions([actions_or_callback], device=device, key_number=self.key_number)
                 else:
-                    logger.warning(f"No action_executor available for key {self.key_number}")
+                    logger.warning("No action_executor available for key %s", self.key_number)
             return action_callback
 
         return None
@@ -203,7 +204,8 @@ class Key:
             self.device.set_key_image(self.key_number, rendered_path)
         else:
             logger.warning(
-                f"Key {self.key_number} has no image or text to display – skipping image set"
+                "Key %s has no image or text to display – skipping image set",
+                self.key_number
             )
 
         if self.on_press is not None or self.on_release is not None or self.on_double_press is not None:
