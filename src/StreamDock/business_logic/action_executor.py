@@ -1,13 +1,19 @@
 import configparser
 import logging
 import os
+import re
 import shlex
 import subprocess
+import tempfile
+import threading
 import time
-from typing import Dict, Any, Tuple, Optional, List, Callable
+from typing import Callable, List, Tuple
 
 from StreamDock.business_logic.action_type import ActionType
+from StreamDock.domain.key import Key
+from StreamDock.image_helpers.pil_helper import render_key_image
 from StreamDock.infrastructure.system_interface import SystemInterface
+from StreamDock.window_utils import WindowUtils
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +25,7 @@ def _launch_detached(command):
         cmd_str = ' '.join(shlex.quote(arg) for arg in command)
 
     shell_cmd = f"nohup {cmd_str} >/dev/null 2>&1 &"
+    # pylint: disable=consider-using-with
     subprocess.Popen(
         shell_cmd,
         shell=True,
@@ -51,24 +58,24 @@ def parse_desktop_file(desktop_file):
                 break
 
     if not desktop_path:
-        logger.warning(f"Desktop file not found: {desktop_file}")
+        logger.warning("Desktop file not found: %s", desktop_file)
         return None
 
     try:
         config = configparser.ConfigParser(interpolation=None)
-        config.read(desktop_path)
+        with open(desktop_path, 'r', encoding='utf-8') as f:
+            config.read_file(f)
 
         if 'Desktop Entry' not in config:
-            logger.error(f"Invalid desktop file (no [Desktop Entry] section): {desktop_path}")
+            logger.error("Invalid desktop file (no [Desktop Entry] section): %s", desktop_path)
             return None
 
         entry = config['Desktop Entry']
         exec_line = entry.get('Exec', '')
         if not exec_line:
-            logger.error(f"No Exec field in desktop file: {desktop_path}")
+            logger.error("No Exec field in desktop file: %s", desktop_path)
             return None
 
-        import re
         exec_line = re.sub(r'%[fFuUdDnNickvm]', '', exec_line).strip()
         command = shlex.split(exec_line)
 
@@ -84,8 +91,8 @@ def parse_desktop_file(desktop_file):
             'name': app_name
         }
 
-    except Exception:
-        logger.exception(f"Error parsing desktop file {desktop_path}")
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Error parsing desktop file %s", desktop_path)
         return None
 
 def _parse_app_config(app_config):
@@ -111,7 +118,7 @@ def _parse_app_config(app_config):
                 if "class_name" in app_config:
                     class_name = app_config["class_name"].lower()
             else:
-                logger.error(f"Failed to parse desktop file: {desktop_file}")
+                logger.error("Failed to parse desktop file: %s", desktop_file)
                 return None
         else:
             command = app_config.get("command")
@@ -123,7 +130,7 @@ def _parse_app_config(app_config):
         match_type = app_config.get("match_type", "contains")
         force_new = app_config.get("force_new", False)
     else:
-        logger.error(f"Invalid LAUNCH_APPLICATION parameter: {app_config}")
+        logger.error("Invalid LAUNCH_APPLICATION parameter: %s", app_config)
         return None
 
     if not command:
@@ -173,7 +180,7 @@ class ActionExecutor:
 
     def execute_action(self, action: Tuple, device=None, key_number=None) -> None:
         if not isinstance(action, tuple) or len(action) != 2:
-            logger.error(f"Invalid action format: {action}. Expected (ActionType, parameter)")
+            logger.error("Invalid action format: %s. Expected (ActionType, parameter)", action)
             return
 
         action_type, parameter = action
@@ -181,10 +188,10 @@ class ActionExecutor:
         if handler:
             try:
                 handler(parameter, device, key_number)
-            except Exception as e:
-                logger.exception(f"Error executing action {action_type}: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.exception("Error executing action %s: %s", action_type, e)
         else:
-            logger.error(f"Unknown action type: {action_type}")
+            logger.error("Unknown action type: %s", action_type)
 
     def execute_actions(self, actions: List[Tuple], device=None, key_number=None) -> None:
         if not isinstance(actions, list):
@@ -192,10 +199,10 @@ class ActionExecutor:
         for action in actions:
             self.execute_action(action, device=device, key_number=key_number)
 
-    def _handle_execute_command(self, parameter, device, key_number):
+    def _handle_execute_command(self, parameter, unused_device, unused_key_number):
         self._system.execute_command(parameter)
 
-    def _handle_key_press(self, parameter, device, key_number):
+    def _handle_key_press(self, parameter, unused_device, unused_key_number):
         # Translate to xdotool compatible key sequences, handled by SystemInterface
         # Emulate legacy behavior using send_key_combo
         key_mapping = {
@@ -217,9 +224,9 @@ class ActionExecutor:
         }
         keys = [k.strip().upper() for k in parameter.split('+')]
         if not keys:
-            logger.error(f"Invalid key combination: {parameter}")
+            logger.error("Invalid key combination: %s", parameter)
             return
-        
+
         xdotool_keys = []
         for key in keys:
             if key in key_mapping:
@@ -227,17 +234,17 @@ class ActionExecutor:
             elif len(key) == 1:
                 xdotool_keys.append(key.lower())
             else:
-                logger.error(f"Unknown key: {key}")
+                logger.error("Unknown key: %s", key)
                 return
-                
+
         combo_str = '+'.join(xdotool_keys)
         self._system.send_key_combo(combo_str)
 
-    def _handle_type_text(self, parameter, device, key_number):
+    def _handle_type_text(self, parameter, unused_device, unused_key_number):
         if parameter:
             self._system.type_text(parameter)
 
-    def _handle_wait(self, parameter, device, key_number):
+    def _handle_wait(self, parameter, unused_device, unused_key_number):
         time.sleep(parameter)
 
     def _handle_change_key_image(self, parameter, device, key_number):
@@ -255,53 +262,53 @@ class ActionExecutor:
             text = parameter.get('text', '')
             text_color = parameter.get('text_color', 'white')
             background_color = parameter.get('background_color', 'black')
-            font_size = parameter.get('font_size', 20)
-            bold = parameter.get('bold', True)
+            font_size = int(parameter.get('font_size', 20))
+            bold = bool(parameter.get('bold', True))
+            text_position = parameter.get('text_position', 'bottom')
+            icon_path = parameter.get('icon', '')
         elif isinstance(parameter, str):
             text = parameter
             text_color = 'white'
             background_color = 'black'
             font_size = 20
             bold = True
+            text_position = 'bottom'
+            icon_path = ''
         else:
             logger.error("Error: CHANGE_KEY_TEXT parameter must be dict or string")
             return
 
-        import os
-        import tempfile
-        from StreamDock.image_helpers.pil_helper import create_text_image
-
         try:
-            text_image = create_text_image(
-                text=text,
+            rendered = render_key_image(
                 size=(112, 112),
+                icon_path=icon_path,
+                text=text,
                 text_color=text_color,
                 background_color=background_color,
                 font_size=font_size,
-                bold=bold
+                bold=bold,
+                text_position=text_position,
             )
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.png', prefix='key_text_')
+            temp_fd, temp_path = tempfile.mkstemp(suffix='.jpg', prefix='sdkey_txt_')
             os.close(temp_fd)
-            text_image.save(temp_path)
+            rendered.save(temp_path, format='JPEG', quality=95)
             device.set_key_image(key_number, temp_path)
 
-            import threading
             def cleanup():
-                time.sleep(0.5)
+                time.sleep(1.0)
                 try:
                     os.remove(temp_path)
                 except Exception:
                     pass
             threading.Thread(target=cleanup, daemon=True).start()
-        except Exception:
-            logger.exception("Error creating text image")
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("Error creating text image for CHANGE_KEY_TEXT")
 
     def _handle_change_key(self, parameter, device, key_number):
         if device is None:
             logger.error("Error: CHANGE_KEY requires device")
             return
 
-        from StreamDock.domain.key import Key
         target_key = None
 
         if isinstance(parameter, Key):
@@ -327,13 +334,14 @@ class ActionExecutor:
                 on_double_press=on_double_press
             )
         else:
-            logger.error(f"Error: CHANGE_KEY parameter has invalid type: {type(parameter)}")
+            logger.error("Error: CHANGE_KEY parameter has invalid type: %s", type(parameter))
             return
 
         if target_key:
+            # pylint: disable=protected-access
             target_key._configure()
 
-    def _handle_change_layout(self, parameter, device, key_number):
+    def _handle_change_layout(self, parameter, device, unused_key_number):
         if device is None:
             logger.error("Error: CHANGE_LAYOUT requires device")
             return
@@ -344,15 +352,32 @@ class ActionExecutor:
             device.clear_all_icons()
         layout.apply()
 
-    def _handle_dbus(self, parameter, device, key_number):
+    def _handle_dbus(self, parameter, unused_device, unused_key_number):
         shortcuts = {
-            "play_pause": "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause",
-            "play_pause_any": "dbus-send --type=method_call --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames | grep -o 'org.mpris.MediaPlayer2.[^\"]*' | head -1 | xargs -I {} dbus-send --print-reply --dest={} /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause",
-            "next": "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Next",
-            "previous": "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Previous",
-            "stop": "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Stop",
+            "play_pause": (
+                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
+                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause"
+            ),
+            "play_pause_any": (
+                "dbus-send --type=method_call --dest=org.freedesktop.DBus /org/freedesktop/DBus "
+                "org.freedesktop.DBus.ListNames | grep -o 'org.mpris.MediaPlayer2.[^\"]*' | head -1 | "
+                "xargs -I {} dbus-send --print-reply --dest={} /org/mpris/MediaPlayer2 "
+                "org.mpris.MediaPlayer2.Player.PlayPause"
+            ),
+            "next": (
+                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
+                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Next"
+            ),
+            "previous": (
+                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
+                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Previous"
+            ),
+            "stop": (
+                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
+                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Stop"
+            ),
         }
-        
+
         # Determine command string
         if isinstance(parameter, dict):
             action = parameter.get("action")
@@ -368,37 +393,38 @@ class ActionExecutor:
                 # SystemInterface set_volume doesn't natively expose mute. We fall through to dbus/pactl execution
                 command = "pactl set-sink-mute @DEFAULT_SINK@ toggle"
             else:
-                logger.error(f"Unknown D-Bus shortcut: {action}")
+                logger.error("Unknown D-Bus shortcut: %s", action)
                 return
         elif isinstance(parameter, str):
             command = parameter
         else:
-            logger.error(f"Invalid D-Bus command format: {type(parameter)}")
+            logger.error("Invalid D-Bus command format: %s", type(parameter))
             return
-            
+
         try:
             subprocess.run(command, shell=True, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error executing D-Bus command: {e}")
+            logger.error("Error executing D-Bus command: %s", e)
 
-    def _handle_brightness_up(self, parameter, device, key_number):
+    def _handle_brightness_up(self, unused_parameter, device, unused_key_number):
         if device:
             self._adjust_brightness(device, 10)
 
-    def _handle_brightness_down(self, parameter, device, key_number):
+    def _handle_brightness_down(self, unused_parameter, device, unused_key_number):
         if device:
             self._adjust_brightness(device, -10)
-            
+
     def _adjust_brightness(self, device, amount):
         try:
             current = getattr(device, '_current_brightness', 50)
             new_val = max(0, min(100, current + amount))
             device.set_brightness(new_val)
+            # pylint: disable=protected-access
             device._current_brightness = new_val
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("Error adjusting brightness")
 
-    def _handle_launch_application(self, parameter, device, key_number):
+    def _handle_launch_application(self, parameter, unused_device, unused_key_number):
         config = _parse_app_config(parameter)
         if not config:
             return
@@ -413,7 +439,6 @@ class ActionExecutor:
             return
 
         try:
-            from StreamDock.window_utils import WindowUtils
             if not WindowUtils.is_process_running(process_name):
                 _launch_detached(command)
                 return
@@ -430,16 +455,16 @@ class ActionExecutor:
             if not window_id and search_by_name:
                 # Need to use WindowUtils to search by name as a fallback?
                 pass
-                
+
             activated = False
             if window_id:
                 activated = self._system.activate_window(window_id)
             else:
-                # Fallback to WindowUtils directly 
+                # Fallback to WindowUtils directly
                 activated = WindowUtils.activate_window(class_name, search_by_name)
-                
+
             if not activated:
-                logger.warning(f"Window not found for class '{class_name}', launching a new instance")
+                logger.warning("Window not found for class '%s', launching a new instance", class_name)
                 _launch_detached(command)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("Error in LAUNCH_APPLICATION")

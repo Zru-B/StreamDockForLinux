@@ -110,6 +110,25 @@ Dynamically update the icon of the current key.
 
 ---
 
+## CHANGE_KEY_TEXT
+Dynamically update the text label of the current key. Supports overlays if an icon is specified.
+
+**Simple String:**
+```yaml
+- "CHANGE_KEY_TEXT": "Muted"
+```
+
+**Advanced (Overlay):**
+```yaml
+- "CHANGE_KEY_TEXT":
+    text: "Muted"
+    text_color: "red"
+    icon: "../img/mute_on.png"      # Optional overlay
+    text_position: "bottom"         # Optional
+```
+
+---
+
 ## WAIT
 Pause execution sequence (useful for multi-step macros).
 

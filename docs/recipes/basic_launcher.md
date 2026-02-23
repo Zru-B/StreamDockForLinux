@@ -42,6 +42,34 @@ streamdock:
         - 3: null
         - 4: "Terminal"
         - 5: "Files"
+
+---
+
+## Alternative: Hybrid & Text-Only Keys
+
+You can also combine icons with text labels, or use text alone if you don't have an icon handy.
+
+```yaml
+  keys:
+    # --- Hybrid (Icon + Text) ---
+    Firefox:
+      icon: "../img/firefox.png"
+      text: "Web"
+      text_color: "#FF9500"
+      text_position: "bottom"
+      on_press_actions:
+        - "LAUNCH_APPLICATION": "firefox"
+
+    # --- Text-Only ---
+    Project_Notes:
+      text: "Notes"
+      text_color: "white"
+      background_color: "#4A90E2"
+      font_size: 24
+      bold: true
+      on_press_actions:
+        - "LAUNCH_APPLICATION": "obsidian"
+```
 ```
 
 ## How it works

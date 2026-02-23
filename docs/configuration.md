@@ -65,23 +65,25 @@ keys:
       - "EXECUTE_COMMAND": ["firefox"]
 ```
 
-### Text-Based Keys
+### Text-Based & Hybrid Keys
 
-Useful if you don't have an icon.
+Keys can display an icon, text, or both. If both are provided, the text is layered on top of the icon.
 
 ```yaml
 keys:
   Settings:
-    text: "Settings"                # Required
+    icon: "../img/settings.png"      # Optional
+    text: "Settings"                # Optional
     text_color: "white"             # Optional (color name or hex)
-    background_color: "black"       # Optional
+    background_color: "black"       # Optional (used for text-only mode)
     font_size: 20                   # Optional (pixels)
     bold: true                      # Optional
+    text_position: "bottom"         # Optional: "top", "center", "bottom" (default: bottom)
     on_press_actions:
       - "EXECUTE_COMMAND": ["systemsettings"]
 ```
 
-> **Note:** A key must have either `icon` OR `text`, not both.
+> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image. If no icon is present, the text is centred by default.
 
 ### Action Triggers
 
