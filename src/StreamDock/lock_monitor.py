@@ -476,16 +476,24 @@ class LockMonitor:
             )
             
             for dev_info in found_devices:
-                if dev_info['path'] == self.device_path:
-                    elapsed = attempt * interval
-                    self.logger.info(f"✅ Device found after {attempt} attempts (~{elapsed}s)")
-                    return dev_info
+                # Accept any matching VID/PID device, regardless of USB path.
+                # The path changes when the device is plugged into a different port.
+                new_path = dev_info['path']
+                if new_path != self.device_path:
+                    self.logger.info(
+                        f"Device found at new USB path '{new_path}' "
+                        f"(was '{self.device_path}') — updating tracked path"
+                    )
+                    self.device_path = new_path  # Update tracked path for _initialize_fresh_device
+                elapsed = attempt * interval
+                self.logger.info(f"✅ Device found after {attempt} attempts (~{elapsed}s)")
+                return dev_info
             
             # Show progress every 5 attempts or on first attempt
             if attempt == 1 or attempt % 5 == 0:
                 self.logger.info(f"Waiting for device... (attempt {attempt}/{max_attempts})")
             else:
-                self.logger.debug(f"Device path '{self.device_path}' not found, retrying ({attempt}/{max_attempts})...")
+                self.logger.debug(f"Device not found, retrying ({attempt}/{max_attempts})...")
             
             # Sleep between attempts (except after last attempt)
             if attempt < max_attempts:
@@ -596,17 +604,20 @@ class LockMonitor:
         self.device_product_id = new_device.product_id
         self.device_transport = new_device.transport
         
-        # Update logic state: If we got a new device, we assume it's ON and we are NOT locked
-        # (or if we are locked, we should turn it off? No, usually hotplug means user is active)
-        # Let's assume we want to restore it to working state.
-        self.is_locked = False
-        
-        # Restore state
+        # Branch on lock state:
+        # - If the PC is currently locked, keep the screen off and preserve is_locked=True
+        #   so that the real unlock signal still fires properly via _on_lock_state_changed.
+        # - If not locked, restore full state immediately.
+        if self.is_locked:
+            self.logger.info("🔒 Device reconnected while PC is locked — keeping screen off until unlock")
+            try:
+                new_device.transport.disconnected()
+            except Exception:
+                pass
+            return
+
+        # Not locked: restore full state
         try:
-            # Ensure device is open/init (usually done by DeviceManager but safe to double check)
-            # new_device.open() # DeviceManager should have opened it
-            # new_device.init() # DeviceManager should have init it
-            
             # WAKE SCREEN: Critical for black screen fix
             new_device.wake_screen()
             
@@ -626,13 +637,13 @@ class LockMonitor:
                 # If apply() just updates mapping, we might need render()
                 # Assuming layout.apply() triggers render.
                 
-            # Restart window monitor if needed
+            # Restart window monitor if needed and force an immediate layout update.
             if self.window_monitor:
+                # Reset detection state BEFORE starting so the first poll sees
+                # the current window as "changed" and fires the layout callback.
+                self.window_monitor.current_window_id = None
                 if not self.window_monitor.running:
                     self.window_monitor.start()
-                # Also we might need to tell window monitor about new device? 
-                # WindowMonitor doesn't seem to hold device ref, it just changes layouts via config_loader/layout_manager
-                pass
                 
         except Exception as e:
             self.logger.exception(f"Error restoring state after device update: {e}")

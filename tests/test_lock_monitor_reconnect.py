@@ -76,5 +76,33 @@ class TestLockMonitorReconnect(unittest.TestCase):
         self.mock_device.init.assert_called()
         self.mock_device.set_brightness.assert_called_with(80)
 
+    @patch('StreamDock.lock_monitor.time.sleep', return_value=None)
+    def test_reopen_device_accepts_new_usb_path(self, mock_sleep):
+        """
+        Regression test for the core bug scenario:
+        Device reconnected to a DIFFERENT USB port after lock/unlock cycle exhausted
+        its 20 attempts. The fix: accept any matching VID/PID device, not only the
+        original path.
+        """
+        self.mock_device.close = MagicMock()
+
+        # Enumerate returns a device at a DIFFERENT path (new USB port)
+        new_path = "1-1:1.0"  # Original was "test_path"
+        device_info = {'path': new_path}
+        self.mock_device.transport.enumerate.return_value = [device_info]
+
+        # Should succeed without raising, even though path changed
+        self.monitor._reopen_device_and_restore()
+
+        # The tracked path must be updated to the new port
+        self.assertEqual(self.monitor.device_path, new_path)
+
+        # Device was recreated and opened
+        self.mock_device_class.assert_called()
+        self.mock_device.open.assert_called()
+        self.mock_device.init.assert_called()
+        self.mock_device.set_brightness.assert_called_with(80)
+
+
 if __name__ == '__main__':
     unittest.main()

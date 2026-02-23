@@ -15,6 +15,8 @@ from StreamDock.device_manager import DeviceManager
 from StreamDock.lock_monitor import LockMonitor
 from StreamDock.window_monitor import WindowMonitor
 
+logger = logging.getLogger(__name__)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="StreamDock Linux Controller")
@@ -127,19 +129,14 @@ def main():
             
             # Define callback for device reconnection
             def on_device_connected(new_device):
-                logging.info("♻️ Device reconnection detected by DeviceManager - Updating application state")
+                logger.info("♻️ Device reconnection detected by DeviceManager - Updating application state")
                 try:
-                    # 1. Initialize device hardware FIRST
-                    # We must init and wake before sending images, otherwise init might clear the screen
-                    new_device.init()
-                    new_device.wake_screen()
-                    
-                    # 2. Update LockMonitor (this will update layouts and render images to the device)
+                    # update_device() handles init, wake_screen, brightness restore,
+                    # layout re-application, and window monitor restart internally.
                     lock_monitor.update_device(new_device)
-                    
                 except Exception as e:
-                    logging.exception(f"Error handling device reconnection: {e}") 
-                    
+                    logger.exception(f"Error handling device reconnection: {e}")
+
             # Register callback with DeviceManager
             deviceManager.on_device_added = on_device_connected
             
