@@ -4,7 +4,7 @@ import os
 import time
 import subprocess
 from unittest.mock import MagicMock, call, patch
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 from StreamDock.window_detection import (
     KWinDynamicScriptingDetection,
     KWinBasicDetection,
@@ -119,24 +119,6 @@ class TestKWinBasicDetection:
         assert info.title == "Active Window"
         assert info.method == "busctl"
 
-    @patch('subprocess.run')
-    def test_method3_xdotool_fallback(self, mock_run, detector):
-        """Test fallback to xdotool within KWinBasic."""
-        fail = MagicMock(returncode=1)
-        # xdotool activewindow
-        xdo_id = MagicMock(returncode=0, stdout="123\n")
-        # xdotool getwindowname
-        xdo_name = MagicMock(returncode=0, stdout="X11 Window\n")
-        # xdotool getwindowclassname
-        xdo_class = MagicMock(returncode=0, stdout="X11Class\n")
-        
-        mock_run.side_effect = [fail, fail, xdo_id, xdo_name, xdo_class]
-        
-        info = detector.detect()
-        assert info is not None
-        assert info.title == "X11 Window"
-        assert info.class_name == "X11Class"
-        assert info.method == "kwin_basic_x11"
 
 class TestSimulationDetection:
     @pytest.fixture

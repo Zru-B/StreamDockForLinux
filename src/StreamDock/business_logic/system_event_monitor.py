@@ -79,6 +79,12 @@ class SystemEventMonitor:
         self._pending_verification: Optional[threading.Timer] = None
         self._processing = False  # Concurrent processing guard
         
+        # Window polling state
+        self._window_poll_thread: Optional[threading.Thread] = None
+        self._window_poll_running = False
+        self._window_poll_interval = 0.5  # seconds
+        self._last_window_class: Optional[str] = None
+        
         logger.debug("SystemEventMonitor initialized with verification_delay=%.1fs", 
                     verification_delay)
     
@@ -136,13 +142,16 @@ class SystemEventMonitor:
             - Can be called before or after registering handlers
         """
         try:
-            callback = self._on_lock_state_changed
-            success = self._system.start_lock_monitor(callback)
+            lock_callback = self._on_lock_state_changed
+            success = self._system.start_lock_monitor(lock_callback)
             
             if success:
                 logger.info("System event monitoring started")
             else:
                 logger.warning("Failed to start system event monitoring")
+            
+            # Start window polling thread regardless of lock monitor success
+            self._start_window_polling()
             
             return success
         except Exception as e:
@@ -160,6 +169,7 @@ class SystemEventMonitor:
             - Safe to call multiple times
         """
         self._cancel_pending_verification()
+        self._stop_window_polling()
         
         try:
             self._system.stop_lock_monitor()
@@ -167,6 +177,41 @@ class SystemEventMonitor:
         except Exception as e:
             logger.exception(f"Error stopping system event monitoring: {e}")
     
+    def _start_window_polling(self) -> None:
+        """Start the window polling background thread."""
+        if self._window_poll_running:
+            return
+        self._window_poll_running = True
+        self._window_poll_thread = threading.Thread(
+            target=self._window_poll_loop, name="window-poll", daemon=True
+        )
+        self._window_poll_thread.start()
+        logger.info("Window polling started (interval=%.1fs)", self._window_poll_interval)
+
+    def _stop_window_polling(self) -> None:
+        """Stop the window polling thread."""
+        self._window_poll_running = False
+        if self._window_poll_thread is not None:
+            self._window_poll_thread.join(timeout=2)
+            self._window_poll_thread = None
+        logger.debug("Window polling stopped")
+
+    def _window_poll_loop(self) -> None:
+        """Poll the active window and fire WINDOW_CHANGED when it changes."""
+        while self._window_poll_running:
+            try:
+                window_info = self._system.get_active_window()
+                current_class = window_info.class_ if window_info else None
+
+                if current_class != self._last_window_class:
+                    self._last_window_class = current_class
+                    logger.debug(f"Window changed: {current_class}")
+                    self._dispatch_event(SystemEvent.WINDOW_CHANGED)
+            except Exception as e:
+                logger.exception(f"Error in window poll loop: {e}")
+
+            time.sleep(self._window_poll_interval)
+
     def _on_lock_state_changed(self, is_locked: bool) -> None:
         """
         PURE BUSINESS LOGIC: Handle lock state change event from system.

@@ -105,8 +105,8 @@ tests/infrastructure/
 
 **Example: LayoutManager Tests**
 ```python
-from StreamDock.business.layout_manager import LayoutManager
-from StreamDock.business.layout_config import LayoutConfig, WindowRule
+from StreamDock.business_logic.layout_manager import LayoutManager
+from StreamDock.business_logic.layout_config import LayoutConfig, WindowRule
 
 class TestLayoutManager:
     @pytest.fixture

@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from typing import Optional
 
-from StreamDock.Models import AppPattern, WindowInfo
+from StreamDock.domain.Models import AppPattern, WindowInfo
 
 logger = logging.getLogger(__name__)
 

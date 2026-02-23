@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Pattern, Union
 
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 logger = logging.getLogger(__name__)

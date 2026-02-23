@@ -35,7 +35,7 @@ A Python-based controller for **MiraBox 293v3 Stream Dock** hardware on Linux. I
 - **`ConfigLoader`**: YAML-to-Object mapper. Supports nested `Layout` and `Key` definitions. *(Migrating to `ConfigurationManager`)*
 - **`WindowMonitor`**: Background thread polling active window info to trigger layout matches. *(Migrating to `SystemEventMonitor`)*
 
-#### 3. Action Ecosystem (`src/StreamDock/actions.py`)
+#### 3. Action Ecosystem (`src/StreamDock/action_type.py`)
 Actions are defined as `(ActionType, Parameter)` tuples. *(Migrating to `ActionExecutor`)*
 - **Window Activation**: Complex logic trying `kdotool` (Wayland), `xdotool` (X11), or `wmctrl`.
 - **Media Control**: DBus-based shortcuts for Spotify and generic MPRIS players.

@@ -9,7 +9,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 class DetectionMethod(ABC):

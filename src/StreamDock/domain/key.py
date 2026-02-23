@@ -1,6 +1,5 @@
-from .actions import execute_actions
-
-
+import logging
+logger = logging.getLogger(__name__)
 class Key:
     """
     Represents a configurable key on the StreamDock device.
@@ -17,7 +16,7 @@ class Key:
         13: 3, 14: 4, 15: 5
     }
 
-    def __init__(self, device, key_number, image_path, on_press=None, on_release=None, on_double_press=None):
+    def __init__(self, device, key_number, image_path, on_press=None, on_release=None, on_double_press=None, action_executor=None):
         """
         Initialize and configure a key on the StreamDock device.
 
@@ -33,10 +32,12 @@ class Key:
         :param on_double_press: Optional callback - can be:
                                - A function: callback(device, key)
                                - A list of actions: [(ActionType, parameter), ...]
+        :param action_executor: Optional ActionExecutor instance for executing actions
         """
         self.device = device
         self.key_number = key_number
         self.image_path = image_path
+        self.action_executor = action_executor
 
         # Store the original actions/callbacks
         self.on_press_actions = on_press
@@ -65,14 +66,20 @@ class Key:
         # If it's a list of actions, create a callback that executes them
         if isinstance(actions_or_callback, list):
             def action_callback(device, key):
-                execute_actions(actions_or_callback, device=device, key_number=self.key_number)
+                if self.action_executor:
+                    self.action_executor.execute_actions(actions_or_callback, device=device, key_number=self.key_number)
+                else:
+                    logger.warning(f"No action_executor available for key {self.key_number}")
 
             return action_callback
 
         # If it's a single action tuple, wrap it in a list
         if isinstance(actions_or_callback, tuple):
             def action_callback(device, key):
-                execute_actions([actions_or_callback], device=device, key_number=self.key_number)
+                if self.action_executor:
+                    self.action_executor.execute_actions([actions_or_callback], device=device, key_number=self.key_number)
+                else:
+                    logger.warning(f"No action_executor available for key {self.key_number}")
 
             return action_callback
 

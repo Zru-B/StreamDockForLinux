@@ -252,7 +252,7 @@ This plan outlines the step-by-step migration from the current architecture to t
 # src/StreamDock/infrastructure/system_interface.py
 from abc import ABC, abstractmethod
 from typing import Optional, Callable
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 class SystemInterface(ABC):
     """Abstract interface for OS-level operations."""
@@ -281,7 +281,7 @@ class SystemInterface(ABC):
     @abstractmethod
     def poll_lock_state(self) -> bool: ...
     
-    # --- Command Execution (from actions.py) ---
+    # --- Command Execution (from action_type.py) ---
     @abstractmethod
     def execute_command(self, command: str) -> None: ...
     @abstractmethod
@@ -506,7 +506,7 @@ class SystemInterface(ABC):
 
 **Tasks:**
 - [ ] Create `src/StreamDock/business/action_executor.py`
-  - Extract action execution from current `actions.py`
+  - Extract action execution from current `action_type.py`
   - Plugin system for action types
   - Use SystemInterface for execution
   
@@ -537,7 +537,7 @@ class SystemInterface(ABC):
           tests/business/test_action_composition.py
   git commit -m "feat(business): Add ActionExecutor for button action handling
 
-  - Extract action execution from actions.py
+  - Extract action execution from action_type.py
   - Add plugin system for extensible action types
   - Use SystemInterface for OS operations
   - Add 15+ unit tests with 90% coverage
@@ -1242,7 +1242,7 @@ If migration fails at any phase:
 ## Appendix: Test Inventory
 
 ### Current Tests (14 files)
-- `test_actions.py` → Migrate to `ActionExecutor` tests
+- `test_action_type.py` → Migrate to `ActionExecutor` tests
 - `test_config_loader.py` → Migrate to `ConfigurationManager` tests
 - `test_device_manager.py` → Migrate to `DeviceRegistry` tests
 - `test_lock_monitor.py` → Split across `SystemEventMonitor` + `DeviceOrchestrator` tests

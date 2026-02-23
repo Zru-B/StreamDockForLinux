@@ -5,7 +5,7 @@ from StreamDock.infrastructure.hardware_interface import DeviceInfo
 from StreamDock.infrastructure.device_registry import DeviceRegistry
 from StreamDock.business_logic.layout_manager import LayoutManager
 from StreamDock.business_logic.system_event_monitor import SystemEventMonitor
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@ This document defines the core terminology used across the StreamDockForLinux pr
 
 | Term | Definition | Related Classes/Modules |
 | :--- | :--- | :--- |
-| **Action** | A system-level task triggered by a key press, release, or double-press event (e.g., launching an app, simulating a key combo, changing layouts). | `ActionType`, `actions.py` |
+| **Action** | A system-level task triggered by a key press, release, or double-press event (e.g., launching an app, simulating a key combo, changing layouts). | `ActionType`, `action_type.py` |
 | **Brightness** | The LCD backlight intensity level for the device screen, ranging from 0 (off) to 100 (maximum). | `StreamDock.set_brightness()` |
 | **Canvas** | The internal representation of the 288x288 pixel area for rendering a single key icon or background image. | Image helpers |
 | **CRT Protocol** | The custom transport protocol signature used by StreamDock devices, characterized by 513-byte packets with a 3-byte ASCII command header (e.g., `LIG` for lighting/image, `CLE` for clear). All packets are prefixed with report ID `0x02`. See ADR-002 for full protocol specification. | `HIDTransport`, ADR-002 |
@@ -85,7 +85,7 @@ This document defines the core terminology used across the StreamDockForLinux pr
 | **hidapi** | Low-level C library (`libhidapi-libusb0`) for USB HID device communication. StreamDock uses the libusb backend (not hidraw) to avoid kernel driver conflicts. All hidapi functions are called via ctypes bindings defined in `lib_usb_hid_api.py`. See ADR-001 for rationale. | `lib_usb_hid_api.py`, ADR-001 |
 | **Lock Monitor** | Component that detects system lock/unlock events via D-Bus signals and manages device screen state accordingly. On lock: turns screen off while keeping HID handle open. On unlock: attempts to wake existing handle, falls back to device reopen if handle is stale. Includes lock verification delay (default 2s) to handle user-aborted locks. | `LockMonitor` class |
 | **Lock Verification** | Delayed check (default 2 seconds after lock signal) to confirm screen lock actually completed. Handles race condition where lock event fires but user moves mouse/keyboard to abort. Verification polls `org.freedesktop.ScreenSaver.GetActive()` D-Bus method to confirm actual lock state before turning off device. | `LockMonitor._verify_and_handle_lock()` |
-| **pactl** | PulseAudio/PipeWire command-line tool for volume control actions. | `actions.py` |
+| **pactl** | PulseAudio/PipeWire command-line tool for volume control actions. | `action_type.py` |
 | **Polling** | Periodic checking method (fallback when event-driven approach unavailable). | `WindowMonitor.poll_interval` |
 | **pyudev** | Python bindings for udev, used to monitor USB device connection/disconnection events in real-time. The `DeviceManager` uses `pyudev.Monitor.from_netlink()` to watch for `add`/`remove` events on the `usb` subsystem, automatically opening new devices and cleaning up removed devices. | `DeviceManager.listen()` |
 | **Screen Lock** | System state where user authentication is required, triggering device screen-off. | `LockMonitor` |
@@ -95,7 +95,7 @@ This document defines the core terminology used across the StreamDockForLinux pr
 | **udev** | Linux device manager that sends events when hardware is connected/disconnected. | `DeviceManager.listen()` |
 | **Wake Screen** | Operation to reactivate device display after screen-off state. | `StreamDock.wake_screen()` |
 | **wmctrl** | Legacy window management tool used as fallback for window activation. | `WindowUtils.wmctrl_activate_window()` |
-| **xdotool** | X11 automation tool for simulating keyboard/mouse input and window manipulation. | `WindowUtils`, `actions.py` |
+| **xdotool** | X11 automation tool for simulating keyboard/mouse input and window manipulation. | `WindowUtils`, `action_type.py` |
 
 ## Architecture & Internal Mechanisms
 
@@ -212,7 +212,7 @@ When working on different types of tasks, reference these glossary sections:
 #### Scenario 1: Implementing a New Action Type
 
 1. Understand **ActionType** enum structure
-2. Study **execute_action()** function in `actions.py`
+2. Study **execute_action()** function in `action_type.py`
 3. Reference existing action implementations (e.g., **Execute Command**, **Launch or Focus**)
 4. Consider impact on **YAML Configuration** schema
 5. Update **ConfigLoader** validation if needed
@@ -265,7 +265,7 @@ window_monitor.add_window_rule(
 **Example 2: Creating a Custom Action**  
 ```python
 # Reference: ActionType, execute_action()
-from StreamDock.actions import ActionType
+from StreamDock.business_logic.action_type import ActionType
 
 custom_action = (ActionType.EXECUTE_COMMAND, "notify-send 'Hello'")
 execute_action(custom_action, device=my_device)

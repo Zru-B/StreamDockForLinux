@@ -19,5 +19,5 @@ This document lists detected inconsistencies and "low-hanging fruit" improvement
 **Improvement**: Ensure all "probing" and "attempting" logs are strictly `DEBUG` level, while `INFO` only shows actual successful transitions.
 
 ### 4. Simplified DBus Media Shortcuts
-**Current**: Predefined shortcuts in `actions.py` are hardcoded for Spotify.
+**Current**: Predefined shortcuts in `action_type.py` are hardcoded for Spotify.
 **Improvement**: Add a `media_player` setting in `config.yml` to allow the user to define their primary player (e.g., `vlc`, `rhythmbox`) instead of hardcoding Spotify strings.

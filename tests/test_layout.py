@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from StreamDock.key import Key
-from StreamDock.layout import Layout
+from StreamDock.domain.key import Key
+from StreamDock.domain.layout import Layout
 
 
 @pytest.fixture

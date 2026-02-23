@@ -91,7 +91,7 @@ def mock_device_registry():
 ```python
 # tests/fixtures/business.py
 import pytest
-from StreamDock.business.layout_config import LayoutConfig, KeyConfig, WindowRule
+from StreamDock.business_logic.layout_config import LayoutConfig, KeyConfig, WindowRule
 
 @pytest.fixture
 def sample_layouts():
@@ -316,7 +316,7 @@ invalid: yaml: content:
 ```python
 # tests/fixtures/common.py
 import pytest
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 @pytest.fixture
 def firefox_window():
@@ -520,7 +520,7 @@ tests/
 ```python
 # tests/business/test_layout_manager.py
 import pytest
-from StreamDock.business.layout_manager import LayoutManager
+from StreamDock.business_logic.layout_manager import LayoutManager
 
 def test_layout_selection_with_sample_data(sample_layouts, sample_window_rules, firefox_window):
     """Example of using multiple fixtures."""

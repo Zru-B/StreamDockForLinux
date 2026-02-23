@@ -13,7 +13,7 @@ graph TD
     DM --> Dev[Device]
     Dev --> Trans[HIDTransport]
     
-    DM --> Actions[actions.py]
+    DM --> Actions[action_type.py]
     Actions --> WU[WindowUtils]
     
     WM --> WU
@@ -63,7 +63,7 @@ stateDiagram-v2
 | `Device` | `HIDTransport` | High-level brightness and image commands. |
 | `WindowMonitor` | `WindowUtils` | Polling for focus changes, triggering layout swaps. |
 | `LockMonitor` | `DeviceManager` | D-Bus signal listening, power saving. |
-| `actions.py` | `WindowUtils` | Input emulation and system integration. |
+| `action_type.py` | `WindowUtils` | Input emulation and system integration. |
 
 ---
 

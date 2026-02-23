@@ -16,7 +16,7 @@ This guide helps developers migrate from the current architecture to the new lay
 | `WindowUtils` | `LinuxSystemInterface` | Infrastructure | Wrapped, not replaced - delegated to |
 | `HIDTransport` | `HardwareInterface` → `USBHardware` | Infrastructure | Wrapped in abstraction layer |
 | `Layout.apply()` | `LayoutManager.render_layout()` | Business | Extracted from Layout class |
-| `actions.py` functions | `ActionExecutor` | Business | Organized into executor with plugin system |
+| `action_type.py` functions | `ActionExecutor` | Business | Organized into executor with plugin system |
 | `ConfigLoader` | `ConfigurationManager` | Application | Cleaner separation from application logic |
 | `main.py` | `Application` class | Application | Dependency injection container |
 
@@ -121,7 +121,7 @@ class DeviceRegistry:
 
 **Before:**
 ```python
-# actions.py - Direct OS dependencies
+# action_type.py - Direct OS dependencies
 def execute_command(cmd):
     subprocess.Popen(cmd, shell=True)  # Hard to test!
 ```

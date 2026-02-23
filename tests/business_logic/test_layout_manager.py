@@ -9,7 +9,7 @@ import re
 from unittest.mock import Mock
 
 from StreamDock.business_logic.layout_manager import LayoutManager, LayoutRule
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 class TestLayoutRule:

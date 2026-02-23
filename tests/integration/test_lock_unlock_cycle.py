@@ -13,7 +13,7 @@ from unittest.mock import Mock, MagicMock, call
 from StreamDock.business_logic.system_event_monitor import SystemEventMonitor
 from StreamDock.orchestration.device_orchestrator import DeviceOrchestrator
 from StreamDock.business_logic.layout_manager import LayoutManager
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 logger = logging.getLogger(__name__)
 

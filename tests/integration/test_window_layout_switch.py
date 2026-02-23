@@ -10,7 +10,7 @@ from unittest.mock import Mock, MagicMock, call
 from StreamDock.business_logic.system_event_monitor import SystemEventMonitor
 from StreamDock.orchestration.device_orchestrator import DeviceOrchestrator
 from StreamDock.business_logic.layout_manager import LayoutManager, LayoutRule
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 logger = logging.getLogger(__name__)
 
@@ -345,13 +345,13 @@ class TestComplexWindowRules:
         manager = LayoutManager(default_layout_name="default")
         
         # Add regex rule for all Google Chrome windows
-        manager.add_rule(LayoutRule(
-            pattern=r".*Chrome.*",
+        import re
+        manager.add_rule(
+            pattern=re.compile(r".*Chrome.*"),
             layout_name="browser",
             match_field="class",
-            priority=100,
-            is_regex=True
-        ))
+            priority=100
+        )
         
         # Test matching
         window1 = WindowInfo(class_="Google Chrome", title="", raw="Google Chrome")
@@ -365,18 +365,18 @@ class TestComplexWindowRules:
         manager = LayoutManager(default_layout_name="default")
         
         # Lower priority: all browser-like apps → browser layout
-        manager.add_rule(LayoutRule(
+        manager.add_rule(
             pattern="Mozilla",
             layout_name="browser",
             priority=50
-        ))
+        )
         
         # Higher priority: specific Firefox developer edition → dev layout
-        manager.add_rule(LayoutRule(
+        manager.add_rule(
             pattern="Firefox Developer",
             layout_name="dev_tools",
             priority=100
-        ))
+        )
         
         # Regular Firefox → browser
         window1 = WindowInfo(class_="Mozilla Firefox", title="", raw="Mozilla Firefox")
@@ -391,12 +391,12 @@ class TestComplexWindowRules:
         manager = LayoutManager(default_layout_name="default")
         
         # Match on title
-        manager.add_rule(LayoutRule(
+        manager.add_rule(
             pattern="YouTube",
             layout_name="video",
-            match_field="title",  # Match title, not class
+            match_field="title",
             priority=100
-        ))
+        )
         
         # YouTube in browser
         window = WindowInfo(

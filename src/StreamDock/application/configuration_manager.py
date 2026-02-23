@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any
 
 import yaml
 
-from StreamDock.actions import ActionType
+from StreamDock.business_logic.action_type import ActionType
 
 
 logger = logging.getLogger(__name__)

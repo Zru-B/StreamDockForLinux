@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Callable
 
 # Re-export WindowInfo from Models for convenience
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 class SystemInterface(ABC):

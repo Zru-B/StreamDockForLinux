@@ -546,7 +546,7 @@ graph TD
 | LockMonitor | SystemEventMonitor + DeviceOrchestrator | Logic split: events vs. device operations |
 | WindowMonitor | Part of SystemEventMonitor | Just one type of system event |
 | Layout.apply() | LayoutManager.render_layout() | More descriptive |
-| actions.py | ActionExecutor | Follows class naming pattern |
+| action_type.py | ActionExecutor | Follows class naming pattern |
 | WindowUtils | LinuxSystemInterface (delegates to) | Preserved, exposed via interface |
 
 ### Migration Adapters (Temporary)

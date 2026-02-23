@@ -9,9 +9,9 @@ import logging
 from typing import Dict, List, Tuple, Any
 from PIL import Image, ImageDraw, ImageFont
 
-from StreamDock.key import Key  
-from StreamDock.layout import Layout
-from StreamDock.actions import ActionType
+from StreamDock.domain.key import Key  
+from StreamDock.domain.layout import Layout
+from StreamDock.business_logic.action_type import ActionType
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +23,18 @@ class LayoutFactory:
     Converts StreamDockConfig (pure data) into runtime objects.
     """
     
-    def __init__(self, config_data: Dict[str, Any], device):
+    def __init__(self, config_data: Dict[str, Any], device, action_executor=None):
         """
         Initialize factory with configuration data and device.
         
         Args:
             config_data: Parsed configuration dictionary
             device: Device instance to bind objects to
+            action_executor: Optional ActionExecutor instance
         """
         self._config = config_data
         self._device = device
+        self._action_executor = action_executor
         self._keys: Dict[str, Key] = {}
         self._temp_images: List[str] = []  # For cleanup
         
@@ -83,7 +85,8 @@ class LayoutFactory:
                 key_number=0,  # Will be set when added to layout
                 image_path=icon_path,
                 on_press=actions.get('on_press', []),
-                on_release=actions.get('on_release', [])
+                on_release=actions.get('on_release', []),
+                action_executor=self._action_executor
             )
             
             # Store reference to key name and text for debugging

@@ -3,8 +3,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from StreamDock.actions import ActionType, execute_action
-from StreamDock.key import Key
+from StreamDock.business_logic.action_type import ActionType
+from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.domain.key import Key
 
 
 @pytest.mark.issue
@@ -15,11 +16,11 @@ class TestChangeKeyCrash(unittest.TestCase):
         Verify fix: CHANGE_KEY with string parameter should treat it as image path and update key.
         """
         device = MagicMock()
-        # Simulate the action: CHANGE_KEY with string (image path)
+        action_executor = ActionExecutor(MagicMock())
         action = (ActionType.CHANGE_KEY, "/path/to/image.png")
         
         # Execute with key_number context
-        execute_action(action, device=device, key_number=5)
+        action_executor.execute_action(action, device=device, key_number=5)
         
         # Verification
         device.set_key_image.assert_called_with(5, "/path/to/image.png")
@@ -29,6 +30,7 @@ class TestChangeKeyCrash(unittest.TestCase):
         Verify fix: CHANGE_KEY with dict parameter should configure full key.
         """
         device = MagicMock()
+        action_executor = ActionExecutor(MagicMock())
         config = {
             'image': '/path/to/icon.png',
             'actions': [{'foo': 'bar'}] # Mock action list
@@ -36,7 +38,7 @@ class TestChangeKeyCrash(unittest.TestCase):
         action = (ActionType.CHANGE_KEY, config)
         
         # Execute with key_number context
-        execute_action(action, device=device, key_number=3)
+        action_executor.execute_action(action, device=device, key_number=3)
         
         # Verification
         device.set_key_image.assert_called_with(3, '/path/to/icon.png')

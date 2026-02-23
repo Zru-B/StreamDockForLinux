@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from StreamDock.key import Key
+from StreamDock.domain.key import Key
 
 
 @pytest.fixture
@@ -39,31 +39,31 @@ class TestKey:
         """Test initialization with a list of action tuples converts to callback."""
         actions = [('PRESS_KEY', 'A')]
         
-        with patch('StreamDock.key.execute_actions') as mock_exec:
-            key = Key(mock_device, 1, "icon.png", on_press=actions)
-            
-            # Verify it created a wrapper function
-            assert callable(key.on_press)
-            assert key.on_press != actions
-            
-            # Simulate device calling the callback
-            key.on_press(mock_device, key)
-            
-            # Verify execute_actions was called
-            mock_exec.assert_called_with(actions, device=mock_device, key_number=1)
+        mock_executor = MagicMock()
+        key = Key(mock_device, 1, "icon.png", on_press=actions, action_executor=mock_executor)
+        
+        # Verify it created a wrapper function
+        assert callable(key.on_press)
+        assert key.on_press != actions
+        
+        # Simulate device calling the callback
+        key.on_press(mock_device, key)
+        
+        # Verify execute_actions was called
+        mock_executor.execute_actions.assert_called_with(actions, device=mock_device, key_number=1)
 
     def test_init_with_single_action_tuple(self, mock_device):
         """Test initialization with a single action tuple converts to callback."""
         action = ('PRESS_KEY', 'A')
         
-        with patch('StreamDock.key.execute_actions') as mock_exec:
-            key = Key(mock_device, 1, "icon.png", on_release=action)
-            
-            # Simulate device calling the callback
-            key.on_release(mock_device, key)
-            
-            # Verify execute_actions was called with list wrapped action
-            mock_exec.assert_called_with([action], device=mock_device, key_number=1)
+        mock_executor = MagicMock()
+        key = Key(mock_device, 1, "icon.png", on_release=action, action_executor=mock_executor)
+        
+        # Simulate device calling the callback
+        key.on_release(mock_device, key)
+        
+        # Verify execute_actions was called with list wrapped action
+        mock_executor.execute_actions.assert_called_with([action], device=mock_device, key_number=1)
 
     def test_update_image(self, mock_device):
         """Test update_image updates property and device."""

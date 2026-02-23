@@ -144,7 +144,7 @@ class DeviceRegistry:
 **Example - INCORRECT:**
 ```python
 # infrastructure/device_registry.py
-from StreamDock.business.layout_manager import LayoutManager  # ❌ NEVER!
+from StreamDock.business_logic.layout_manager import LayoutManager  # ❌ NEVER!
 
 class DeviceRegistry:
     def __init__(self, layout_manager: LayoutManager):  # Upward dependency ❌

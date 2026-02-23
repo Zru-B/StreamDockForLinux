@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from StreamDock.business_logic import SystemEventMonitor, SystemEvent, LayoutManager
 from StreamDock.infrastructure import HardwareInterface, SystemInterface, DeviceRegistry
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 logger = logging.getLogger(__name__)

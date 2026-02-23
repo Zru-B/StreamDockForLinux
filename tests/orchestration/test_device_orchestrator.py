@@ -10,7 +10,7 @@ from unittest.mock import Mock, call, MagicMock
 from StreamDock.orchestration.device_orchestrator import DeviceOrchestrator
 from StreamDock.business_logic import SystemEventMonitor, SystemEvent, LayoutManager
 from StreamDock.infrastructure import HardwareInterface, SystemInterface, DeviceRegistry, TrackedDevice
-from StreamDock.Models import WindowInfo
+from StreamDock.domain.Models import WindowInfo
 
 
 class TestDeviceOrchestrator:

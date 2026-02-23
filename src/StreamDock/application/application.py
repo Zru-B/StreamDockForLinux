@@ -25,6 +25,7 @@ from StreamDock.application.configuration_manager import (
     ConfigurationManager,
     StreamDockConfig
 )
+from StreamDock.business_logic.action_executor import ActionExecutor
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class Application:
         # Business logic layer
         self._event_monitor: Optional[SystemEventMonitor] = None
         self._layout_manager: Optional[LayoutManager] = None
+        self._action_executor: Optional[ActionExecutor] = None
         
         # Orchestration layer
         self._orchestrator: Optional[DeviceOrchestrator] = None
@@ -129,30 +131,29 @@ class Application:
             device_info = devices[0]
             logger.info(f"Opening device: {device_info.device_id}")
             
-            # Open device
-            success = self._hardware.open_device(device_info)
+            # Convert DeviceInfo to dict for legacy StreamDock compatibility
+            device_dict = {
+                'vendor_id': device_info.vendor_id,
+                'product_id': device_info.product_id,
+                'serial_number': device_info.serial_number,
+                'path': device_info.path,
+                'manufacturer_string': device_info.manufacturer,
+                'product_string': device_info.product
+            }
+            
+            from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3
+            self._device = StreamDock293V3(self._hardware, device_dict)
+            
+            # Open device via StreamDock wrapper — this starts the HID read thread
+            # so that button press callbacks are received.
+            success = self._device.open()
             if success:
                 logger.info("✓ Device opened successfully")
-                
-                # Create device wrapper
-                # Convert DeviceInfo to dict for legacy StreamDock compatibility
-                device_dict = {
-                    'vendor_id': device_info.vendor_id,
-                    'product_id': device_info.product_id,
-                    'serial_number': device_info.serial_number,
-                    'path': device_info.path,
-                    'manufacturer_string': device_info.manufacturer,
-                    'product_string': device_info.product
-                }
-                
-                from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3
-                self._device = StreamDock293V3(self._hardware, device_dict)
-                
-                # Initialize device
                 self._device.init()
                 logger.info("✓ Device initialized")
             else:
                 logger.error("✗ Failed to open device")
+                self._device = None
         else:
             logger.warning("No StreamDeck devices found - application will start but device will be inactive")
         
@@ -167,6 +168,8 @@ class Application:
         self._layout_manager = LayoutManager(
             default_layout_name=self._config.default_layout_name
         )
+        
+        self._action_executor = ActionExecutor(self._system)
         
         self._configure_window_rules()
         
@@ -193,7 +196,8 @@ class Application:
             
             factory = LayoutFactory(
                 config_data=self._config.raw_config,
-                device=self._device
+                device=self._device,
+                action_executor=self._action_executor
             )
             
             default_layout, all_layouts = factory.create_layouts()
