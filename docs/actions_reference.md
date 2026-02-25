@@ -78,15 +78,17 @@ Switch the active layout.
 ---
 
 ## DBUS (Media Control)
-Send standard Linux MPRIS media commands.
+Send MPRIS media commands to **any active media player** (Spotify, VLC, Rhythmbox, etc.).
+The player is discovered dynamically at press time via the D-Bus session bus. If no media player is running, the action is a silent no-op.
 
 ```yaml
-- "DBUS": {"action": "play_pause"}
-- "DBUS": {"action": "next"}
-- "DBUS": {"action": "previous"}
-- "DBUS": {"action": "volume_up"}
-- "DBUS": {"action": "volume_down"}
-- "DBUS": {"action": "mute"}
+- "DBUS": {"action": "play_pause"}  # Toggle play/pause
+- "DBUS": {"action": "next"}        # Skip to next track
+- "DBUS": {"action": "previous"}    # Go to previous track
+- "DBUS": {"action": "stop"}        # Stop playback
+- "DBUS": {"action": "volume_up"}   # System volume +5%
+- "DBUS": {"action": "volume_down"} # System volume -5%
+- "DBUS": {"action": "mute"}        # Toggle system mute
 ```
 
 ---

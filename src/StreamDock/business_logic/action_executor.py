@@ -368,29 +368,26 @@ class ActionExecutor:
         layout.apply()
 
     def _handle_dbus(self, parameter, unused_device, unused_key_number):
+        # Helper to build a 'target any active MPRIS player' command.
+        def _mpris_any(method: str) -> str:
+            return (
+                "dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus "
+                "org.freedesktop.DBus.ListNames "
+                "| grep -o 'org.mpris.MediaPlayer2.[^\"]*' | head -1 "
+                f"| xargs -r -I {{}} dbus-send --session --print-reply --dest={{}} "
+                f"/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.{method}"
+            )
+
         shortcuts = {
-            "play_pause": (
-                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
-                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause"
-            ),
-            "play_pause_any": (
-                "dbus-send --type=method_call --dest=org.freedesktop.DBus /org/freedesktop/DBus "
-                "org.freedesktop.DBus.ListNames | grep -o 'org.mpris.MediaPlayer2.[^\"]*' | head -1 | "
-                "xargs -I {} dbus-send --print-reply --dest={} /org/mpris/MediaPlayer2 "
-                "org.mpris.MediaPlayer2.Player.PlayPause"
-            ),
-            "next": (
-                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
-                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Next"
-            ),
-            "previous": (
-                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
-                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Previous"
-            ),
-            "stop": (
-                "dbus-send --print-reply --dest=org.mpris.MediaPlayer2.spotify "
-                "/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Stop"
-            ),
+            # Generic variants discover any running MPRIS-capable player
+            "play_pause":     _mpris_any("PlayPause"),
+            "play_pause_any": _mpris_any("PlayPause"),
+            "next":           _mpris_any("Next"),
+            "next_any":       _mpris_any("Next"),
+            "previous":       _mpris_any("Previous"),
+            "previous_any":   _mpris_any("Previous"),
+            "stop":           _mpris_any("Stop"),
+            "stop_any":       _mpris_any("Stop"),
         }
 
         # Determine command string
