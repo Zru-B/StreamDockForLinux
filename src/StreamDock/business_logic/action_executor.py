@@ -159,6 +159,7 @@ class ActionExecutor:
     def __init__(self, system_interface: SystemInterface):
         self._system = system_interface
         self._action_handlers = {}
+        self._layouts = {}  # layout_name -> Layout object, populated after factory creates layouts
         self._register_built_in_handlers()
 
     def _register_built_in_handlers(self):
@@ -177,6 +178,10 @@ class ActionExecutor:
 
     def register_action_type(self, action_type: ActionType, handler: Callable) -> None:
         self._action_handlers[action_type] = handler
+
+    def set_layouts(self, layouts: dict) -> None:
+        """Provide the layouts registry so CHANGE_LAYOUT can resolve names to Layout objects."""
+        self._layouts = layouts
 
     def execute_action(self, action: Tuple, device=None, key_number=None) -> None:
         if not isinstance(action, tuple) or len(action) != 2:
@@ -347,6 +352,16 @@ class ActionExecutor:
             return
 
         layout = parameter["layout"]
+
+        # If layout is still a name string (resolved lazily after factory builds layouts),
+        # look it up in the registry now.
+        if isinstance(layout, str):
+            resolved = self._layouts.get(layout)
+            if resolved is None:
+                logger.error("CHANGE_LAYOUT: unknown layout '%s'", layout)
+                return
+            layout = resolved
+
         action_clear_all = parameter.get("clear_all", False)
         if action_clear_all and not layout.clear_all:
             device.clear_all_icons()

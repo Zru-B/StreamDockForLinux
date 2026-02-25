@@ -195,6 +195,9 @@ class Application:
             default_layout, all_layouts = factory.create_layouts()
             logger.info("✓ Created %d layouts", len(all_layouts))
 
+            # Give ActionExecutor the layouts dict so CHANGE_LAYOUT can resolve names at runtime
+            self._action_executor.set_layouts(all_layouts)
+
             # Apply default layout
             default_layout.apply()
             logger.info("✓ Applied default layout: %s", default_layout.name)
