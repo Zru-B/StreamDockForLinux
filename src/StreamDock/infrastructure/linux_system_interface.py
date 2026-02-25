@@ -96,7 +96,7 @@ class LinuxSystemInterface(SystemInterface):
                 if window:
                     return window
 
-            logger.warning("No window detection tools available")
+            logger.debug("Could not detect active window (tools returned no result)")
             return None
 
         except Exception as e:

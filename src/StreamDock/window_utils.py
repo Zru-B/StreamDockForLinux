@@ -73,7 +73,7 @@ class WindowUtils:
 
         # Test if kdotool actually works (it might panic on some systems)
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["kdotool", "getactivewindow"],
                 capture_output=True,
                 text=True,

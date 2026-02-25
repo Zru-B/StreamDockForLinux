@@ -111,12 +111,15 @@ class Key:
 
         :return: Absolute path to the image file to hand to the device.
         """
-        has_icon = bool(self.image_path and os.path.exists(self.image_path))
         has_text = bool(self.text and self.text.strip())
 
-        # Icon-only, icon already on disk → nothing to do, send the path directly.
-        if has_icon and not has_text:
+        # No text overlay needed → send the image path directly.
+        # Let the device transport decide what to do with the path (it may not exist
+        # yet in tests or when using mock devices).
+        if not has_text:
             return self.image_path
+
+        has_icon = bool(self.image_path and os.path.exists(self.image_path))
 
 
         try:
