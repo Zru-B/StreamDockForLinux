@@ -270,3 +270,17 @@ class SystemInterface(ABC):
             - Returns False if pactl not available
         """
         pass
+
+    @abstractmethod
+    def toggle_mute(self) -> bool:
+        """
+        Toggle system mute state.
+
+        Returns:
+            True if successful, False otherwise
+
+        Design Contract:
+            - Uses pactl (PulseAudio/PipeWire)
+            - Returns False if pactl not available
+        """
+        pass

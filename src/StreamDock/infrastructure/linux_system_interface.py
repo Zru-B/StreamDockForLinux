@@ -407,3 +407,31 @@ class LinuxSystemInterface(SystemInterface):
         except Exception as e:
             logger.error("Error setting volume: %s", e, exc_info=True)
             return False
+
+    def toggle_mute(self) -> bool:
+        """
+        Toggle system mute state using pactl.
+        """
+        if not self.is_pactl_available():
+            logger.warning("pactl not available for volume control")
+            return False
+
+        try:
+            logger.debug("Toggling system mute")
+            result = subprocess.run(
+                ['pactl', 'set-sink-mute', '@DEFAULT_SINK@', 'toggle'],
+                capture_output=True,
+                timeout=5.0
+            )
+
+            if result.returncode == 0:
+                logger.debug("System mute toggled successfully")
+                return True
+            
+            logger.warning("pactl failed: %s", result.stderr.decode())
+            return False
+
+        except Exception as e:
+            logger.error("Error toggling mute: %s", e, exc_info=True)
+            return False
+

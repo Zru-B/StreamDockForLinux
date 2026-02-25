@@ -402,8 +402,8 @@ class ActionExecutor:
                 self._system.set_volume("-5%")
                 return
             elif action == "mute":
-                # SystemInterface set_volume doesn't natively expose mute. We fall through to dbus/pactl execution
-                command = "pactl set-sink-mute @DEFAULT_SINK@ toggle"
+                self._system.toggle_mute()
+                return
             else:
                 logger.error("Unknown D-Bus shortcut: %s", action)
                 return
