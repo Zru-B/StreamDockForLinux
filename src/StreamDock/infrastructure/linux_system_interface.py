@@ -8,7 +8,7 @@ WindowUtils class and providing D-Bus-based lock monitoring.
 import logging
 import subprocess
 import threading
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from .system_interface import SystemInterface, WindowInfo
 
@@ -371,30 +371,34 @@ class LinuxSystemInterface(SystemInterface):
             logger.error(f"Error sending media key: {e}", exc_info=True)
             return False
 
-    def set_volume(self, volume: int) -> bool:
+    def set_volume(self, volume: Union[int, str]) -> bool:
         """
-        Set system volume using pactl.
+        Set system volume level using pactl.
 
         Args:
-            volume: Volume level 0-100
+            volume: Volume level 0-100 (int) or relative adjustment (str, e.g. "+5%")
         """
         if not self.is_pactl_available():
             logger.warning("pactl not available for volume control")
             return False
 
-        # Clamp volume to valid range
-        volume = max(0, min(100, volume))
+        if isinstance(volume, int):
+            # Clamp volume to valid range for absolute setting
+            volume_str = f"{max(0, min(100, volume))}%"
+        else:
+            # Assume it's a relative string like "+5%" or "-5%"
+            volume_str = volume
 
         try:
-            logger.debug("Setting volume to %d%%", volume)
+            logger.debug("Setting volume to %s", volume_str)
             result = subprocess.run(
-                ['pactl', 'set-sink-volume', '@DEFAULT_SINK@', f'{volume}%'],
+                ['pactl', 'set-sink-volume', '@DEFAULT_SINK@', volume_str],
                 capture_output=True,
                 timeout=5.0
             )
 
             if result.returncode == 0:
-                logger.debug("Volume set to %d%%", volume)
+                logger.debug("Volume set successfully to %s", volume_str)
                 return True
             
             logger.warning("pactl failed: %s", result.stderr.decode())

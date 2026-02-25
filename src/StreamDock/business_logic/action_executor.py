@@ -396,10 +396,10 @@ class ActionExecutor:
             if action in shortcuts:
                 command = shortcuts[action]
             elif action == "volume_up":
-                self._system.set_volume(getattr(self, '_current_vol', 50) + 5) # approximation
+                self._system.set_volume("+5%")
                 return
             elif action == "volume_down":
-                self._system.set_volume(getattr(self, '_current_vol', 50) - 5) # approximation
+                self._system.set_volume("-5%")
                 return
             elif action == "mute":
                 # SystemInterface set_volume doesn't natively expose mute. We fall through to dbus/pactl execution

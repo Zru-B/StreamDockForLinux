@@ -6,7 +6,7 @@ including window management, input simulation, lock monitoring, and media contro
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 # Re-export WindowInfo from Models for convenience
 from StreamDock.domain.Models import WindowInfo
@@ -253,19 +253,20 @@ class SystemInterface(ABC):
         pass
 
     @abstractmethod
-    def set_volume(self, volume: int) -> bool:
+    def set_volume(self, volume: Union[int, str]) -> bool:
         """
         Set system volume level.
 
         Args:
-            volume: Volume level (0-100)
+            volume: Volume level (0-100) or relative adjustment (e.g., "+5%", "-5%")
 
         Returns:
             True if successful, False otherwise
 
         Design Contract:
             - Uses pactl (PulseAudio/PipeWire)
-            - Clamps volume to 0-100 range
+            - Clamps absolute volume to 0-100 range
+            - Supports relative adjustments as strings
             - Returns False if pactl not available
         """
         pass
