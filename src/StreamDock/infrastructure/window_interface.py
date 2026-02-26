@@ -50,6 +50,18 @@ class WindowInterface(ABC):
         """
 
     @abstractmethod
+    def activate_tray_app(self, app_name: str) -> bool:
+        """
+        Attempt to activate a minimized-to-tray application directly.
+
+        Args:
+            app_name: The application identifier to match on DBus or tray properties.
+
+        Returns:
+            ``True`` if a tray icon was found and activated, ``False`` otherwise.
+        """
+
+    @abstractmethod
     def search_window_by_name(self, name: str) -> Optional[str]:
         """
         Search for a window by its visible title (name), ignoring class.

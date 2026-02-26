@@ -472,6 +472,9 @@ class ActionExecutor:
                 activated = self._windows.activate_window(window_id)
 
             if not activated:
+                activated = self._windows.activate_tray_app(class_name)
+
+            if not activated:
                 logger.warning("Window not found for class '%s', launching a new instance", class_name)
                 _launch_detached(command)
         except Exception:  # pylint: disable=broad-exception-caught

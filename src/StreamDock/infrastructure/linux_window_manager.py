@@ -185,6 +185,12 @@ class LinuxWindowManager(WindowInterface):
                 wid = self._kdotool_search_by_class(class_name)
                 if wid:
                     return wid
+                    
+            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+                wid = self._qdbus_search_by_class(class_name)
+                if wid:
+                    return wid
+
             if self.is_xdotool_available():
                 return self._xdotool_search_by_class(class_name)
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -209,6 +215,12 @@ class LinuxWindowManager(WindowInterface):
                     if lines:
                         return lines[0].strip()
 
+            # Fallback to qdbus scripting if Wayland native and kdotool is busted
+            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+                wid = self._qdbus_search_by_name(name)
+                if wid:
+                    return wid
+
             # Fallback to xdotool
             if self.is_xdotool_available():
                 r = subprocess.run(
@@ -228,10 +240,45 @@ class LinuxWindowManager(WindowInterface):
         try:
             if self.is_kdotool_available() and self._kdotool_activate(window_id):
                 return True
+                
+            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+                if self._qdbus_activate_window(window_id):
+                    return True
+
             if self.is_xdotool_available() and self._xdotool_activate(window_id):
                 return True
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error activating window: %s", exc, exc_info=True)
+        return False
+
+    def activate_tray_app(self, app_name: str) -> bool:
+        """Attempt to activate a minimized-to-tray application directly via DBus."""
+        try:
+            import re
+            r = subprocess.run(["busctl", "--user", "list", "--no-pager"], capture_output=True, text=True, timeout=1)
+            if r.returncode != 0:
+                return False
+                
+            regex = re.compile(self._to_case_insensitive_regex(app_name))
+            svc_to_activate = None
+            
+            for line in r.stdout.splitlines():
+                if "org.kde.StatusNotifierItem" in line:
+                    svc = line.split()[0]
+                    if regex.search(svc):
+                        svc_to_activate = svc
+                        break
+                        
+            if svc_to_activate:
+                activate_r = subprocess.run(
+                    ["dbus-send", "--session", "--type=method_call", f"--dest={svc_to_activate}", 
+                     "/StatusNotifierItem", "org.kde.StatusNotifierItem.Activate", "int32:0", "int32:0"],
+                    capture_output=True, timeout=1
+                )
+                return activate_r.returncode == 0
+                
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.debug("Tray DBus activation failed for '%s': %s", app_name, exc)
         return False
 
     # ------------------------------------------------------------------ #
@@ -476,3 +523,123 @@ class LinuxWindowManager(WindowInterface):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.debug("qdbus fallback failed: %s", exc)
             return None
+
+    def _qdbus_execute_script(self, script_content: str, marker_id: str) -> Optional[List[str]]:
+        """Helper to rapidly queue and execute a KWin JS DBus script and extract marker results."""
+        import tempfile
+        import time
+        script_id = "streamdock_detect_generic"
+        
+        fd, path = tempfile.mkstemp(suffix=".js", prefix="sd_run_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(script_content)
+                
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", script_id],
+                capture_output=True, check=False, timeout=1
+            )
+            res_load = subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", path, script_id],
+                capture_output=True, text=True, timeout=1, check=False
+            )
+            if res_load.returncode != 0:
+                return None
+                
+            script_num = res_load.stdout.strip()
+            if not script_num.isdigit():
+                return None
+                
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", f"/Scripting/Script{script_num}", "org.kde.kwin.Script.run"],
+                capture_output=True, check=False, timeout=1
+            )
+            time.sleep(0.1)
+            
+            res_journal = subprocess.run(
+                ["journalctl", "--user", "-n", "500", "--no-pager"],
+                capture_output=True, text=True, timeout=1, check=False
+            )
+            
+            outputs = []
+            for line in res_journal.stdout.splitlines():
+                if marker_id in line and "|||" in line:
+                    payload = line.split(marker_id + "|")[-1]
+                    outputs.append(payload)
+            
+            subprocess.run(
+                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", script_id],
+                capture_output=True, check=False, timeout=1
+            )
+            return outputs
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+                
+    def _qdbus_search_by_class(self, class_name: str) -> Optional[str]:
+        import uuid
+        import re
+        marker_id = uuid.uuid4().hex
+        script = f"""
+        var wins = workspace.windowList();
+        for (var i = 0; i < wins.length; i++) {{
+            var w = wins[i];
+            if (w.resourceClass) {{
+                print("{marker_id}|" + w.internalId + "|||" + w.resourceClass);
+            }}
+        }}
+        """
+        results = self._qdbus_execute_script(script, marker_id)
+        if not results:
+            return None
+            
+        regex = re.compile(self._to_case_insensitive_regex(class_name))
+        for res in results:
+            parts = res.split("|||")
+            if len(parts) == 2:
+                wid, w_class = parts
+                if regex.search(w_class):
+                    return wid
+        return None
+        
+    def _qdbus_search_by_name(self, name: str) -> Optional[str]:
+        import uuid
+        import re
+        marker_id = uuid.uuid4().hex
+        script = f"""
+        var wins = workspace.windowList();
+        for (var i = 0; i < wins.length; i++) {{
+            var w = wins[i];
+            if (w.caption) {{
+                print("{marker_id}|" + w.internalId + "|||" + w.caption);
+            }}
+        }}
+        """
+        results = self._qdbus_execute_script(script, marker_id)
+        if not results:
+            return None
+            
+        regex = re.compile(self._to_case_insensitive_regex(name))
+        for res in results:
+            parts = res.split("|||")
+            if len(parts) == 2:
+                wid, caption = parts
+                if regex.search(caption):
+                    return wid
+        return None
+
+    def _qdbus_activate_window(self, window_id: str) -> bool:
+        import uuid
+        marker_id = uuid.uuid4().hex
+        script = f"""
+        var wins = workspace.windowList();
+        for (var i = 0; i < wins.length; i++) {{
+            if (wins[i].internalId == "{window_id}") {{
+                workspace.activeWindow = wins[i];
+                print("{marker_id}|success|||OK");
+                break;
+            }}
+        }}
+        """
+        results = self._qdbus_execute_script(script, marker_id)
+        return bool(results)
