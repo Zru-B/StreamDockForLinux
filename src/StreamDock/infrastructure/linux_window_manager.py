@@ -197,12 +197,11 @@ class LinuxWindowManager(WindowInterface):
             return None
         
         try:
+            regex_pattern = self._to_case_insensitive_regex(name)
             # Try kdotool first
             if self.is_kdotool_available():
-                # kdotool doesn't have a perfect equivalent to search --name, so we use
-                # basic search which matches title or class, and don't limit by class.
                 r = subprocess.run(
-                    ["kdotool", "search", "--name", name],
+                    ["kdotool", "search", "--name", regex_pattern],
                     capture_output=True, text=True, timeout=1, check=False,
                 )
                 if r.returncode == 0:
@@ -213,7 +212,7 @@ class LinuxWindowManager(WindowInterface):
             # Fallback to xdotool
             if self.is_xdotool_available():
                 r = subprocess.run(
-                    ["xdotool", "search", "--name", name],
+                    ["xdotool", "search", "--name", regex_pattern],
                     capture_output=True, text=True, timeout=1, check=False,
                 )
                 if r.returncode == 0:
@@ -221,7 +220,7 @@ class LinuxWindowManager(WindowInterface):
                     if lines:
                         return lines[-1].strip()  # Bottom of stack
         except Exception as exc:
-            logger.error("Error searching window by name '%s': %s", name, exc)
+            logger.error("Error searching window by name '%s': %s", name, exc, exc_info=True)
         return None
 
     def activate_window(self, window_id: str) -> bool:
@@ -307,9 +306,17 @@ class LinuxWindowManager(WindowInterface):
         return WindowInfo(title=title, class_=class_, raw=title,
                           method="kdotool", window_id=window_id)
 
+    @staticmethod
+    def _to_case_insensitive_regex(text: str) -> str:
+        """Convert a string into a case-insensitive POSIX-compatible regex."""
+        import re
+        escaped = re.escape(text)
+        return re.sub(r'[a-zA-Z]', lambda m: f"[{m.group().upper()}{m.group().lower()}]", escaped)
+
     def _kdotool_search_by_class(self, class_name: str) -> Optional[str]:
+        regex_pattern = self._to_case_insensitive_regex(class_name)
         r = subprocess.run(
-            ["kdotool", "search", "--class", class_name],
+            ["kdotool", "search", "--class", regex_pattern],
             capture_output=True, text=True, timeout=2, check=False,
         )
         if r.returncode == 0 and r.stdout.strip():
@@ -356,12 +363,13 @@ class LinuxWindowManager(WindowInterface):
                           method="xdotool", window_id=window_id)
 
     def _xdotool_search_by_class(self, class_name: str) -> Optional[str]:
+        regex_pattern = self._to_case_insensitive_regex(class_name)
         r = subprocess.run(
-            ["xdotool", "search", "--all", "--onlyvisible", "--class", class_name],
+            ["xdotool", "search", "--all", "--onlyvisible", "--class", regex_pattern],
             capture_output=True, text=True, timeout=2, check=False,
         )
         if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip().split("\n")[0]
+            return r.stdout.strip().split("\n")[-1]
         return None
 
     def _xdotool_activate(self, window_id: str) -> bool:

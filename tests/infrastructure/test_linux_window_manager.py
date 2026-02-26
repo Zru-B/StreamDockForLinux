@@ -291,18 +291,24 @@ class TestSearchWindowByName:
     @patch(f"{MODULE}.subprocess.run")
     def test_kdotool_search_by_name(self, mock_run, mock_which, manager):
         mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
-        mock_run.side_effect = [
-            _run(0, "1"),           # availability probe
-            _run(0, "12345\n678"),  # search --name
-        ]
+        def mock_run_eff(*args, **kwargs):
+            cmd = args[0]
+            if "--version" in cmd:
+                return _run(0, "1")
+            if "search" in cmd:
+                return _run(0, "12345\n678")
+            return _run(0, "")
+            
+        mock_run.side_effect = mock_run_eff
         
         result = manager.search_window_by_name("Test App")
         assert result == "12345"
         
-        all_cmds = [str(c.args[0]) for c in mock_run.call_args_list]
-        assert "search" in all_cmds[1]
-        assert "--name" in all_cmds[1]
-        assert "Test App" in all_cmds[1]
+        search_cmds = [str(c.args[0]) for c in mock_run.call_args_list if "search" in str(c.args[0])]
+        assert len(search_cmds) >= 1
+        assert "search" in search_cmds[-1]
+        assert "--name" in search_cmds[-1]
+        assert "[Tt][Ee][Ss][Tt]\\\\ [Aa][Pp][Pp]" in search_cmds[-1]
 
     @patch(f"{MODULE}.shutil.which")
     @patch(f"{MODULE}.subprocess.run")
