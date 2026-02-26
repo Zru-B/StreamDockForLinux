@@ -146,19 +146,21 @@ class TestDeviceOrchestrator:
     
     # ==================== Event Handling Tests ====================
     
-    def test_lock_event_turns_off_screens(self, orchestrator, mock_hardware):
-        """CRITICAL: Lock event sets brightness to 0."""
+    def test_lock_event_turns_off_screens(self, orchestrator, mock_registry):
+        """CRITICAL: Lock event turns off screens and closes connections."""
         orchestrator.start()
         
         # Simulate lock event
         orchestrator._on_lock(SystemEvent.LOCK)
         
-        # Verify brightness set to 0
-        mock_hardware.set_brightness.assert_called_with(0)
+        # Verify screen turned off and connection closed
+        device = mock_registry.get_all_devices.return_value[0].device_instance
+        device.screen_off.assert_called_once()
+        device.close.assert_called_once()
         assert orchestrator.is_locked() is True
     
-    def test_unlock_event_restores_screens(self, orchestrator, mock_hardware):
-        """CRITICAL: Unlock event restores brightness."""
+    def test_unlock_event_restores_screens(self, orchestrator, mock_registry):
+        """CRITICAL: Unlock event restores brightness and connections."""
         orchestrator.start()
         orchestrator.set_default_brightness(75)
         
@@ -168,10 +170,11 @@ class TestDeviceOrchestrator:
         # Then unlock
         orchestrator._on_unlock(SystemEvent.UNLOCK)
         
-        # Verify brightness restored
-        calls = mock_hardware.set_brightness.call_args_list
-        assert call(0) in calls  # Lock call
-        assert call(75) in calls  # Unlock call
+        # Verify brightness restored and screen turned on
+        device = mock_registry.get_all_devices.return_value[0].device_instance
+        device.open.assert_called_once()
+        device.screen_on.assert_called_once()
+        device.set_brightness.assert_called_once_with(75)
         assert orchestrator.is_locked() is False
     
     def test_window_changed_selects_layout(self, orchestrator, mock_layout_manager, 

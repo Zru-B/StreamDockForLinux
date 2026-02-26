@@ -10,6 +10,7 @@ import time
 from typing import Any, Dict, Optional
 
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
+from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.infrastructure import DeviceRegistry, HardwareInterface, SystemInterface
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,13 @@ class DeviceOrchestrator:
     - Configuration parsing (Application layer does this)
     """
 
-    def __init__(self,
+    def __init__(self,  # pylint: disable=too-many-positional-arguments
                  hardware: HardwareInterface,
                  system: SystemInterface,
                  registry: Optional[DeviceRegistry],
                  event_monitor: SystemEventMonitor,
-                 layout_manager: LayoutManager):
+                 layout_manager: LayoutManager,
+                 action_executor: Optional[ActionExecutor] = None):
         """
         Initialize orchestrator with all dependencies.
 
@@ -74,6 +76,7 @@ class DeviceOrchestrator:
         self._registry = registry  # Can be None in simplified mode
         self._event_monitor = event_monitor
         self._layout_manager = layout_manager
+        self._action_executor = action_executor
 
         # State management
         self._devices: Dict[str, Any] = {}  # device_id -> device instance
@@ -162,8 +165,6 @@ class DeviceOrchestrator:
 
             return success
 
-            return success
-
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error starting DeviceOrchestrator: %s", e)
             return False
@@ -242,51 +243,90 @@ class DeviceOrchestrator:
         self._devices.clear()
         self._current_layouts.clear()
 
-    def _on_lock(self, event: SystemEvent) -> None:
+    def _on_lock(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
         """
         Handle lock event - turn off device screens.
+        Handle lock event - turn off device screens and close connections.
 
         Args:
             event: LOCK event from SystemEventMonitor
 
         Design:
-        - Sets brightness to 0 for all devices
+        - Turns off device screen
+        - Closes connection to stop input processing
         - Tracks locked state
         - Called by SystemEventMonitor after verification
         """
-        logger.info("🔒 Lock event received - turning off device screens")
+        logger.info("🔒 Lock event received - turning off device screens and closing connections")
 
         self._is_locked = True
 
-        # Turn off all device screens
-        for device_id in self._devices:
+        # Turn off all device screens and close connections
+        for device_id, device in self._devices.items():
             try:
-                self._hardware.set_brightness(0)
-                logger.debug("Device %s screen turned off", device_id)
+                # Handle TrackedDevice wrapper if present (Registry integration)
+                if hasattr(device, 'device_instance'):
+                    device = device.device_instance
+
+                # Turn off screen physically if supported
+                if hasattr(device, 'screen_off'):
+                    device.screen_off()
+                    logger.debug("Device %s screen turned off", device_id)
+                elif hasattr(device, 'set_brightness'):
+                    device.set_brightness(0)
+                    logger.debug("Device %s brightness set to 0", device_id)
+                else:
+                    self._hardware.set_brightness(0)
+                    logger.debug("Hardware brightness set to 0")
+
+                # Close connection to safely stop processing inputs
+                if hasattr(device, 'close'):
+                    device.close()
+                    logger.debug("Device %s connection closed", device_id)
+
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error turning off device %s: %s", device_id, e)
 
-    def _on_unlock(self, event: SystemEvent) -> None:
+    def _on_unlock(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
         """
-        Handle unlock event - restore device screens.
+        Handle unlock event - restore device screens and connections.
 
         Args:
             event: UNLOCK event from SystemEventMonitor
 
         Design:
+        - Reopens active connection to device
+        - Turns screen back on
         - Restores brightness to default level
         - Reapplies current layout
         - Tracks unlocked state
         """
-        logger.info("🔓 Unlock event received - restoring device screens")
+        logger.info("🔓 Unlock event received - restoring device screens and connections")
 
         self._is_locked = False
 
         # Restore device screens
-        for device_id in self._devices:
+        for device_id, device in self._devices.items():
             try:
+                # Handle TrackedDevice wrapper if present (Registry integration)
+                if hasattr(device, 'device_instance'):
+                    device = device.device_instance
+
+                # Reopen connection
+                if hasattr(device, 'open'):
+                    device.open()
+                    logger.debug("Device %s connection reopened", device_id)
+
+                # Turn on screen physically
+                if hasattr(device, 'screen_on'):
+                    device.screen_on()
+                    logger.debug("Device %s screen turned on", device_id)
+
                 # Restore brightness
-                self._hardware.set_brightness(self._default_brightness)
+                if hasattr(device, 'set_brightness'):
+                    device.set_brightness(self._default_brightness)
+                else:
+                    self._hardware.set_brightness(self._default_brightness)
                 logger.debug("Device %s brightness restored to %s", device_id, self._default_brightness)
 
                 # Reapply current layout
@@ -297,7 +337,7 @@ class DeviceOrchestrator:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error restoring device %s: %s", device_id, e)
 
-    def _on_window_changed(self, event: SystemEvent) -> None:
+    def _on_window_changed(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
         """
         Handle window change - select and apply appropriate layout.
 

@@ -93,13 +93,49 @@ class USBHardware(HardwareInterface):
                 self._current_device = device_info
                 logger.info("Successfully opened device: %s", device_info.device_id)
                 return True
-            
+
             logger.warning("Failed to open device: %s", device_info.device_id)
             return False
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error opening device %s: %s", device_info.path, e, exc_info=True)
             return False
+
+    def open(self, path) -> int:
+        """
+        Intercept legacy open call to track device connection.
+        
+        This mimics the legacy HIDTransport.open() method signature while
+        also updating the adapter's connection state.
+        
+        Args:
+            path: Device path (bytes or str)
+            
+        Returns:
+            1 on success, -1 on failure
+        """
+        # Close existing device if any
+        if self._current_device is not None:
+            self.close_device()
+
+        # Convert path for HIDTransport
+        path_bytes = path.encode('utf-8') if isinstance(path, str) else path
+        path_str = path.decode('utf-8', errors='replace') if isinstance(path, bytes) else path
+
+        logger.info("Opening device via legacy open(): %s", path_str)
+        result = self._transport.open(path_bytes)
+
+        if result == 1:
+            # Create a basic DeviceInfo to satisfy is_connected()
+            self._current_device = DeviceInfo(
+                vendor_id=0,
+                product_id=0,
+                serial_number="legacy",
+                path=path_str
+            )
+            logger.info("Successfully tracked legacy device open")
+
+        return result
 
     def close_device(self) -> None:
         """
@@ -117,6 +153,19 @@ class USBHardware(HardwareInterface):
                 self._current_device = None
         else:
             logger.debug("close_device() called but no device was open")
+
+    def close(self) -> None:
+        """
+        Intercept legacy close call to track device disconnection.
+        """
+        logger.debug("Closing device via legacy close()")
+        if self._current_device is not None:
+            self.close_device()
+        else:
+            try:
+                self._transport.close()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error("Error in fallback close: %s", e, exc_info=True)
 
     def is_connected(self) -> bool:
         """
@@ -147,7 +196,7 @@ class USBHardware(HardwareInterface):
             if result == 1:
                 logger.debug("Successfully set brightness to %d%%", level)
                 return True
-            
+
             logger.warning("Failed to set brightness to %d%%", level)
             return False
 
@@ -172,7 +221,7 @@ class USBHardware(HardwareInterface):
             if result == 1:
                 logger.debug("Successfully sent image to button %d", button_index)
                 return True
-            
+
             logger.warning("Failed to send image to button %d", button_index)
             return False
 
@@ -232,8 +281,8 @@ class USBHardware(HardwareInterface):
         # Delegate to underlying transport
         try:
             return getattr(self._transport, name)
-        except AttributeError:
+        except AttributeError as exc:
             raise AttributeError(
                 f"'{type(self).__name__}' object has no attribute '{name}' "
                 f"and underlying transport doesn't provide it either"
-            )
+            ) from exc
