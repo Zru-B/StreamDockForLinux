@@ -6,6 +6,7 @@ from StreamDock.infrastructure.device_registry import DeviceRegistry
 from StreamDock.business_logic.layout_manager import LayoutManager
 from StreamDock.business_logic.system_event_monitor import SystemEventMonitor
 from StreamDock.domain.Models import WindowInfo
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 
 @pytest.fixture
@@ -33,6 +34,18 @@ def mock_system():
     ))
     system.poll_lock_state = Mock(return_value=False)
     return system
+
+
+@pytest.fixture
+def mock_windows():
+    """Mock window interface for integration tests."""
+    windows = Mock(spec=WindowInterface)
+    windows.get_active_window = Mock(return_value=WindowInfo(
+        class_="TestApp",
+        title="Test Window",
+        raw="TestApp"
+    ))
+    return windows
 
 
 @pytest.fixture
@@ -69,9 +82,10 @@ def layout_manager():
 
 
 @pytest.fixture
-def event_monitor(mock_system):
+def event_monitor(mock_system, mock_windows):
     """System event monitor."""
     return SystemEventMonitor(
         system_interface=mock_system,
+        window_manager=mock_windows,
         verification_delay=0.1
     )

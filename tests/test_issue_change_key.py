@@ -16,7 +16,7 @@ class TestChangeKeyCrash(unittest.TestCase):
         Verify fix: CHANGE_KEY with string parameter should treat it as image path and update key.
         """
         device = MagicMock()
-        action_executor = ActionExecutor(MagicMock())
+        action_executor = ActionExecutor(MagicMock(), MagicMock())
         action = (ActionType.CHANGE_KEY, "/path/to/image.png")
         
         # Execute with key_number context
@@ -30,7 +30,7 @@ class TestChangeKeyCrash(unittest.TestCase):
         Verify fix: CHANGE_KEY with dict parameter should configure full key.
         """
         device = MagicMock()
-        action_executor = ActionExecutor(MagicMock())
+        action_executor = ActionExecutor(MagicMock(), MagicMock())
         config = {
             'image': '/path/to/icon.png',
             'actions': [{'foo': 'bar'}] # Mock action list

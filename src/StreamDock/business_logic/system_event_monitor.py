@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional
 
 from StreamDock.infrastructure.system_interface import SystemInterface
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,14 @@ class SystemEventMonitor:
     """
 
     def __init__(self, system_interface: SystemInterface,
+                 window_manager: WindowInterface,
                  verification_delay: float = 2.0):
         """
         Initialize system event monitor.
 
         Args:
             system_interface: System abstraction for lock state polling
+            window_manager: Window abstraction for polling active window
             verification_delay: Seconds to wait before confirming lock (default: 2.0)
 
         Design Contract:
@@ -59,6 +62,7 @@ class SystemEventMonitor:
             - Handlers can be registered before or after starting
         """
         self._system = system_interface
+        self._windows = window_manager
         self._verification_delay = verification_delay
 
         # Handler registry: event type -> list of callbacks
@@ -200,7 +204,7 @@ class SystemEventMonitor:
         """Poll the active window and fire WINDOW_CHANGED when it changes."""
         while self._window_poll_running:
             try:
-                window_info = self._system.get_active_window()
+                window_info = self._windows.get_active_window()
                 current_class = window_info.class_ if window_info else None
 
                 if current_class != self._last_window_class:

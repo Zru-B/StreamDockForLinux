@@ -60,17 +60,19 @@ class TestWindowLayoutSwitch:
         return manager
     
     @pytest.fixture
-    def orchestrator_with_device(self, mock_hardware, mock_system,
+    def orchestrator_with_device(self, mock_hardware, mock_system, mock_windows,
                                   layout_manager_with_rules):
         """Orchestrator with a registered device and rules."""
         event_monitor = SystemEventMonitor(
             system_interface=mock_system,
+            window_manager=mock_windows,
             verification_delay=0.1
         )
         
         orch = DeviceOrchestrator(
             hardware=mock_hardware,
             system=mock_system,
+            window_manager=mock_windows,
             registry=None,  # Simplified mode
             event_monitor=event_monitor,
             layout_manager=layout_manager_with_rules
@@ -224,17 +226,19 @@ class TestWindowLayoutWithLock:
     """Test window layout switching interactions with lock/unlock."""
     
     @pytest.fixture
-    def orchestrator_with_monitor(self, mock_hardware, mock_system,
+    def orchestrator_with_monitor(self, mock_hardware, mock_system, mock_windows,
                                    layout_manager_with_rules):
         """Orchestrator with event monitor for lock events."""
         event_monitor = SystemEventMonitor(
             system_interface=mock_system,
+            window_manager=mock_windows,
             verification_delay=0.05
         )
         
         orch = DeviceOrchestrator(
             hardware=mock_hardware,
             system=mock_system,
+            window_manager=mock_windows,
             registry=None,
             event_monitor=event_monitor,
             layout_manager=layout_manager_with_rules

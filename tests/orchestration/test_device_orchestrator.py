@@ -10,6 +10,7 @@ from unittest.mock import Mock, call, MagicMock
 from StreamDock.orchestration.device_orchestrator import DeviceOrchestrator
 from StreamDock.business_logic import SystemEventMonitor, SystemEvent, LayoutManager
 from StreamDock.infrastructure import HardwareInterface, SystemInterface, DeviceRegistry, TrackedDevice
+from StreamDock.infrastructure.window_interface import WindowInterface
 from StreamDock.domain.Models import WindowInfo
 
 
@@ -29,12 +30,18 @@ class TestDeviceOrchestrator:
         """Mock SystemInterface."""
         system = Mock(spec=SystemInterface)
         system.start_lock_monitor.return_value = True
-        system.get_active_window.return_value = WindowInfo(
+        return system
+    
+    @pytest.fixture
+    def mock_windows(self):
+        """Mock WindowInterface."""
+        windows = Mock(spec=WindowInterface)
+        windows.get_active_window.return_value = WindowInfo(
             title="Test Window",
             class_="test_class",
             raw="test"
         )
-        return system
+        return windows
     
     @pytest.fixture
     def mock_registry(self):
@@ -71,12 +78,13 @@ class TestDeviceOrchestrator:
         return layout
     
     @pytest.fixture
-    def orchestrator(self, mock_hardware, mock_system, mock_registry, 
+    def orchestrator(self, mock_hardware, mock_system, mock_windows, mock_registry, 
                      mock_event_monitor, mock_layout_manager):
         """DeviceOrchestrator instance with mocked dependencies."""
         return DeviceOrchestrator(
             hardware=mock_hardware,
             system=mock_system,
+            window_manager=mock_windows,
             registry=mock_registry,
             event_monitor=mock_event_monitor,
             layout_manager=mock_layout_manager
@@ -178,7 +186,7 @@ class TestDeviceOrchestrator:
         assert orchestrator.is_locked() is False
     
     def test_window_changed_selects_layout(self, orchestrator, mock_layout_manager, 
-                                          mock_system):
+                                          mock_windows):
         """CRITICAL: Window change triggers layout selection."""
         orchestrator.start()
         
@@ -186,7 +194,7 @@ class TestDeviceOrchestrator:
         orchestrator._on_window_changed(SystemEvent.WINDOW_CHANGED)
         
         # Verify layout selection was queried
-        mock_system.get_active_window.assert_called_once()
+        mock_windows.get_active_window.assert_called_once()
         mock_layout_manager.select_layout.assert_called_once()
     
     def test_window_changed_applies_different_layout(self, orchestrator, 

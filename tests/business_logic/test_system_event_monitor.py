@@ -11,6 +11,7 @@ import threading
 
 from StreamDock.business_logic.system_event_monitor import SystemEventMonitor, SystemEvent
 from StreamDock.infrastructure.system_interface import SystemInterface
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 
 class TestSystemEvent:
@@ -33,11 +34,16 @@ class TestSystemEventMonitor:
         system.start_lock_monitor.return_value = True
         system.poll_lock_state.return_value = True
         return system
+
+    @pytest.fixture
+    def mock_windows(self):
+        """Mock WindowInterface."""
+        return Mock(spec=WindowInterface)
     
     @pytest.fixture
-    def monitor(self, mock_system):
+    def monitor(self, mock_system, mock_windows):
         """SystemEventMonitor instance with short verification delay for testing."""
-        return SystemEventMonitor(mock_system, verification_delay=0.1)
+        return SystemEventMonitor(mock_system, mock_windows, verification_delay=0.1)
     
     # ==================== Initialization Tests ====================
     

@@ -4,13 +4,15 @@ from unittest.mock import MagicMock, patch
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.infrastructure.system_interface import SystemInterface
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 
 class TestActionExecutor(unittest.TestCase):
 
     def setUp(self):
         self.mock_system = MagicMock(spec=SystemInterface)
-        self.executor = ActionExecutor(self.mock_system)
+        self.mock_windows = MagicMock(spec=WindowInterface)
+        self.executor = ActionExecutor(self.mock_system, self.mock_windows)
         
     def test_execute_command(self):
         """Test executing a shell command via SystemInterface."""
@@ -52,34 +54,30 @@ class TestActionExecutor(unittest.TestCase):
         self.assertIn("PlayPause", mock_run.call_args[0][0])
 
     @patch('StreamDock.business_logic.action_executor._launch_detached')
-    @patch('StreamDock.window_utils.WindowUtils.is_process_running')
-    def test_launch_app_force_new(self, mock_is_running, mock_launch):
+    def test_launch_app_force_new(self, mock_launch):
         """Test forced app launch."""
         self.executor.execute_action((ActionType.LAUNCH_APPLICATION, {"command": ["firefox"], "force_new": True}))
         mock_launch.assert_called_once_with(["firefox"])
-        mock_is_running.assert_not_called()
+        self.mock_system.is_process_running.assert_not_called()
 
     @patch('StreamDock.business_logic.action_executor._launch_detached')
-    @patch('StreamDock.window_utils.WindowUtils.is_process_running')
-    def test_launch_app_not_running(self, mock_is_running, mock_launch):
+    def test_launch_app_not_running(self, mock_launch):
         """Test launching app when not running."""
-        mock_is_running.return_value = False
+        self.mock_system.is_process_running.return_value = False
         self.executor.execute_action((ActionType.LAUNCH_APPLICATION, {"command": ["firefox"]}))
         mock_launch.assert_called_once_with(["firefox"])
 
     @patch('StreamDock.business_logic.action_executor._launch_detached')
-    @patch('StreamDock.window_utils.WindowUtils.is_process_running')
-    @patch('StreamDock.window_utils.WindowUtils.activate_window')
-    def test_launch_app_focuses(self, mock_activate, mock_is_running, mock_launch):
+    def test_launch_app_focuses(self, mock_launch):
         """Test focusing existing app."""
-        mock_is_running.return_value = True
-        self.mock_system.search_window_by_class.return_value = "12345"
-        self.mock_system.activate_window.return_value = True
+        self.mock_system.is_process_running.return_value = True
+        self.mock_windows.search_window_by_class.return_value = "12345"
+        self.mock_windows.activate_window.return_value = True
         
         self.executor.execute_action((ActionType.LAUNCH_APPLICATION, {"command": ["firefox"]}))
         
-        self.mock_system.search_window_by_class.assert_called_once_with("firefox")
-        self.mock_system.activate_window.assert_called_once_with("12345")
+        self.mock_windows.search_window_by_class.assert_called_once_with("firefox")
+        self.mock_windows.activate_window.assert_called_once_with("12345")
         mock_launch.assert_not_called()
 
     @patch('StreamDock.business_logic.action_executor.time.sleep')

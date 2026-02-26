@@ -68,12 +68,13 @@ class TestLockUnlockCycle:
         return monitor
     
     @pytest.fixture
-    def orchestrator(self, mock_hardware, mock_system, mock_registry, 
+    def orchestrator(self, mock_hardware, mock_system, mock_windows, mock_registry, 
                      event_monitor, layout_manager):
         """Device orchestrator with all dependencies."""
         orch = DeviceOrchestrator(
             hardware=mock_hardware,
             system=mock_system,
+            window_manager=mock_windows,
             registry=mock_registry,
             event_monitor=event_monitor,
             layout_manager=layout_manager
@@ -223,12 +224,13 @@ class TestLockUnlockWithWindowChanges:
     """Test lock/unlock with concurrent window changes."""
     
     @pytest.fixture
-    def orchestrator_with_device(self, mock_hardware, mock_system, mock_registry,
+    def orchestrator_with_device(self, mock_hardware, mock_system, mock_windows, mock_registry,
                                   event_monitor, layout_manager):
         """Orchestrator with a registered device."""
         orch = DeviceOrchestrator(
             hardware=mock_hardware,
             system=mock_system,
+            window_manager=mock_windows,
             registry=mock_registry,
             event_monitor=event_monitor,
             layout_manager=layout_manager

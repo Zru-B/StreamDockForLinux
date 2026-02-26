@@ -13,7 +13,7 @@ from StreamDock.business_logic.action_type import ActionType
 from StreamDock.domain.key import Key
 from StreamDock.image_helpers.pil_helper import render_key_image
 from StreamDock.infrastructure.system_interface import SystemInterface
-from StreamDock.window_utils import WindowUtils
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +156,9 @@ def _parse_app_config(app_config):
 class ActionExecutor:
     """Executes actions in response to button presses."""
 
-    def __init__(self, system_interface: SystemInterface):
+    def __init__(self, system_interface: SystemInterface, window_manager: WindowInterface):
         self._system = system_interface
+        self._windows = window_manager
         self._action_handlers = {}
         self._layouts = {}  # layout_name -> Layout object, populated after factory creates layouts
         self._register_built_in_handlers()
@@ -451,7 +452,7 @@ class ActionExecutor:
             return
 
         try:
-            if not WindowUtils.is_process_running(process_name):
+            if not self._system.is_process_running(process_name):
                 _launch_detached(command)
                 return
 
@@ -462,18 +463,13 @@ class ActionExecutor:
                     if desktop_info:
                         search_by_name = desktop_info['name']
 
-            # Use WindowUtils locally or SystemInterface
-            window_id = self._system.search_window_by_class(class_name)
+            window_id = self._windows.search_window_by_class(class_name)
             if not window_id and search_by_name:
-                # Need to use WindowUtils to search by name as a fallback?
-                pass
+                window_id = self._windows.search_window_by_name(search_by_name)
 
             activated = False
             if window_id:
-                activated = self._system.activate_window(window_id)
-            else:
-                # Fallback to WindowUtils directly
-                activated = WindowUtils.activate_window(class_name, search_by_name)
+                activated = self._windows.activate_window(window_id)
 
             if not activated:
                 logger.warning("Window not found for class '%s', launching a new instance", class_name)

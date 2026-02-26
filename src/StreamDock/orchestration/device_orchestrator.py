@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.infrastructure import DeviceRegistry, HardwareInterface, SystemInterface
+from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class DeviceOrchestrator:
     def __init__(self,  # pylint: disable=too-many-positional-arguments
                  hardware: HardwareInterface,
                  system: SystemInterface,
+                 window_manager: WindowInterface,
                  registry: Optional[DeviceRegistry],
                  event_monitor: SystemEventMonitor,
                  layout_manager: LayoutManager,
@@ -73,6 +75,7 @@ class DeviceOrchestrator:
         """
         self._hardware = hardware
         self._system = system
+        self._windows = window_manager
         self._registry = registry  # Can be None in simplified mode
         self._event_monitor = event_monitor
         self._layout_manager = layout_manager
@@ -243,9 +246,8 @@ class DeviceOrchestrator:
         self._devices.clear()
         self._current_layouts.clear()
 
-    def _on_lock(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
+    def _on_lock(self, event: SystemEvent) -> None:
         """
-        Handle lock event - turn off device screens.
         Handle lock event - turn off device screens and close connections.
 
         Args:
@@ -287,7 +289,7 @@ class DeviceOrchestrator:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error turning off device %s: %s", device_id, e)
 
-    def _on_unlock(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
+    def _on_unlock(self, event: SystemEvent) -> None:
         """
         Handle unlock event - restore device screens and connections.
 
@@ -334,10 +336,10 @@ class DeviceOrchestrator:
                 if current_layout_name:
                     self._apply_layout(device_id, current_layout_name, force=True)
 
-            except Exception as e:  # pylint: disable=broad-exception-caught
+            except Exception as e:
                 logger.exception("Error restoring device %s: %s", device_id, e)
 
-    def _on_window_changed(self, event: SystemEvent) -> None:  # pylint: disable=unused-argument
+    def _on_window_changed(self, event: SystemEvent) -> None:
         """
         Handle window change - select and apply appropriate layout.
 
@@ -350,7 +352,7 @@ class DeviceOrchestrator:
         - Applies layout if different from current
         - Skips if locked (no need to switch while screen is off)
         """
-        logger.info("🔄 Window change event received")
+        logger.info("🔄 Window change event received.")
 
         # Skip layout changes while locked
         if self._is_locked:
@@ -364,9 +366,9 @@ class DeviceOrchestrator:
 
         # Get current window info
         try:
-            window_info = self._system.get_active_window()
+            window_info = self._windows.get_active_window()
 
-            if not window_info:
+            if not window_info or window_info.class_ == "":
                 logger.debug("No active window detected")
                 return
 

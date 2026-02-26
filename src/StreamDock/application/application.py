@@ -15,6 +15,7 @@ from StreamDock.infrastructure import (
     DeviceRegistry,
     HardwareInterface,
     LinuxSystemInterface,
+    LinuxWindowManager,
     SystemInterface,
     USBHardware,
 )
@@ -106,6 +107,7 @@ class Application:
         logger.debug("Creating infrastructure layer...")
         self._hardware = USBHardware()
         self._system = LinuxSystemInterface()
+        self._windows = LinuxWindowManager()
         self._registry = None  # Simplified: not using registry for now
         logger.debug("Infrastructure layer created")
 
@@ -154,6 +156,7 @@ class Application:
 
         self._event_monitor = SystemEventMonitor(
             system_interface=self._system,
+            window_manager=self._windows,
             verification_delay=self._config.lock_verification_delay
         )
 
@@ -161,7 +164,7 @@ class Application:
             default_layout_name=self._config.default_layout_name
         )
 
-        self._action_executor = ActionExecutor(self._system)
+        self._action_executor = ActionExecutor(self._system, self._windows)
 
         self._configure_window_rules()
 
@@ -172,9 +175,11 @@ class Application:
         self._orchestrator = DeviceOrchestrator(
             hardware=self._hardware,
             system=self._system,
+            window_manager=self._windows,
             registry=None,
             event_monitor=self._event_monitor,
-            layout_manager=self._layout_manager
+            layout_manager=self._layout_manager,
+            action_executor=self._action_executor
         )
         logger.debug("Orchestration layer created")
 

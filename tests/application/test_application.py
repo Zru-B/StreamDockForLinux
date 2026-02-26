@@ -21,6 +21,12 @@ class TestApplication:
         """Create temporary directory for test files."""
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
+            
+    @pytest.fixture(autouse=True)
+    def mock_window_manager(self):
+        """Mock LinuxWindowManager to avoid subprocess calls during tests."""
+        with patch('StreamDock.application.application.LinuxWindowManager') as mock:
+            yield mock
     
     @pytest.fixture
     def test_icon_path(self, temp_dir):
@@ -123,6 +129,7 @@ streamdock:
         orchestrator = app.get_orchestrator()
         assert orchestrator._hardware == hardware_instance
         assert orchestrator._system == system_instance
+        assert orchestrator._windows is not None
         # NOTE: Registry is None in simplified mode
         assert orchestrator._registry is None
         assert orchestrator._event_monitor == app.get_event_monitor()
