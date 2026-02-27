@@ -315,12 +315,40 @@ class DeviceOrchestrator:
                     device = device.device_instance
 
                 # Reopen connection
+                success = True
                 if hasattr(device, 'open'):
-                    device.open()
-                    logger.debug("Device %s connection reopened", device_id)
+                    success = device.open()
+                    if not success:
+                        path_str = getattr(device, 'path', 'unknown')
+                        logger.warning("Device %s failed to open at %s. Re-enumerating USB...", device_id, path_str)
+                        vid = getattr(device, 'vendor_id', 0x6603)
+                        pid = getattr(device, 'product_id', 0x1006)
+                        devices = self._hardware.enumerate_devices(vid, pid)
+                        
+                        if devices:
+                            new_info = devices[0]
+                            logger.info("Found StreamDock at new path: %s", new_info.path)
+                            # Update the device's internal path
+                            device.path = new_info.path
+                            success = device.open()
+                            if success:
+                                logger.info("Successfully reopened device %s at new path", device_id)
+                            else:
+                                logger.error("Failed to reopen device %s even with new path %s", device_id, new_info.path)
+                        else:
+                            logger.error("Could not find any StreamDock devices during re-enumeration")
+                    else:
+                        logger.debug("Device %s connection reopened successfully", device_id)
 
-                # Turn on screen physically
-                if hasattr(device, 'screen_on'):
+                if not success:
+                    logger.warning("Skipping restoration for %s due to closed connection", device_id)
+                    continue
+
+                # Initialize hardware or turn on screen physically to break out of factory mode
+                if hasattr(device, 'init'):
+                    device.init()
+                    logger.debug("Device %s initialized (exited factory mode)", device_id)
+                elif hasattr(device, 'screen_on'):
                     device.screen_on()
                     logger.debug("Device %s screen turned on", device_id)
 

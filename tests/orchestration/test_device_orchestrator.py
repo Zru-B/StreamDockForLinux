@@ -181,9 +181,39 @@ class TestDeviceOrchestrator:
         # Verify brightness restored and screen turned on
         device = mock_registry.get_all_devices.return_value[0].device_instance
         device.open.assert_called_once()
-        device.screen_on.assert_called_once()
+        device.init.assert_called_once()
         device.set_brightness.assert_called_once_with(75)
         assert orchestrator.is_locked() is False
+    
+    def test_unlock_triggers_reenumeration_on_open_failure(self, orchestrator, mock_registry, mock_hardware):
+        """CRITICAL: Failed open during unlock triggers USB re-enumeration."""
+        orchestrator.start()
+        
+        device = mock_registry.get_all_devices.return_value[0].device_instance
+        device.path = '/dev/hidraw_old'
+        device.vendor_id = 0x6603
+        device.product_id = 0x1006
+        
+        # Simulate open failure the first time, success the second time
+        device.open.side_effect = [False, True]
+        
+        # Setup mock hardware to return a new device path
+        new_device_info = MagicMock()
+        new_device_info.path = '/dev/hidraw_new'
+        mock_hardware.enumerate_devices.return_value = [new_device_info]
+        
+        # Lock and unlock
+        orchestrator._on_lock(SystemEvent.LOCK)
+        orchestrator._on_unlock(SystemEvent.UNLOCK)
+        
+        # Verify enumerate_devices was called
+        mock_hardware.enumerate_devices.assert_called_once_with(0x6603, 0x1006)
+        
+        # Verify path updated and open retried
+        assert device.path == '/dev/hidraw_new'
+        assert device.open.call_count == 2
+        device.init.assert_called_once()
+
     
     def test_window_changed_selects_layout(self, orchestrator, mock_layout_manager, 
                                           mock_windows):
