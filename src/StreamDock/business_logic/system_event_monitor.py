@@ -204,6 +204,12 @@ class SystemEventMonitor:
         """Poll the active window and fire WINDOW_CHANGED when it changes."""
         while self._window_poll_running:
             try:
+                # Suppress window change dispatches if we are currently 
+                # verifying a system lock (OS lock screens grab focus during this delay)
+                if self._pending_verification is not None:
+                    time.sleep(self._window_poll_interval)
+                    continue
+
                 window_info = self._windows.get_active_window()
                 current_class = window_info.class_ if window_info else None
 

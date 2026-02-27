@@ -243,6 +243,26 @@ class DeviceOrchestrator:
         Called during stop() to release resources.
         """
         logger.debug("Cleaning up %d device(s)", len(self._devices))
+        
+        for device_id, device in self._devices.items():
+            try:
+                # Handle TrackedDevice wrapper if present
+                if hasattr(device, 'device_instance'):
+                    dev = device.device_instance
+                else:
+                    dev = device
+                
+                # Turn off screen gracefully on application exit
+                if hasattr(dev, 'screen_off'):
+                    dev.screen_off()
+                    logger.debug("Device %s screen turned off during cleanup", device_id)
+                
+                if hasattr(dev, 'close'):
+                    dev.close()
+                    logger.debug("Device %s connection closed during cleanup", device_id)
+            except Exception as e:
+                logger.exception("Error cleaning up device %s: %s", device_id, e)
+
         self._devices.clear()
         self._current_layouts.clear()
 
