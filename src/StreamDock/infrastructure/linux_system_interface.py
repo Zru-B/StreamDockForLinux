@@ -74,8 +74,10 @@ class LinuxSystemInterface(SystemInterface):
     def type_text(self, text: str) -> bool:
         """Type *text* into the currently focused window via xdotool."""
         try:
+            # xdotool sometimes drops Shift modifiers when --clearmodifiers is used 
+            # alongside a very short --delay (in milliseconds). Increasing delay and relying on native behavior.
             subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", text],
+                ["xdotool", "type", "--delay", "12", "--", text],
                 check=True, capture_output=True,
             )
             return True

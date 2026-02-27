@@ -80,12 +80,14 @@ class TestInputSimulation:
         assert system_interface.send_key_combo('ctrl+c') is False
 
     @patch(f"{LSI_MODULE}.subprocess.run")
-    def test_type_text_success(self, mock_run, system_interface):
+    def test_type_text_success_complex_string(self, mock_run, system_interface):
         mock_run.return_value = Mock(returncode=0)
-        result = system_interface.type_text('Hello World')
+        # Testing uppercase, lowercase, digits, and common special characters
+        complex_text = "Hello World! 123 @#$ %^&*()-_=+[{]}\\|;:'\",<.>/?~"
+        result = system_interface.type_text(complex_text)
         assert result is True
         mock_run.assert_called_once_with(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "Hello World"],
+            ["xdotool", "type", "--delay", "12", "--", complex_text],
             check=True, capture_output=True,
         )
 
