@@ -62,7 +62,15 @@ class TestDeviceRegistry:
         
         assert len(devices) == 1
         assert registry.get_device_count() == 1
-        mock_device_class.assert_called_once_with(mock_hardware, device_info)
+        expected_dict = {
+            'vendor_id': device_info.vendor_id,
+            'product_id': device_info.product_id,
+            'serial_number': device_info.serial_number,
+            'path': device_info.path,
+            'manufacturer_string': device_info.manufacturer,
+            'product_string': device_info.product,
+        }
+        mock_device_class.assert_called_once_with(mock_hardware, expected_dict)
     
     def test_enumerate_and_register_multiple_devices(self, registry, mock_hardware, mock_device_class):
         """Design contract: Multiple devices can be registered."""

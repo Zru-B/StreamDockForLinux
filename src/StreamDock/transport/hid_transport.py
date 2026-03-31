@@ -174,12 +174,21 @@ class HIDTransport:
             Number of bytes written, or -1 on error
         """
         if not self._device:
+            self._get_logger().debug(
+                "_write_packet: no device handle — device disconnected?"
+            )
             return -1
 
         try:
             data = (c_ubyte * len(packet))(*packet)
-            return _hidapi.hid_write(self._device, data, len(packet))
+            result = _hidapi.hid_write(self._device, data, len(packet))
+            if result < 0:
+                self._get_logger().debug(
+                    "_write_packet: hid_write returned %d (device disconnected?)", result
+                )
+            return result
         except Exception:
+            self._get_logger().debug("_write_packet: exception during hid_write", exc_info=True)
             return -1
 
     def open(self, path: bytes) -> int:

@@ -27,6 +27,14 @@ class TestApplication:
         """Mock LinuxWindowManager to avoid subprocess calls during tests."""
         with patch('StreamDock.application.application.LinuxWindowManager') as mock:
             yield mock
+
+    @pytest.fixture(autouse=True)
+    def mock_hotplug_monitor(self):
+        """Mock USBHotplugMonitor to prevent a real udev thread during tests."""
+        with patch('StreamDock.application.application.USBHotplugMonitor') as mock:
+            mock.return_value.start = Mock()
+            mock.return_value.stop = Mock()
+            yield mock
     
     @pytest.fixture
     def test_icon_path(self, temp_dir):
@@ -83,10 +91,11 @@ streamdock:
         
         # Mock infrastructure constructors
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX: Return empty list
         mock_hardware.return_value = hw_instance
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
+        mock_registry.return_value = registry_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
         
         app.initialize()
         
@@ -115,10 +124,10 @@ streamdock:
         
         # Mock infrastructure
         hardware_instance = Mock()
-        hardware_instance.enumerate_devices = Mock(return_value=[])  # FIX
         system_instance = Mock()
         registry_instance = Mock()
-        
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
+
         mock_hardware.return_value = hardware_instance
         mock_system.return_value = system_instance
         mock_registry.return_value = registry_instance
@@ -130,8 +139,7 @@ streamdock:
         assert orchestrator._hardware == hardware_instance
         assert orchestrator._system == system_instance
         assert orchestrator._windows is not None
-        # NOTE: Registry is None in simplified mode
-        assert orchestrator._registry is None
+        assert orchestrator._registry == registry_instance  # Registry now wired
         assert orchestrator._event_monitor == app.get_event_monitor()
         assert orchestrator._layout_manager == app.get_layout_manager()
     
@@ -148,10 +156,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         app.initialize()
         
@@ -186,10 +195,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         app.initialize()
         
@@ -231,10 +241,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         # Mock orchestrator start
         with patch.object(Application, 'initialize', wraps=app.initialize) as mock_init:
@@ -254,10 +265,10 @@ streamdock:
         
         # Mock infrastructure
         hardware_instance = Mock()
-        hardware_instance.enumerate_devices = Mock(return_value=[])  # FIX
         system_instance = Mock()
         registry_instance = Mock()
-        
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
+
         mock_hardware.return_value = hardware_instance
         mock_system.return_value = system_instance
         mock_registry.return_value = registry_instance
@@ -291,10 +302,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         # Mock orchestrator start to return False
         app.initialize()
@@ -317,10 +329,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         app.initialize()
         
@@ -353,10 +366,11 @@ streamdock:
         
         # Mock infrastructure
         hw_instance = Mock()
-        hw_instance.enumerate_devices = Mock(return_value=[])  # FIX
+        registry_instance = Mock()
+        registry_instance.enumerate_and_register = Mock(return_value=[])  # no device
         mock_hardware.return_value = hw_instance
         mock_system.return_value = Mock()
-        mock_registry.return_value = Mock()
+        mock_registry.return_value = registry_instance
         
         app.initialize()
         

@@ -140,7 +140,16 @@ class DeviceRegistry:
                 logger.info("Registering new device %s at %s", device_id, device_info.path)
 
                 try:
-                    device_instance = device_class(self._hardware, device_info)
+                    # StreamDock device classes expect a plain dict, not a DeviceInfo dataclass.
+                    device_info_dict = {
+                        'vendor_id': device_info.vendor_id,
+                        'product_id': device_info.product_id,
+                        'serial_number': device_info.serial_number,
+                        'path': device_info.path,
+                        'manufacturer_string': device_info.manufacturer,
+                        'product_string': device_info.product,
+                    }
+                    device_instance = device_class(self._hardware, device_info_dict)
                     tracked = TrackedDevice(
                         device_info=device_info,
                         device_instance=device_instance,

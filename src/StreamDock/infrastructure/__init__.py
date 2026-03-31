@@ -10,6 +10,7 @@ from .linux_system_interface import LinuxSystemInterface
 from .linux_window_manager import LinuxWindowManager
 from .system_interface import SystemInterface, WindowInfo
 from .usb_hardware import USBHardware
+from .usb_hotplug_monitor import USBHotplugMonitor
 from .window_interface import WindowInterface
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     'SystemInterface', 'WindowInfo', 'WindowInterface',
     'LinuxSystemInterface', 'LinuxWindowManager',
     'DeviceRegistry', 'TrackedDevice',
+    'USBHotplugMonitor',
 ]

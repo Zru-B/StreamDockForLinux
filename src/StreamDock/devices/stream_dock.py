@@ -589,6 +589,12 @@ class StreamDock(ABC):
                                         self._event_queue.put((callbacks['on_release'], (self, k)))
                 del arr
             except Exception:
-                logger.exception("Error in read loop")
+                logger.warning(
+                    "Read thread: transport error — device likely disconnected. "
+                    "Waiting for hotplug reconnect..."
+                )
                 self.run_read_thread = False
-                self.close()
+                # Do NOT call self.close() here.
+                # The HID handle will be reopened by the USBHotplugMonitor callback
+                # when the device reappears.  Calling close() here would race with
+                # that callback and leave the device in an inconsistent state.

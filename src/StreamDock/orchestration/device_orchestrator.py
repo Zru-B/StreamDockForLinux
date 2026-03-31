@@ -216,17 +216,24 @@ class DeviceOrchestrator:
             return
 
         for tracked_device in tracked_devices:
-            device_id = tracked_device.device_info.serial
+            # Handle TrackedDevice wrapper or raw device instance
+            if hasattr(tracked_device, 'device_info'):
+                device_id = tracked_device.device_info.serial or "device_0"
+                device_instance = tracked_device.device_instance
+            else:
+                device_id = getattr(tracked_device, 'serial_number', "device_0")
+                device_instance = tracked_device
+
             logger.info("Initializing device: %s", device_id)
 
-            # Store device (future: create actual device instance)
+            # Store whatever the registry gave us
             self._devices[device_id] = tracked_device
 
             # HYBRID: Call device config callback if registered
-            if self._device_config_callback and tracked_device.device_instance:
+            if self._device_config_callback and device_instance:
                 try:
                     logger.debug("Calling device config callback for %s", device_id)
-                    self._device_config_callback(tracked_device.device_instance)
+                    self._device_config_callback(device_instance)
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     logger.exception("Error in device config callback for %s: %s", device_id, e)
 

@@ -18,6 +18,7 @@ from StreamDock.infrastructure import (
     LinuxWindowManager,
     SystemInterface,
     USBHardware,
+    USBHotplugMonitor,
 )
 from StreamDock.orchestration import DeviceOrchestrator
 
@@ -65,6 +66,7 @@ class Application:
         self._hardware: Optional[HardwareInterface] = None
         self._system: Optional[SystemInterface] = None
         self._registry: Optional[DeviceRegistry] = None
+        self._hotplug_monitor: Optional[USBHotplugMonitor] = None
 
         # Business logic layer
         self._event_monitor: Optional[SystemEventMonitor] = None
@@ -108,38 +110,26 @@ class Application:
         self._hardware = USBHardware()
         self._system = LinuxSystemInterface()
         self._windows = LinuxWindowManager()
-        self._registry = None  # Simplified: not using registry for now
+        self._registry = DeviceRegistry(self._hardware)  # Tracks devices by VID:PID:Serial
         logger.debug("Infrastructure layer created")
 
-        # 2.5. Enumerate and create device
-        logger.debug("Enumerating devices...")
-        # Device VID/PID from lsusb
+        # 2.5. Enumerate and create device via registry
+        logger.debug("Enumerating devices via DeviceRegistry...")
         STREAMDECK_VID = 0x6603  # HOTSPOTEKUSB
         STREAMDECK_PID = 0x1006  # HID DEMO
-        devices = self._hardware.enumerate_devices(STREAMDECK_VID, STREAMDECK_PID)
-        logger.info("Found %d StreamDeck device(s)", len(devices))
 
-        # Create device wrapper for first device
+        from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3  # pylint: disable=import-outside-toplevel
+        device_instances = self._registry.enumerate_and_register(
+            STREAMDECK_VID, STREAMDECK_PID, StreamDock293V3
+        )
+        logger.info("Found %d StreamDeck device(s)", len(device_instances))
+
         self._device = None
-        if devices:
-            device_info = devices[0]
-            logger.info("Opening device: %s", device_info.device_id)
+        if device_instances:
+            self._device = device_instances[0]
+            logger.info("Opening device: %s", self._device.path)
 
-            # Convert DeviceInfo to dict for legacy StreamDock compatibility
-            device_dict = {
-                'vendor_id': device_info.vendor_id,
-                'product_id': device_info.product_id,
-                'serial_number': device_info.serial_number,
-                'path': device_info.path,
-                'manufacturer_string': device_info.manufacturer,
-                'product_string': device_info.product
-            }
-
-            from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3
-            self._device = StreamDock293V3(self._hardware, device_dict)
-
-            # Open device via StreamDock wrapper — this starts the HID read thread
-            # so that button press callbacks are received.
+            # Open device via StreamDock wrapper — starts HID read thread
             success = self._device.open()
             if success:
                 logger.info("✓ Device opened successfully")
@@ -176,7 +166,7 @@ class Application:
             hardware=self._hardware,
             system=self._system,
             window_manager=self._windows,
-            registry=None,
+            registry=self._registry,
             event_monitor=self._event_monitor,
             layout_manager=self._layout_manager,
             action_executor=self._action_executor
@@ -223,8 +213,66 @@ class Application:
 
             logger.info("✓ Registered device and %d layouts with orchestrator", len(all_layouts))
 
+        # 7. Start USB hotplug monitor so the device auto-reconnects on cable events
+        self._hotplug_monitor = USBHotplugMonitor(
+            vid=STREAMDECK_VID,
+            pid=STREAMDECK_PID,
+            on_connect=self._on_usb_reconnect,
+        )
+        self._hotplug_monitor.start()
+
         self._initialized = True
         logger.info("StreamDock application initialized successfully")
+
+    def _on_usb_reconnect(self) -> None:
+        """
+        Called by USBHotplugMonitor when the StreamDock is re-plugged.
+
+        Re-enumerates via DeviceRegistry (which handles path changes), reopens
+        the device, re-initialises it, and re-applies the current layout.
+        """
+        logger.info("🔌 USB reconnect event — re-enumerating device...")
+
+        if self._registry is None or self._layout_manager is None:
+            logger.warning("Reconnect: registry or layout manager not ready — skipping")
+            return
+
+        from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3  # pylint: disable=import-outside-toplevel
+
+        # Give the OS a brief moment to finish presenting the device
+        import time  # pylint: disable=import-outside-toplevel
+        time.sleep(0.5)
+
+        device_instances = self._registry.enumerate_and_register(
+            0x6603, 0x1006, StreamDock293V3
+        )
+
+        if not device_instances:
+            logger.warning("Reconnect: device not found after udev ADD — will retry on next event")
+            return
+
+        dev = device_instances[0]
+
+        # Stop the old (dead) read thread cleanly before reopening
+        if hasattr(dev, 'run_read_thread'):
+            dev.run_read_thread = False
+
+        if dev.open():
+            dev.init()
+            self._device = dev
+
+            # Re-register with orchestrator
+            device_id = "device_0"
+            self._orchestrator._devices[device_id] = dev  # pylint: disable=protected-access
+
+            # Re-apply current layout
+            if hasattr(self, '_default_layout') and self._default_layout:
+                self._default_layout.apply()
+                logger.info("✓ Device reconnected — layout '%s' re-applied", self._default_layout.name)
+            else:
+                logger.info("✓ Device reconnected (no layout to re-apply)")
+        else:
+            logger.error("Reconnect: failed to open device after udev ADD")
 
     def _configure_window_rules(self) -> None:
         """
@@ -296,6 +344,9 @@ class Application:
             return
 
         logger.info("Stopping StreamDock application...")
+
+        if self._hotplug_monitor:
+            self._hotplug_monitor.stop()
 
         if self._orchestrator:
             self._orchestrator.stop()
