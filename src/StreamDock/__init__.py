@@ -1,7 +1,5 @@
-from .key import Key
-from .layout import Layout
-from .actions import ActionType
-from .window_monitor import WindowMonitor
-from .config_loader import ConfigLoader, ConfigValidationError
+from .business_logic.action_type import ActionType
+from .domain.key import Key
+from .domain.layout import Layout
 
-__all__ = ['Key', 'Layout', 'ActionType', 'WindowMonitor', 'ConfigLoader', 'ConfigValidationError']
+__all__ = ['Key', 'Layout', 'ActionType']
