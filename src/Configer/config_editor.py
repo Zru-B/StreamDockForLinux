@@ -8,8 +8,9 @@ Usage:
 """
 
 import sys
-from PyQt6.QtWidgets import QApplication
+
 from config_editor_main import ConfigEditorMainWindow
+from PyQt6.QtWidgets import QApplication
 
 
 def main():

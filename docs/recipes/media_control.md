@@ -57,6 +57,6 @@ streamdock:
 ```
 
 ## How it works
-- Uses the `DBUS` action type to send standard Linux MPRIS commands. This works with Spotify, VLC, YouTube Music (desktop), and system volume.
+- Uses the `DBUS` action type to send standard MPRIS commands over the D-Bus **session bus**. The target player is discovered dynamically — whichever MPRIS-compatible player is active (tested with Spotify and VLC). If no player is running, the button is a silent no-op.
 - Demonstrates **Text Keys** (`VolUp`, `VolDown`) for when you don't have an icon handy.
 - Uses `text_color` and `background_color` for styling.

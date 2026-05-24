@@ -38,13 +38,15 @@ Optional global settings for the application.
 
 ```yaml
 settings:
-  brightness: 15                # Device brightness (0-100), default: 50
-  lock_monitor: true            # Auto turn off when computer locked, default: true
-  double_press_interval: 0.3    # Time window in seconds for double-press detection
+  brightness: 15                   # Device brightness (0-100), default: 50
+  lock_monitor: true               # Auto turn off when computer locked, default: true
+  lock_verification_delay: 2.0     # Seconds to wait before confirming lock, default: 2.0
+  double_press_interval: 0.3       # Time window in seconds for double-press detection
 ```
 
 - **brightness:** Controls the LED brightness of the device.
 - **lock_monitor:** Requires `dbus-python`. Turns off screen when system is locked.
+- **lock_verification_delay:** Time to wait before confirming a lock event (0.1-30s). Prevents false lock detection when user aborts lock screen. Higher values are more reliable but slower to respond.
 - **double_press_interval:** Valid range 0.1-2.0s. Lower is faster but harder to trigger.
 
 ---
@@ -63,23 +65,25 @@ keys:
       - "EXECUTE_COMMAND": ["firefox"]
 ```
 
-### Text-Based Keys
+### Text-Based & Hybrid Keys
 
-Useful if you don't have an icon.
+Keys can display an icon, text, or both. If both are provided, the text is layered on top of the icon.
 
 ```yaml
 keys:
   Settings:
-    text: "Settings"                # Required
+    icon: "../img/settings.png"      # Optional
+    text: "Settings"                # Optional
     text_color: "white"             # Optional (color name or hex)
-    background_color: "black"       # Optional
+    background_color: "black"       # Optional (used for text-only mode)
     font_size: 20                   # Optional (pixels)
     bold: true                      # Optional
+    text_position: "bottom"         # Optional: "top", "center", "bottom" (default: bottom)
     on_press_actions:
       - "EXECUTE_COMMAND": ["systemsettings"]
 ```
 
-> **Note:** A key must have either `icon` OR `text`, not both.
+> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image. If no icon is present, the text is centred by default.
 
 ### Action Triggers
 
@@ -139,10 +143,32 @@ Automatically switch layouts based on the active window.
 ```yaml
 windows_rules:
   Firefox_Rule:
-    window_name: "Firefox"      # Pattern to match
+    window_name: "Firefox"      # Single string pattern
     layout: "Browser_Layout"    # Layout to activate
     match_field: "class"        # Field to match against
+
+  Browsers_List_Rule:
+    window_name:                # List of strings
+      - "Firefox"
+      - "Chromium"
+      - "Vivaldi"
+    layout: "Browser_Layout"
+
+  Browser_Regex_Rule:
+    window_name: "^Chrom.*"     # Single regex pattern
+    is_regex: true              # Treat patterns as regex (default: false)
+    layout: "Chrome_Layout"
+
+  Browser_List_Regex_Rule:
+    window_name:                # List of strings and regex patterns
+      - "^Chrom.*"
+      - "^Vivaldi.*"
+      - "Firefox"
+    is_regex: true              # Treat list items as regex (default: false)
+    layout: "Browser_Layout"
 ```
+
+> **Note:** When `is_regex` is `true`, all items in the list are compiled as case-insensitive regex pattern. Simple strings (e.g., `"Firefox"`) will still work as expected (matching anywhere in the target field), essentially behaving like a substring match.
 
 **Match fields:**
 - `class` (default): Application class name (e.g., `firefox`, `Code`).
