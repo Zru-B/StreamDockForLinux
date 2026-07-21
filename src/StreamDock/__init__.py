@@ -1,5 +1,7 @@
-from .business_logic.action_type import ActionType
-from .domain.key import Key
-from .domain.layout import Layout
+"""Top-level package for StreamDock.
 
-__all__ = ['Key', 'Layout', 'ActionType']
+Keep this module lightweight. Importing ``StreamDock`` should not trigger
+hardware-related imports before dependency checks run.
+"""
+
+__all__ = ["Key", "Layout", "ActionType"]
