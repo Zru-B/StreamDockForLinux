@@ -1,0 +1,22 @@
+[Unit]
+Description=StreamDock Application
+# Wait for the graphical session so D-Bus and the display are available
+# (the app uses D-Bus for window detection and lock/unlock monitoring).
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=@@PROJECT_DIR@@/src
+ExecStart=@@PROJECT_DIR@@/.venv/bin/python main.py
+# Restart up to 3 times per minute if the process exits unexpectedly.
+# Avoids a crash-loop if the device is removed while the service is running.
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Install]
+# Enable with: systemctl --user enable streamdock.service
+# to also start the app automatically at login.
+WantedBy=graphical-session.target

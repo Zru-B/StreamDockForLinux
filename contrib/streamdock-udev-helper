@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# streamdock-udev-helper — called by the udev rule when the StreamDock device
+# is plugged in or removed.
+#
+# Finds the active graphical-session user dynamically (no hardcoded username)
+# and starts or stops their streamdock.service systemd user unit.
+#
+# Installed to /usr/local/bin/ by scripts/install.sh.
+#
+# Usage: streamdock-udev-helper <start|stop>
+
+ACTION="${1:?Usage: streamdock-udev-helper <start|stop>}"
+
+# Find the user of the first active graphical (seat0) session, excluding root.
+ACTIVE_USER=$(loginctl list-sessions --no-legend 2>/dev/null \
+    | awk '$3 != "root" && $4 == "seat0" {print $3; exit}')
+
+# Fall back to any non-root session if no seat0 session is found
+# (e.g. on systems without multi-seat support or Wayland compositors that
+# don't register a seat).
+if [ -z "$ACTIVE_USER" ]; then
+    ACTIVE_USER=$(loginctl list-sessions --no-legend 2>/dev/null \
+        | awk '$3 != "root" {print $3; exit}')
+fi
+
+[ -z "$ACTIVE_USER" ] && exit 0
+
+# --machine=USER@ lets root control a user's systemd session manager
+# without needing the session D-Bus socket path.
+systemctl --user --machine="${ACTIVE_USER}@" "${ACTION}" streamdock.service \
+    2>/dev/null || true

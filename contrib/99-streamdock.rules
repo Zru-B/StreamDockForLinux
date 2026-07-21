@@ -1,0 +1,21 @@
+# StreamDock (HOTSPOTEKUSB) udev rules
+#
+# Do NOT copy this file manually — use scripts/install.sh instead.
+# That script also installs the streamdock-udev-helper and the systemd user service.
+#
+# What this file does:
+#   1. Grants the "plugdev" group rw access to the USB device so the application
+#      can open it via libhidapi-libusb without running as root.
+#   2. Calls streamdock-udev-helper on plug/unplug to start/stop the user service.
+
+# Grant plugdev group access on all events for this device
+SUBSYSTEM=="usb", ATTR{idVendor}=="6603", ATTR{idProduct}=="1006", \
+    MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Auto-start the application when the device is connected
+ACTION=="add",    SUBSYSTEM=="usb", ATTR{idVendor}=="6603", ATTR{idProduct}=="1006", \
+    RUN+="/usr/local/bin/streamdock-udev-helper start"
+
+# Auto-stop the application when the device is disconnected
+ACTION=="remove", SUBSYSTEM=="usb", ATTR{idVendor}=="6603", ATTR{idProduct}=="1006", \
+    RUN+="/usr/local/bin/streamdock-udev-helper stop"
