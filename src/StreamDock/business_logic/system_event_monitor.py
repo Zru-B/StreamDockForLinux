@@ -149,6 +149,17 @@ class SystemEventMonitor:
             lock_callback = self._on_lock_state_changed
             success = self._system.start_lock_monitor(lock_callback)
 
+            # Seed the internal lock state from the real system state before
+            # subscribing to D-Bus change signals.  Without this, if the system
+            # is already locked when monitoring starts (e.g. the app restarted
+            # because the device was reconnected while the screen was locked),
+            # the debounce check in _on_lock_state_changed would see
+            # current_locked==False==is_locked and swallow the subsequent
+            # unlock signal, leaving the orchestrator stuck in the wrong state.
+            self._current_state['is_locked'] = self._system.poll_lock_state()
+            if self._current_state['is_locked']:
+                logger.info("Lock state initialised: system is currently locked")
+
             if success:
                 logger.info("System event monitoring started")
             else:

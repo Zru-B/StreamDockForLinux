@@ -161,6 +161,18 @@ class DeviceOrchestrator:
             # Start system event monitoring
             success = self._event_monitor.start_monitoring()
 
+            # Security: if the system is already locked when the application
+            # starts (device reconnected while screen was locked), apply the
+            # locked state immediately so the device screen is never exposed.
+            # poll_lock_state() is called here rather than relying on a D-Bus
+            # change signal, which would never fire because there was no change.
+            if self._devices and self._system.poll_lock_state():
+                logger.warning(
+                    "System is locked at startup — applying lock state immediately "
+                    "(device reconnected while screen was locked)"
+                )
+                self._on_lock(SystemEvent.LOCK)
+
             if success:
                 logger.info("DeviceOrchestrator started successfully")
             else:
