@@ -206,14 +206,18 @@ class LinuxWindowManager(WindowInterface):
             regex_pattern = self._to_case_insensitive_regex(name)
             # Try kdotool first
             if self.is_kdotool_available():
-                r = subprocess.run(
-                    ["kdotool", "search", "--name", regex_pattern],
-                    capture_output=True, text=True, timeout=1, check=False,
-                )
-                if r.returncode == 0:
-                    lines = r.stdout.strip().splitlines()
-                    if lines:
-                        return lines[0].strip()
+                try:
+                    r = subprocess.run(
+                        ["kdotool", "search", "--name", regex_pattern],
+                        capture_output=True, text=True, timeout=1, check=False,
+                    )
+                    if r.returncode == 0:
+                        lines = r.stdout.strip().splitlines()
+                        if lines:
+                            return lines[0].strip()
+                except subprocess.TimeoutExpired:
+                    logger.warning("kdotool search timed out — disabling kdotool")
+                    self._kdotool_available = False
 
             # Fallback to qdbus scripting if Wayland native and kdotool is busted
             if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
@@ -326,32 +330,39 @@ class LinuxWindowManager(WindowInterface):
     # ------------------------------------------------------------------ #
 
     def _kdotool_get_active_window(self) -> Optional[WindowInfo]:
-        r = subprocess.run(
-            ["kdotool", "getactivewindow"],
-            capture_output=True, text=True, timeout=1, check=False,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        try:
+            r = subprocess.run(
+                ["kdotool", "getactivewindow"],
+                capture_output=True, text=True, timeout=1, check=False,
+            )
+            if r.returncode != 0 or not r.stdout.strip():
+                return None
+            window_id = r.stdout.strip()
+
+            r_name = subprocess.run(
+                ["kdotool", "getactivewindow", "getwindowname"],
+                capture_output=True, text=True, timeout=1, check=False,
+            )
+            title = r_name.stdout.strip() if r_name.returncode == 0 else ""
+
+            r_class = subprocess.run(
+                ["kdotool", "getactivewindow", "getwindowclassname"],
+                capture_output=True, text=True, timeout=1, check=False,
+            )
+            if r_class.returncode == 0 and r_class.stdout.strip():
+                class_ = self.normalize_class_name(r_class.stdout.strip(), title)
+            else:
+                class_ = self.extract_app_from_title(title)
+
+            logger.debug("kdotool: title=%s class=%s", title, class_)
+            return WindowInfo(title=title, class_=class_, raw=title,
+                              method="kdotool", window_id=window_id)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "kdotool timed out — disabling for this session; falling back to qdbus/xdotool"
+            )
+            self._kdotool_available = False
             return None
-        window_id = r.stdout.strip()
-
-        r_name = subprocess.run(
-            ["kdotool", "getactivewindow", "getwindowname"],
-            capture_output=True, text=True, timeout=1, check=False,
-        )
-        title = r_name.stdout.strip() if r_name.returncode == 0 else ""
-
-        r_class = subprocess.run(
-            ["kdotool", "getactivewindow", "getwindowclassname"],
-            capture_output=True, text=True, timeout=1, check=False,
-        )
-        if r_class.returncode == 0 and r_class.stdout.strip():
-            class_ = self.normalize_class_name(r_class.stdout.strip(), title)
-        else:
-            class_ = self.extract_app_from_title(title)
-
-        logger.debug("kdotool: title=%s class=%s", title, class_)
-        return WindowInfo(title=title, class_=class_, raw=title,
-                          method="kdotool", window_id=window_id)
 
     @staticmethod
     def _to_case_insensitive_regex(text: str) -> str:
@@ -362,19 +373,29 @@ class LinuxWindowManager(WindowInterface):
 
     def _kdotool_search_by_class(self, class_name: str) -> Optional[str]:
         regex_pattern = self._to_case_insensitive_regex(class_name)
-        r = subprocess.run(
-            ["kdotool", "search", "--class", regex_pattern],
-            capture_output=True, text=True, timeout=2, check=False,
-        )
+        try:
+            r = subprocess.run(
+                ["kdotool", "search", "--class", regex_pattern],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("kdotool search timed out — disabling kdotool")
+            self._kdotool_available = False
+            return None
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip().split("\n")[0]
         return None
 
     def _kdotool_activate(self, window_id: str) -> bool:
-        r = subprocess.run(
-            ["kdotool", "windowactivate", window_id],
-            capture_output=True, text=True, timeout=2, check=False,
-        )
+        try:
+            r = subprocess.run(
+                ["kdotool", "windowactivate", window_id],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("kdotool windowactivate timed out — disabling kdotool")
+            self._kdotool_available = False
+            return False
         return r.returncode == 0
 
     # ------------------------------------------------------------------ #
