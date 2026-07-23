@@ -172,6 +172,13 @@ class DeviceOrchestrator:
                     "(device reconnected while screen was locked)"
                 )
                 self._on_lock(SystemEvent.LOCK)
+            elif self._devices:
+                # Apply the context-aware layout for the current active window
+                # immediately at startup, without waiting for the first poll cycle.
+                # If window detection fails (e.g. display not yet ready), the
+                # default layout applied during initialize() remains on-screen.
+                logger.debug("Applying initial window-based layout at startup")
+                self._on_window_changed(SystemEvent.WINDOW_CHANGED)
 
             if success:
                 logger.info("DeviceOrchestrator started successfully")
