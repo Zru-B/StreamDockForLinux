@@ -107,3 +107,53 @@ To exit the virtual environment when done:
 ```bash
 deactivate
 ```
+
+---
+
+## Device Permissions & Auto-start (Linux)
+
+By default, the USB device is only accessible as root. The `scripts/install.sh` script handles everything in one step:
+
+```bash
+./scripts/install.sh
+```
+
+This installs:
+
+| File | Destination | Purpose |
+|---|---|---|
+| `contrib/99-streamdock.rules` | `/etc/udev/rules.d/` | Grants `plugdev` group write access; triggers start/stop on plug/unplug |
+| `contrib/streamdock-udev-helper` | `/usr/local/bin/` | Helper called by udev — finds the active user and controls their service |
+| `contrib/streamdock.service.template` | `~/.config/systemd/user/streamdock.service` | Systemd user service (paths filled in by the script) |
+
+### Why a systemd user service?
+
+udev rules run as root with no access to the user's graphical session. The application needs the user's D-Bus session for window detection and lock/unlock monitoring. The helper script uses `systemctl --user --machine=USER@` to bridge from root (udev) into the correct user session — without hardcoding any username.
+
+### Optional: start at login
+
+To also launch StreamDock when you log in (not just when the device is plugged in):
+
+```bash
+systemctl --user enable streamdock.service
+```
+
+### Useful commands
+
+```bash
+# Check if the service is running
+systemctl --user status streamdock.service
+
+# Follow live logs
+journalctl --user -u streamdock.service -f
+
+# Start / stop manually
+systemctl --user start streamdock.service
+systemctl --user stop streamdock.service
+```
+
+### Uninstall
+
+```bash
+./scripts/uninstall.sh
+```

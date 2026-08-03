@@ -8,8 +8,6 @@ import os
 import sys
 import time
 
-from StreamDock.application import Application
-from StreamDock.application.configuration_manager import ConfigValidationError
 from StreamDock.dependency_check import DependencyChecker
 
 
@@ -48,11 +46,13 @@ def check_dependencies(args):
         sys.exit(0)
 
     # Log summary and check for critical failures
+    dependency_checker.run_check()
     dependency_summary = dependency_checker.get_summary()
     logging.info(dependency_summary)
 
     if dependency_checker.has_critical_failures():
-        logging.error("Critical dependencies missing. Run with --check-deps for details.")
+        logging.error("Critical dependencies missing. Full report:")
+        dependency_checker.print_report()
         sys.exit(1)
 
 
@@ -90,6 +90,11 @@ def main():
     # Determine config path
     config_file = determine_config_path(args)
     logging.info("Using configuration file: %s", config_file)
+
+    # Import the application only after dependency checks pass.
+    # This prevents import-time crashes when shared libraries are missing.
+    from StreamDock.application import Application
+    from StreamDock.application.configuration_manager import ConfigValidationError
 
     # Create application
     try:
