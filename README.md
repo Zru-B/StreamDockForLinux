@@ -38,6 +38,10 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
     cd src
     python main.py
     ```
+    This opens the configuration window, which also drives the device: pick a
+    device, edit your layouts, and press **Apply to Device**. Closing the
+    window keeps it running in the system tray. Add `--headless` to run the
+    controller with no GUI.
 
 ---
 
@@ -48,6 +52,7 @@ The documentation is organized into the following sections:
 ### Getting Started
 *   [**Installation Guide**](docs/installation.md) - Detailed dependency lists and setup steps.
 *   [**Device Setup**](docs/device_setup.md) - **Important:** `udev` rules and hardware configuration.
+*   [**The Application**](docs/gui.md) - Device selection, applying configs, and the system tray.
 *   [**Troubleshooting**](docs/troubleshooting.md) - Fixes for common issues (Device not found, Permissions).
 *   **Dependency Check**: Run `python src/main.py --check-deps` to verify your environment readiness.
 

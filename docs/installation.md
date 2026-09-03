@@ -98,9 +98,12 @@ pip install -r requirements-dev.txt
 # For production only:
 pip install -r requirements.txt
 
-# 4. Run the application
+# 4. Run the application (opens the configuration GUI)
 cd src
 python main.py
+
+# Or run the controller with no GUI:
+python main.py --headless
 ```
 
 To exit the virtual environment when done:
@@ -110,7 +113,7 @@ deactivate
 
 ---
 
-## Device Permissions & Auto-start (Linux)
+## Device Permissions & Launcher (Linux)
 
 By default, the USB device is only accessible as root. The `scripts/install.sh` script handles everything in one step:
 
@@ -122,35 +125,33 @@ This installs:
 
 | File | Destination | Purpose |
 |---|---|---|
-| `contrib/99-streamdock.rules` | `/etc/udev/rules.d/` | Grants `plugdev` group write access; triggers start/stop on plug/unplug |
-| `contrib/streamdock-udev-helper` | `/usr/local/bin/` | Helper called by udev — finds the active user and controls their service |
-| `contrib/streamdock.service.template` | `~/.config/systemd/user/streamdock.service` | Systemd user service (paths filled in by the script) |
+| `contrib/99-streamdock.rules` | `/etc/udev/rules.d/` | Grants the `plugdev` group access to the USB and hidraw nodes |
+| `contrib/streamdock.desktop.template` | `~/.local/share/applications/streamdock.desktop` | Application launcher (paths filled in by the script) |
+| `contrib/streamdock.svg` | `~/.local/share/icons/hicolor/scalable/apps/` | Launcher and tray icon |
 
-### Why a systemd user service?
-
-udev rules run as root with no access to the user's graphical session. The application needs the user's D-Bus session for window detection and lock/unlock monitoring. The helper script uses `systemctl --user --machine=USER@` to bridge from root (udev) into the correct user session — without hardcoding any username.
-
-### Optional: start at login
-
-To also launch StreamDock when you log in (not just when the device is plugged in):
+You also need to be in the `plugdev` group; the script tells you if you are not:
 
 ```bash
-systemctl --user enable streamdock.service
+sudo usermod -aG plugdev $USER   # then log out and back in
 ```
 
-### Useful commands
+### Starting at login
+
+StreamDock is a normal desktop application, so use your desktop's own
+autostart settings to launch it at login. Add `--minimized` to start it
+straight into the system tray:
 
 ```bash
-# Check if the service is running
-systemctl --user status streamdock.service
-
-# Follow live logs
-journalctl --user -u streamdock.service -f
-
-# Start / stop manually
-systemctl --user start streamdock.service
-systemctl --user stop streamdock.service
+python src/main.py --minimized
 ```
+
+### Upgrading from the udev auto-start
+
+Earlier versions started a `streamdock.service` from a udev rule. That is gone:
+the application is now a GUI you launch, and two processes competing for the
+same device would deadlock over the HID handle. Run `./scripts/uninstall.sh`
+once to remove the leftover service and helper — `install.sh` warns you if it
+finds one still installed.
 
 ### Uninstall
 

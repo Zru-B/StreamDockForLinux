@@ -77,3 +77,42 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
 
 **"Icon file not found"**
 - Paths are relative to the `config.yml` file location (or the working directory if running from source). Use absolute paths if unsure.
+
+
+## The application window
+
+### No tray icon appears
+
+GNOME removed built-in tray support; install the **AppIndicator and KStatusNotifierItem Support**
+extension. Without a tray, StreamDock deliberately quits when you close the
+window instead of hiding somewhere you cannot reach it.
+
+### "Another StreamDock process already controls the device"
+
+Only one process can hold the device. Either another window is open, a
+`--headless` run is still going, or a `streamdock.service` left over from an
+older version is running. Remove the old service with:
+
+```bash
+./scripts/uninstall.sh
+```
+
+You can still edit and save configurations while this message is showing;
+only connecting is disabled.
+
+### "Could not load the Qt platform plugin xcb"
+
+The Qt runtime libraries are missing. On Debian/Ubuntu:
+
+```bash
+sudo apt install libxcb-cursor0 libxcb-xinerama0
+```
+
+On Arch these come with the `qt6-base` package.
+
+### Apply says the configuration is invalid
+
+The same validation the controller applies at startup runs before anything
+reaches the device, so the message is the exact reason the device would have
+rejected it — most often an icon path that does not exist. Icon paths are
+resolved relative to the configuration file's own directory.

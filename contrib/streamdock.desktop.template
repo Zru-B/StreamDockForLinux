@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=StreamDock
+GenericName=Stream Dock Controller
+Comment=Configure and drive a Stream Dock macro pad
+Exec=@@PYTHON@@ @@PROJECT_DIR@@/src/main.py
+Icon=streamdock
+Terminal=false
+Categories=Utility;Settings;HardwareSettings;
+Keywords=streamdock;mirabox;macro;keypad;
+StartupWMClass=streamdock

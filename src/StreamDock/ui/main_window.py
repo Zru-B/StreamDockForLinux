@@ -489,15 +489,7 @@ class MainWindow(QMainWindow):
             return
 
         if self.modified:
-            reply = QMessageBox.question(
-                self,
-                "Unsaved Changes",
-                "You have unsaved changes. Do you want to save before closing?",
-                QMessageBox.StandardButton.Save | 
-                QMessageBox.StandardButton.Discard | 
-                QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save
-            )
+            reply = self.ask_about_unsaved_changes()
             
             if reply == QMessageBox.StandardButton.Save:
                 # Try to save, only close if successful
@@ -594,6 +586,26 @@ class MainWindow(QMainWindow):
     def on_layout_changed(self, layout_name: str) -> None:
         """Report the layout the device switched to."""
         self.statusBar().showMessage(f"Device layout: {layout_name}", 5000)
+
+    def ask_about_unsaved_changes(self):
+        """
+        Prompt before discarding unsaved edits.
+
+        A method rather than an inline call so tests can substitute an answer
+        without patching QMessageBox itself.
+
+        Returns:
+            The QMessageBox.StandardButton the user chose
+        """
+        return QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes. Do you want to save before closing?",
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save
+        )
 
     def request_quit(self) -> None:
         """
