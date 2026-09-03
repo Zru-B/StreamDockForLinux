@@ -21,6 +21,24 @@ startup when a configuration is loaded.
 If the list is empty, check that you are in the `plugdev` group and that the
 udev rule is installed — see [Installation](installation.md).
 
+## Plugging and unplugging
+
+The device list keeps itself up to date. Unplug the device you are driving and
+the application releases it and says so; plug it back in and it reconnects and
+re-applies your configuration on its own. Plug in a device while nothing is
+connected and it connects to that one.
+
+Two rules keep this from being surprising:
+
+- Pressing **Disconnect** sticks. Replugging will not undo an explicit
+  disconnect — press Connect when you want it back.
+- If you picked a specific device from the list, only *that* device is
+  reconnected. The application will not silently move to a different dock.
+
+This works through udev, falling back to polling every couple of seconds if
+pyudev is unavailable. It applies to `--headless` too, which likewise waits
+for a device rather than exiting when none is attached.
+
 ## Applying a configuration
 
 **Apply to Device** sends what is in the window, including unsaved edits, so
@@ -34,6 +52,14 @@ config whose icon does not exist yet is still worth keeping.
 
 Applying does not disconnect the device. Keys are re-rendered in place, so
 there is a brief flicker rather than the screen going dark.
+
+**Apply is only enabled when it would do something.** After connecting, or
+right after an apply, the device already matches what is on screen, so the
+button is greyed out. It becomes available again as soon as you edit
+something, open a different configuration file, or the device is unplugged and
+reconnected. Note that saving does not enable it and applying does not clear
+the modified marker in the title bar — writing the file and pushing to the
+device stay independent.
 
 ## The default configuration
 

@@ -100,6 +100,19 @@ older version is running. Remove the old service with:
 You can still edit and save configurations while this message is showing;
 only connecting is disabled.
 
+### The device is listed but connecting fails
+
+Most often another process already has it open — a `--headless` run, a second
+window, or a `streamdock.service` left over from an older version. The
+application now says so explicitly rather than reporting a connection that is
+not really there.
+
+### Unplugging does not get noticed
+
+Hotplug uses udev via `pyudev`. If it is not installed the application falls
+back to polling every couple of seconds, which is slower but still works;
+`python src/main.py --check-deps` reports whether `pyudev` is present.
+
 ### "Could not load the Qt platform plugin xcb"
 
 The Qt runtime libraries are missing. On Debian/Ubuntu:

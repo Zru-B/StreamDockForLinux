@@ -15,6 +15,7 @@ from StreamDock.ui.dialogs import (
     WindowRuleDialog,
 )
 from StreamDock.application.config_document import (
+    DEFAULT_BRIGHTNESS,
     ConfigDocument,
     KeyDefinition,
     Layout,
@@ -137,6 +138,7 @@ class MainWindow(QMainWindow):
     disconnect_requested = pyqtSignal()
     apply_config_requested = pyqtSignal(dict, str)  # document, config_path
     refresh_devices_requested = pyqtSignal()
+    watch_devices_requested = pyqtSignal()
 
     quit_requested = pyqtSignal()
     hidden_to_tray = pyqtSignal()
@@ -152,6 +154,10 @@ class MainWindow(QMainWindow):
         # the window becomes unreachable.
         self.tray_available = False
         self._quitting = False
+        # The device already has this configuration, so Apply has nothing to
+        # do until something changes or a different file is opened.
+        self._applied_path = None
+        self._needs_apply = False
         
         self.setWindowTitle("StreamDock Configuration Editor")
         self.setMinimumSize(1200, 800)
@@ -212,11 +218,16 @@ class MainWindow(QMainWindow):
         settings_group = QGroupBox("Device Settings")
         settings_layout = QFormLayout()
         settings_layout.setSpacing(12)
+        settings_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         
         self.brightness_spin = QSpinBox()
         self.brightness_spin.setRange(0, 100)
-        self.brightness_spin.setValue(15)
+        self.brightness_spin.setValue(DEFAULT_BRIGHTNESS)
         self.brightness_spin.setSuffix("%")
+        # A form layout stretches its fields; a percentage does not need the
+        # full width of the window.
+        self.brightness_spin.setFixedWidth(110)
         self.brightness_spin.valueChanged.connect(self.on_settings_changed)
         settings_layout.addRow("Brightness:", self.brightness_spin)
         
@@ -381,6 +392,8 @@ class MainWindow(QMainWindow):
         """
         try:
             self.config = ConfigDocument.load(file_path)
+            self.set_needs_apply(
+                os.path.abspath(file_path) != (self._applied_path or ""))
             
             if set_as_current_file:
                 self.config_file_path = file_path
@@ -461,7 +474,18 @@ class MainWindow(QMainWindow):
     def mark_modified(self):
         """Mark the configuration as modified"""
         self.modified = True
+        self.set_needs_apply(True)
         self.update_window_title()
+
+    def set_needs_apply(self, needs_apply: bool) -> None:
+        """
+        Record whether the device is out of date with the open configuration.
+
+        Args:
+            needs_apply: True when the device would change if Apply were used
+        """
+        self._needs_apply = needs_apply
+        self.device_bar.set_needs_apply(needs_apply)
     
     def update_window_title(self):
         """Update window title to reflect current file and modified state"""
@@ -575,7 +599,9 @@ class MainWindow(QMainWindow):
             f"{state.capitalize()}{f' — {detail}' if detail else ''}", 5000)
 
     def on_config_applied(self, config_path: str) -> None:
-        """Report a successful apply."""
+        """Record that the device now matches the open configuration."""
+        self._applied_path = os.path.abspath(config_path) if config_path else None
+        self.set_needs_apply(False)
         self.statusBar().showMessage("Configuration applied to device", 5000)
 
     def on_device_error(self, title: str, message: str) -> None:
@@ -586,6 +612,15 @@ class MainWindow(QMainWindow):
     def on_layout_changed(self, layout_name: str) -> None:
         """Report the layout the device switched to."""
         self.statusBar().showMessage(f"Device layout: {layout_name}", 5000)
+
+    def on_device_attached(self, label: str) -> None:
+        """Report a device being plugged in."""
+        self.statusBar().showMessage(f"Device connected: {label}", 5000)
+
+    def on_device_detached(self, label: str) -> None:
+        """Report a device being unplugged."""
+        self._applied_path = None
+        self.statusBar().showMessage(f"Device unplugged: {label}", 8000)
 
     def ask_about_unsaved_changes(self):
         """
@@ -856,6 +891,7 @@ class MainWindow(QMainWindow):
         
         # Set this layout as default
         self.config.layouts[layout_name].is_default = True
+        self.mark_modified()
         
         # Refresh the layout list to show the new default
         self.update_layout_list()
@@ -1023,6 +1059,7 @@ class MainWindow(QMainWindow):
             
             # Update key definition
             self.config.add_key(new_key_def.name, new_key_def)
+            self.mark_modified()
             
             # Refresh display
             self.display_layout(self.current_layout)

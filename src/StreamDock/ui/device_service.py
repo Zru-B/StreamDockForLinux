@@ -38,6 +38,7 @@ from StreamDock.application.device_discovery import (
     device_label,
     discover_devices,
 )
+from StreamDock.application.device_watcher import DeviceWatcher
 from StreamDock.infrastructure import USBHardware
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 
@@ -64,6 +65,12 @@ class DeviceService(QObject):
     layout_changed = pyqtSignal(str)               # layout name
     error_occurred = pyqtSignal(str, str)          # title, message
     busy_changed = pyqtSignal(bool)
+    device_attached = pyqtSignal(str)              # label of a device just plugged in
+    device_detached = pyqtSignal(str)              # label of the device that vanished
+
+    # Emitted from the watcher thread so the reaction runs as a queued slot on
+    # the worker, never on whichever thread udev happened to notify.
+    _devices_changed = pyqtSignal(list)
 
     def __init__(self, application_factory=Application,
                  hardware_factory=USBHardware, parent: Optional[QObject] = None):
@@ -80,6 +87,15 @@ class DeviceService(QObject):
         self._hardware_factory = hardware_factory
         self._app: Optional[Application] = None
         self._devices: List[DeviceInfo] = []
+        self._watcher: Optional[DeviceWatcher] = None
+        # Remembered so hotplug can reconnect the same device with the same
+        # configuration without asking the window again.
+        self._config_path: str = ""
+        self._requested_device_id: str = ""
+        # An explicit Disconnect must not be undone by the next udev event.
+        self._user_disconnected: bool = False
+
+        self._devices_changed.connect(self._on_devices_changed)
 
     # ── queries ───────────────────────────────────────────────────────────
 
@@ -97,8 +113,13 @@ class DeviceService(QObject):
     def refresh_devices(self) -> None:
         """Re-enumerate and publish the device list."""
         try:
-            hardware = self._app.get_hardware() if self._app else self._hardware_factory()
-            self._devices = discover_devices(hardware)
+            if self._watcher is not None:
+                self._watcher.refresh()
+                self._devices = self._watcher.devices()
+            else:
+                hardware = (self._app.get_hardware() if self._app
+                            else self._hardware_factory())
+                self._devices = discover_devices(hardware)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error enumerating devices: %s", e)
             self._devices = []
@@ -125,6 +146,10 @@ class DeviceService(QObject):
             self.connection_state_changed.emit(STATE_DISCONNECTED, "No configuration")
             return
 
+        self._config_path = config_path
+        self._requested_device_id = device_id
+        self._user_disconnected = False
+
         device_info = self._resolve(device_id)
         if device_info is None:
             self.connection_state_changed.emit(STATE_DISCONNECTED, "No device found")
@@ -142,6 +167,13 @@ class DeviceService(QObject):
             )
             if not app.start():
                 raise RuntimeError("The device runtime failed to start")
+
+            # start() succeeds even when the device could not be opened, which
+            # would otherwise show as "Connected" with dead hardware.
+            if app.get_device() is None:
+                raise RuntimeError(
+                    "The device could not be opened. Another process may be "
+                    "using it, or you may lack permission to access it.")
 
             self._app = app
             self.connection_state_changed.emit(STATE_CONNECTED, device_label(device_info))
@@ -166,9 +198,19 @@ class DeviceService(QObject):
 
     @pyqtSlot()
     def disconnect_device(self) -> None:
-        """Stop the runtime and release the device."""
+        """Stop the runtime and release the device, at the user's request."""
+        self._user_disconnected = True
+        self._release(detail="")
+
+    def _release(self, detail: str = "") -> None:
+        """
+        Stop the runtime and release the device.
+
+        Args:
+            detail: Text for the disconnected state, e.g. why it happened
+        """
         if self._app is None:
-            self.connection_state_changed.emit(STATE_DISCONNECTED, "")
+            self.connection_state_changed.emit(STATE_DISCONNECTED, detail)
             return
 
         self.busy_changed.emit(True)
@@ -180,7 +222,7 @@ class DeviceService(QObject):
         finally:
             self._app = None
             self.busy_changed.emit(False)
-            self.connection_state_changed.emit(STATE_DISCONNECTED, "")
+            self.connection_state_changed.emit(STATE_DISCONNECTED, detail)
 
     @pyqtSlot(dict, str)
     def apply_config(self, raw_document: Dict[str, Any], config_path: str) -> None:
@@ -246,8 +288,79 @@ class DeviceService(QObject):
             self.error_occurred.emit("Could not set brightness", str(e))
 
     @pyqtSlot()
+    def start_watching(self) -> None:
+        """Begin reacting to devices being plugged in and unplugged."""
+        if self._watcher is not None:
+            return
+
+        # Hop to the worker thread via a signal: udev notifies on its own
+        # thread, and the reaction opens and closes devices.
+        self._watcher = DeviceWatcher(self._devices_changed.emit)
+        self._watcher.start()
+        self._devices = self._watcher.devices()
+        self.devices_discovered.emit(list(self._devices))
+
+    @pyqtSlot(list)
+    def _on_devices_changed(self, devices: List[DeviceInfo]) -> None:
+        """
+        React to the attached device set changing.
+
+        Args:
+            devices: The devices now attached
+        """
+        previous = {device_key(d) for d in self._devices}
+        current = {device_key(d): d for d in devices}
+        self._devices = list(devices)
+        self.devices_discovered.emit(list(devices))
+
+        connected = self.current_device()
+        if connected is not None and device_key(connected) not in current:
+            logger.info("Connected device was unplugged: %s", device_label(connected))
+            self.device_detached.emit(device_label(connected))
+            # Not a user disconnect: reconnect when it comes back.
+            self._release(detail=f"{device_label(connected)} was unplugged")
+            self._reconnect_if_possible(current)
+            return
+
+        for key, device in current.items():
+            if key not in previous:
+                logger.info("Device attached: %s", device_label(device))
+                self.device_attached.emit(device_label(device))
+
+        if self._app is None:
+            self._reconnect_if_possible(current)
+
+    def _reconnect_if_possible(self, current: dict) -> None:
+        """
+        Connect to a newly available device when that is what the user wants.
+
+        Args:
+            current: device_key -> DeviceInfo for everything attached
+        """
+        if self._app is not None or self._user_disconnected or not self._config_path:
+            return
+        if not current:
+            return
+
+        # A device the user picked explicitly is the only one worth
+        # reconnecting to; silently moving to a different dock would be
+        # surprising. With no explicit choice, any device will do.
+        if self._requested_device_id:
+            if self._requested_device_id not in current:
+                return
+            target = self._requested_device_id
+        else:
+            target = ""
+
+        logger.info("Device available again; reconnecting")
+        self.connect_device(target, self._config_path)
+
+    @pyqtSlot()
     def shutdown(self) -> None:
         """Release everything ahead of the worker thread stopping."""
+        if self._watcher is not None:
+            self._watcher.stop()
+            self._watcher = None
         self.disconnect_device()
 
     # ── internals ─────────────────────────────────────────────────────────

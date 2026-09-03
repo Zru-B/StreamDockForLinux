@@ -65,6 +65,7 @@ def app():
     application.start = Mock(return_value=True)
     application.reload = Mock(return_value=True)
     application.get_config_path = Mock(return_value="")
+    application.get_device = Mock(return_value=Mock())
     return application
 
 
@@ -171,6 +172,22 @@ class TestConnect:
 
         app.stop.assert_called_once_with(force=True)
         assert not service.is_connected()
+
+    def test_a_device_that_will_not_open_is_not_reported_as_connected(
+            self, hardware, config_path, qtbot):
+        """Application.start() succeeds even when the device stayed shut."""
+        app = Mock()
+        app.start = Mock(return_value=True)
+        app.get_device = Mock(return_value=None)
+        service = DeviceService(application_factory=Mock(return_value=app),
+                                hardware_factory=lambda: hardware)
+
+        with qtbot.waitSignal(service.error_occurred) as blocker:
+            service.connect_device("", config_path)
+
+        assert not service.is_connected()
+        assert "could not be opened" in blocker.args[1]
+        app.stop.assert_called_once_with(force=True)
 
     def test_a_failed_start_reports_an_error(self, hardware, config_path, qtbot):
         app = Mock()
@@ -321,3 +338,127 @@ class TestBusySignal:
         service.connect_device("", config_path)
 
         assert seen[-1] is False
+
+
+class TestHotplug:
+    """Reacting to devices appearing and disappearing while running."""
+
+    def connected(self, service, app, config_path, path='/dev/hidraw0'):
+        """Connect, then report the current device via the app mock."""
+        service.connect_device("", config_path)
+        app.get_device_info = Mock(return_value=make_device(path))
+        return service
+
+    def test_unplugging_the_connected_device_releases_it(self, service, app,
+                                                         config_path):
+        self.connected(service, app, config_path)
+        app.stop.reset_mock()
+
+        service._on_devices_changed([])
+
+        app.stop.assert_called_with(force=True)
+        assert not service.is_connected()
+
+    def test_unplugging_reports_which_device_went(self, service, app, config_path,
+                                                  qtbot):
+        self.connected(service, app, config_path)
+
+        with qtbot.waitSignal(service.device_detached) as blocker:
+            service._on_devices_changed([])
+
+        assert 'StreamDock' in blocker.args[0]
+
+    def test_unplugging_leaves_a_reason_in_the_state(self, service, app,
+                                                     config_path):
+        self.connected(service, app, config_path)
+        states = []
+        service.connection_state_changed.connect(lambda s, d: states.append((s, d)))
+
+        service._on_devices_changed([])
+
+        assert states[-1][0] == STATE_DISCONNECTED
+        assert 'unplugged' in states[-1][1]
+
+    def test_replugging_reconnects(self, service, app, config_path):
+        self.connected(service, app, config_path)
+        service._on_devices_changed([])
+        assert not service.is_connected()
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert service.is_connected()
+
+    def test_plugging_in_while_idle_connects(self, service, app, config_path,
+                                             hardware):
+        """Nothing attached at startup, then the user plugs one in."""
+        hardware.enumerate_devices = Mock(return_value=[])
+        service.connect_device("", config_path)
+        assert not service.is_connected()
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert service.is_connected()
+
+    def test_an_explicit_disconnect_is_not_undone_by_a_replug(self, service, app,
+                                                              config_path):
+        """Pressing Disconnect must stick."""
+        self.connected(service, app, config_path)
+        service.disconnect_device()
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert not service.is_connected()
+
+    def test_a_new_device_is_announced(self, service, app, config_path, qtbot):
+        self.connected(service, app, config_path)
+
+        with qtbot.waitSignal(service.device_attached) as blocker:
+            service._on_devices_changed([make_device('/dev/hidraw0'),
+                                         make_device('/dev/hidraw1')])
+
+        assert 'StreamDock' in blocker.args[0]
+
+    def test_a_second_device_does_not_disturb_the_connection(self, service, app,
+                                                             config_path):
+        self.connected(service, app, config_path)
+
+        service._on_devices_changed([make_device('/dev/hidraw0'),
+                                     make_device('/dev/hidraw1')])
+
+        assert service.is_connected()
+
+    def test_the_device_list_is_republished_on_every_change(self, service, app,
+                                                            config_path, qtbot):
+        self.connected(service, app, config_path)
+
+        with qtbot.waitSignal(service.devices_discovered) as blocker:
+            service._on_devices_changed([make_device('/dev/hidraw1')])
+
+        assert len(blocker.args[0]) == 1
+
+    def test_reconnect_prefers_the_device_that_was_asked_for(self, app, hardware,
+                                                             config_path):
+        first, second = make_device('/dev/hidraw0'), make_device('/dev/hidraw1')
+        hardware.enumerate_devices = Mock(return_value=[first, second])
+        factory = Mock(return_value=app)
+        service = DeviceService(application_factory=factory,
+                                hardware_factory=lambda: hardware)
+        service.connect_device('6603:1006@/dev/hidraw1', config_path)
+        app.get_device_info = Mock(return_value=second)
+
+        service._on_devices_changed([first])       # the chosen one goes away
+        assert not service.is_connected(), "must not silently move to another dock"
+
+        service._on_devices_changed([first, second])  # and comes back
+
+        assert service.is_connected()
+        assert factory.call_args.kwargs['device_info'].path == '/dev/hidraw1'
+
+    def test_shutdown_stops_the_watcher(self, service, app, config_path):
+        service.connect_device("", config_path)
+        watcher = Mock()
+        service._watcher = watcher
+
+        service.shutdown()
+
+        watcher.stop.assert_called_once()

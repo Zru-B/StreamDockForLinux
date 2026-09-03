@@ -67,13 +67,29 @@ class TestDeviceList:
 class TestState:
     """set_state()."""
 
-    def test_connected_enables_apply(self, bar):
+    def test_connecting_alone_does_not_enable_apply(self, bar):
+        """Connecting applies the configuration, so there is nothing to send."""
         bar.set_devices([make_device('/dev/hidraw0')])
 
         bar.set_state(STATE_CONNECTED, 'StreamDock')
 
-        assert bar.apply_button.isEnabled()
+        assert not bar.apply_button.isEnabled()
         assert bar.connect_button.text() == 'Disconnect'
+
+    def test_apply_enables_once_the_config_diverges(self, bar):
+        bar.set_devices([make_device('/dev/hidraw0')])
+        bar.set_state(STATE_CONNECTED, 'StreamDock')
+
+        bar.set_needs_apply(True)
+
+        assert bar.apply_button.isEnabled()
+
+    def test_apply_stays_disabled_while_disconnected(self, bar):
+        bar.set_devices([make_device('/dev/hidraw0')])
+
+        bar.set_needs_apply(True)
+
+        assert not bar.apply_button.isEnabled()
 
     def test_disconnected_disables_apply(self, bar):
         bar.set_devices([make_device('/dev/hidraw0')])
@@ -139,6 +155,7 @@ class TestSignals:
     def test_apply_emits(self, bar, qtbot):
         bar.set_devices([make_device('/dev/hidraw0')])
         bar.set_state(STATE_CONNECTED, 'StreamDock')
+        bar.set_needs_apply(True)
 
         with qtbot.waitSignal(bar.apply_requested):
             bar.apply_button.click()

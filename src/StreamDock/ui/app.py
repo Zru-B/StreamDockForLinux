@@ -79,7 +79,8 @@ class StreamDockGui:
         if not self._lock.acquire():
             self._warn_device_in_use()
         else:
-            self._window.refresh_devices_requested.emit()
+            # Watching also seeds the device list, so no separate refresh.
+            self._window.watch_devices_requested.emit()
             if self._config_path:
                 self._window.connect_requested.emit(self._device_id, self._config_path)
 
@@ -140,6 +141,7 @@ class StreamDockGui:
 
         # GUI -> worker. Queued automatically: the receiver is on the thread.
         window.refresh_devices_requested.connect(service.refresh_devices)
+        window.watch_devices_requested.connect(service.start_watching)
         window.connect_requested.connect(service.connect_device)
         window.disconnect_requested.connect(service.disconnect_device)
         window.apply_config_requested.connect(service.apply_config)
@@ -151,6 +153,8 @@ class StreamDockGui:
         service.layout_changed.connect(window.on_layout_changed)
         service.error_occurred.connect(window.on_device_error)
         service.busy_changed.connect(window.device_bar.set_busy)
+        service.device_attached.connect(window.on_device_attached)
+        service.device_detached.connect(window.on_device_detached)
 
         # device bar -> window
         window.device_bar.refresh_requested.connect(window.refresh_devices_requested)
@@ -170,6 +174,10 @@ class StreamDockGui:
                     window.device_bar.selected_device_id() or ""))
             self._tray.disconnect_requested.connect(window.disconnect_requested)
             service.connection_state_changed.connect(self._tray.set_state)
+            service.device_attached.connect(
+                lambda label: self._notify_tray("Device connected", label))
+            service.device_detached.connect(
+                lambda label: self._notify_tray("Device unplugged", label))
             window.hidden_to_tray.connect(self._notify_hidden)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -180,6 +188,12 @@ class StreamDockGui:
             self._window.windowState() & ~self._window.windowState().WindowMinimized)
         self._window.raise_()
         self._window.activateWindow()
+
+    def _notify_tray(self, title: str, message: str) -> None:
+        """Show a tray balloon, so hotplug is visible with the window hidden."""
+        if self._tray is not None:
+            self._tray.showMessage(title, message,
+                                   QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def _notify_hidden(self) -> None:
         if self._tray is not None:

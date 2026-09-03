@@ -44,11 +44,7 @@ def config_path():
 def window(qtbot):
     w = MainWindow()
     qtbot.addWidget(w)
-    yield w
-    # qtbot closes the widget at teardown. A window left dirty would re-enter
-    # closeEvent and block forever on a real unsaved-changes dialog.
-    w.modified = False
-    w._quitting = True
+    return w
 
 
 class TestCloseToTray:
@@ -186,3 +182,95 @@ class TestDeviceFeedback:
         window.on_layout_changed("Firefox")
 
         assert "Firefox" in window.statusBar().currentMessage()
+
+
+class TestApplyGate:
+    """Apply is offered only when the device is actually out of date."""
+
+    def test_a_freshly_loaded_config_needs_applying(self, window, config_path):
+        """Nothing has been sent to the device yet."""
+        window.load_config(config_path)
+
+        assert window._needs_apply is True
+
+    def test_applying_clears_the_gate(self, window, config_path):
+        window.load_config(config_path)
+
+        window.on_config_applied(config_path)
+
+        assert window._needs_apply is False
+        assert not window.device_bar.apply_button.isEnabled()
+
+    def test_editing_reopens_the_gate(self, window, config_path):
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+
+        window.mark_modified()
+
+        assert window._needs_apply is True
+
+    def test_reloading_the_same_file_does_not_reopen_the_gate(self, window,
+                                                              config_path):
+        """Re-opening what the device is already running changes nothing."""
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+
+        window.load_config(config_path)
+
+        assert window._needs_apply is False
+
+    def test_loading_a_different_file_reopens_the_gate(self, window, config_path,
+                                                       tmp_path):
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+
+        other = tmp_path / "other.yml"
+        other.write_text(CONFIG)
+        window.load_config(str(other))
+
+        assert window._needs_apply is True
+
+    def test_unplugging_reopens_the_gate(self, window, config_path):
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+
+        window.on_device_detached("StreamDock")
+        window.load_config(config_path)
+
+        assert window._needs_apply is True
+
+    def test_saving_does_not_close_the_gate(self, window, config_path):
+        """Writing the file does not put it on the device."""
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+        window.mark_modified()
+
+        window.save_config_to_file(config_path)
+
+        assert window._needs_apply is True
+
+    def test_editing_a_key_marks_the_config_dirty(self, window, config_path):
+        """edit_key used to mutate the config without marking it."""
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+        key_def = window.config.keys['KeyA']
+
+        with patch('StreamDock.ui.main_window.KeyEditorDialog') as dialog_cls:
+            dialog = dialog_cls.return_value
+            dialog.exec.return_value = dialog.DialogCode.Accepted
+            dialog.get_key_definition.return_value = key_def
+            window.edit_key('KeyA')
+
+        assert window.modified is True
+        assert window._needs_apply is True
+
+    def test_changing_the_default_layout_marks_the_config_dirty(self, window,
+                                                                config_path):
+        """set_default_layout used to mutate the config without marking it."""
+        window.load_config(config_path)
+        window.on_config_applied(config_path)
+
+        window.set_default_layout('Main')
+
+        assert window.modified is True
+        assert window._needs_apply is True
