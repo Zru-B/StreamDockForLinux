@@ -4,6 +4,9 @@ Integration tests for DeviceOrchestrator.
 Tests orchestration logic by coordinating infrastructure and business logic components.
 """
 
+import threading
+import time
+
 import pytest
 from unittest.mock import Mock, call, MagicMock
 
@@ -185,6 +188,47 @@ class TestDeviceOrchestrator:
         device.set_brightness.assert_called_once_with(75)
         assert orchestrator.is_locked() is False
     
+    def test_concurrent_layout_application_is_serialized(self, orchestrator):
+        """CRITICAL: Concurrent layout applications must not overlap on the device.
+
+        start() applies the context-aware layout on the caller's thread while the
+        window-poll thread may already be applying one. Key images are multi-packet
+        HID transfers, so overlapping renders interleave and keys come up blank.
+        """
+        overlaps = []
+        in_progress = []
+        guard = threading.Lock()
+
+        def slow_apply():
+            with guard:
+                in_progress.append(threading.current_thread().name)
+                if len(in_progress) > 1:
+                    overlaps.append(tuple(in_progress))
+            time.sleep(0.05)
+            with guard:
+                in_progress.remove(threading.current_thread().name)
+
+        layout = Mock()
+        layout.apply = Mock(side_effect=slow_apply)
+        orchestrator.register_layout("target", layout)
+        orchestrator._devices["device_0"] = Mock()
+        orchestrator._current_layouts["device_0"] = "other"
+
+        threads = [
+            threading.Thread(target=orchestrator._apply_layout, args=("device_0", "target"),
+                             name=f"applier-{i}")
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert overlaps == [], "layout renders overlapped on the device"
+        # Losers of the race see the layout is already current and skip it
+        assert layout.apply.call_count == 1
+        assert orchestrator.get_current_layout("device_0") == "target"
+
     def test_unlock_triggers_reenumeration_on_open_failure(self, orchestrator, mock_registry, mock_hardware):
         """CRITICAL: Failed open during unlock triggers USB re-enumeration."""
         orchestrator.start()

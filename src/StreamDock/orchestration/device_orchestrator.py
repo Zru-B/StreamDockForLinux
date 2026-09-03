@@ -5,7 +5,9 @@ This module provides the DeviceOrchestrator which is the central coordinator
 that connects infrastructure, business logic, and device management.
 """
 
+import functools
 import logging
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -15,6 +17,23 @@ from StreamDock.infrastructure import DeviceRegistry, HardwareInterface, SystemI
 from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
+
+
+def _serialized(method):
+    """
+    Serialise an operation that talks to the device.
+
+    Layout application, lock/unlock and shutdown each arrive on a different
+    thread - start() applies the context-aware layout on the caller's thread
+    while the window-poll thread may already be applying one. Key images are
+    multi-packet HID transfers, so overlapping operations interleave their
+    packets and keys end up blank.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._device_lock:  # pylint: disable=protected-access
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class DeviceOrchestrator:
@@ -87,6 +106,9 @@ class DeviceOrchestrator:
         self._layouts: Dict[str, Any] = {}  # layout_name -> Layout object
         self._default_brightness: int = 100
         self._is_locked: bool = False
+
+        # Guards every device-touching operation (see @_serialized)
+        self._device_lock = threading.RLock()
 
         # Device configuration callback (HYBRID: for ConfigLoader integration)
         self._device_config_callback: Optional[Any] = None
@@ -254,6 +276,7 @@ class DeviceOrchestrator:
 
         logger.info("Initialized %d device(s)", len(self._devices))
 
+    @_serialized
     def _cleanup_devices(self) -> None:
         """
         Clean up device resources.
@@ -284,6 +307,7 @@ class DeviceOrchestrator:
         self._devices.clear()
         self._current_layouts.clear()
 
+    @_serialized
     def _on_lock(self, event: SystemEvent) -> None:
         """
         Handle lock event - turn off device screens and close connections.
@@ -327,6 +351,7 @@ class DeviceOrchestrator:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error turning off device %s: %s", device_id, e)
 
+    @_serialized
     def _on_unlock(self, event: SystemEvent) -> None:
         """
         Handle unlock event - restore device screens and connections.
@@ -456,6 +481,7 @@ class DeviceOrchestrator:
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error handling window change: %s", e)
 
+    @_serialized
     def _apply_layout(self, device_id: str, layout_name: str, force: bool = False) -> None:
         """
         Apply layout to device.

@@ -25,8 +25,10 @@ Commands:
 """
 
 import ctypes
+import functools
 import logging
 import os
+import threading
 from ctypes import POINTER, Structure, c_char_p, c_int, c_size_t, c_ubyte, c_ushort, c_void_p, c_wchar_p
 from typing import Dict, List, Optional, Tuple
 
@@ -99,6 +101,22 @@ _hidapi.hid_read_timeout.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t, c_int
 _hidapi.hid_init()
 
 
+def _serialized(method):
+    """
+    Serialise a device write across threads.
+
+    An image transfer is a header packet followed by many data packets, and the
+    device tracks that sequence: if two threads write at the same time their
+    packets interleave and keys end up blank or garbled. Reads are deliberately
+    left unlocked so the reader thread never blocks a write.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._write_lock:  # pylint: disable=protected-access
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class HIDTransport:
     """
     Pure Python HID transport for StreamDock devices.
@@ -139,6 +157,7 @@ class HIDTransport:
     def __init__(self):
         self._device: Optional[c_void_p] = None
         self._last_read: Optional[bytes] = None
+        self._write_lock = threading.RLock()
 
     def _create_packet(self, command: bytes, data: bytes = b'') -> bytearray:
         """
@@ -182,6 +201,7 @@ class HIDTransport:
         except Exception:
             return -1
 
+    @_serialized
     def open(self, path: bytes) -> int:
         """
         Open a HID device by path.
@@ -208,6 +228,7 @@ class HIDTransport:
             self._device = None
             return -1
 
+    @_serialized
     def close(self):
         """Close the HID device."""
         if self._device:
@@ -283,6 +304,7 @@ class HIDTransport:
         """Clear the last read buffer."""
         self._last_read = None
 
+    @_serialized
     def wirte(self, data: bytes, length: int) -> int:
         """
         Write raw data to the device.
@@ -343,6 +365,7 @@ class HIDTransport:
         Note: In Python, this is handled by garbage collection, but kept for API compatibility.
         """
 
+    @_serialized
     def set_brightness(self, percent: int) -> int:
         """
         Set display brightness.
@@ -371,6 +394,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result == self.PACKET_SIZE else -1
 
+    @_serialized
     def set_background_img(self, buffer: bytes, size: int) -> int:
         """
         Set background image from raw data.
@@ -423,6 +447,7 @@ class HIDTransport:
 
         return 1
 
+    @_serialized
     def set_background_img_from_file(self, path: bytes) -> int:
         """
         Set background image from file path (513-byte packets).
@@ -480,6 +505,7 @@ class HIDTransport:
         except Exception:
             return -1
 
+    @_serialized
     def set_background_img_dual_device(self, path: bytes) -> int:
         """
         Set background image from file path (for dual device).
@@ -537,6 +563,7 @@ class HIDTransport:
         except Exception:
             return -1
 
+    @_serialized
     def set_key_img(self, path: bytes, key: int) -> int:
         """
         Set key image from file path.
@@ -595,6 +622,7 @@ class HIDTransport:
         except Exception:
             return -1
 
+    @_serialized
     def set_key_img_dual_device(self, path: bytes, key: int) -> int:
         """
         Set key image from file path (for dual device).
@@ -653,6 +681,7 @@ class HIDTransport:
         except Exception:
             return -1
 
+    @_serialized
     def set_key_img_data_dual_device(self, path: bytes, key: int) -> int:
         """
         Set key image data (for dual device).
@@ -667,6 +696,7 @@ class HIDTransport:
         """
         return self.set_key_img_dual_device(path, key)
 
+    @_serialized
     def key_clear(self, index: int) -> int:
         """
         Clear a specific key.
@@ -693,6 +723,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def key_all_clear(self) -> int:
         """
         Clear all keys.
@@ -716,6 +747,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def wake_screen(self) -> int:
         """
         Wake up the screen.
@@ -735,6 +767,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def refresh(self) -> int:
         """
         Refresh/stop the device display.
@@ -754,6 +787,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def screen_off(self) -> int:
         """
         Turn off the screen/backlight.
@@ -777,6 +811,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def screen_on(self) -> int:
         """
         Turn on the screen/backlight.
@@ -800,6 +835,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def disconnected(self) -> int:
         """
         Send disconnect signal to device.
@@ -823,6 +859,7 @@ class HIDTransport:
         result = self._write_packet(packet)
         return 1 if result != -1 else -1
 
+    @_serialized
     def switch_mode(self, mode: int) -> int:
         """
         Switch device mode.

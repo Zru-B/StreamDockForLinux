@@ -1,5 +1,7 @@
 import logging
+import os
 import random
+import tempfile
 import threading
 import time
 import unittest
@@ -8,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from StreamDock.devices.stream_dock import StreamDock
+from StreamDock.transport.hid_transport import HIDTransport
 
 # Configure logging to capture output during tests
 logging.basicConfig(level=logging.INFO)
@@ -272,6 +275,74 @@ class TestConcurrencyAndStability(unittest.TestCase):
         device.close()
         
         self.assertTrue(success, "Reader thread died after exception, failed to process subsequent events")
+
+
+@pytest.mark.regression
+class TestTransportWriteSerialization(unittest.TestCase):
+    """A key image is a header packet plus many data packets - two threads
+    writing at once must not interleave them, or the device renders blank keys."""
+
+    def setUp(self):
+        self.transport = HIDTransport()
+        self.active = []
+        self.overlaps = []
+        self.guard = threading.Lock()
+
+        def fake_write_packet(packet):
+            name = threading.current_thread().name
+            with self.guard:
+                self.active.append(name)
+                if len(self.active) > 1:
+                    self.overlaps.append(tuple(self.active))
+            time.sleep(0.001)
+            with self.guard:
+                self.active.remove(name)
+            return len(packet)
+
+        self.transport._write_packet = fake_write_packet
+
+        fd, self.image_path = tempfile.mkstemp(suffix='.jpg')
+        os.write(fd, b'\x00' * 4096)  # several data packets worth
+        os.close(fd)
+
+    def tearDown(self):
+        os.remove(self.image_path)
+
+    def test_concurrent_key_image_writes_do_not_interleave(self):
+        """Concurrent image transfers are serialised on the HID handle."""
+        threads = [
+            threading.Thread(
+                target=self.transport.set_key_img_dual_device,
+                args=(self.image_path, key),
+                name=f'writer-{key}'
+            )
+            for key in range(1, 5)
+        ]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(self.overlaps, [], "HID packets from different threads interleaved")
+
+    def test_concurrent_mixed_commands_do_not_interleave(self):
+        """Single-packet commands cannot slip between an image's packets."""
+        threads = [
+            threading.Thread(target=self.transport.set_key_img_dual_device,
+                             args=(self.image_path, 1), name='writer-img'),
+            threading.Thread(target=self.transport.set_brightness, args=(50,), name='writer-lig'),
+            threading.Thread(target=self.transport.refresh, name='writer-stp'),
+            threading.Thread(target=self.transport.key_all_clear, name='writer-cle'),
+        ]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(self.overlaps, [], "HID packets from different threads interleaved")
+
 
 if __name__ == '__main__':
     unittest.main()
