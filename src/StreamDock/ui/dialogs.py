@@ -14,6 +14,7 @@ from StreamDock.application.configuration_manager import (
     resolve_icon_path,
 )
 from StreamDock.ui.widgets import (
+    ActionListContainer,
     ActionListItem,
     SegmentedControl,
     ToggleSwitch,
@@ -415,8 +416,8 @@ class ActionEditorWidget(QWidget):
         # Scroll area for actions list
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setMinimumHeight(200)
-        self.scroll.setMaximumHeight(350)
+        self.scroll.setMinimumHeight(150)
+        self.scroll.setMaximumHeight(320)
         self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -434,11 +435,11 @@ class ActionEditorWidget(QWidget):
             }}
         """)
         
-        self.actions_container = QWidget()
-        self.actions_container.setObjectName("actionsContainer")
+        self.actions_container = ActionListContainer()
+        self.actions_container.action_moved.connect(self.move_action)
         self.actions_layout = QVBoxLayout(self.actions_container)
-        self.actions_layout.setContentsMargins(4, 4, 4, 4)
-        self.actions_layout.setSpacing(4)
+        self.actions_layout.setContentsMargins(6, 6, 6, 6)
+        self.actions_layout.setSpacing(6)
         
         self.scroll.setWidget(self.actions_container)
         layout.addWidget(self.scroll)
@@ -469,22 +470,24 @@ class ActionEditorWidget(QWidget):
             item = self.actions_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-            elif item.spacerItem():
-                # Remove spacer item
-                pass
+        
+        if not self.actions:
+            empty = QLabel("No actions yet")
+            empty.setObjectName("actionsEmpty")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.actions_layout.addWidget(empty)
+            return
         
         # Add action widgets
         for i, action in enumerate(self.actions):
             action_widget = ActionListItem(i, action)
             action_widget.remove_clicked.connect(self.remove_action)
             action_widget.edit_clicked.connect(self.edit_action)
-            action_widget.move_up_clicked.connect(self.move_action_up)
-            action_widget.move_down_clicked.connect(self.move_action_down)
             self.actions_layout.addWidget(action_widget)
         
-        # Don't add stretch - let the scroll area handle spacing
-        # Force container to update its size
-        self.actions_container.updateGeometry()
+        # Rows keep their own height; the spare space goes here rather than
+        # being shared out among them.
+        self.actions_layout.addStretch()
     
     def add_action(self):
         """Add a new action"""
@@ -513,17 +516,19 @@ class ActionEditorWidget(QWidget):
             self.actions.pop(index)
             self.rebuild_actions_list()
     
-    def move_action_up(self, index: int):
-        """Move action up in the list"""
-        if index > 0:
-            self.actions[index], self.actions[index - 1] = self.actions[index - 1], self.actions[index]
-            self.rebuild_actions_list()
-    
-    def move_action_down(self, index: int):
-        """Move action down in the list"""
-        if index < len(self.actions) - 1:
-            self.actions[index], self.actions[index + 1] = self.actions[index + 1], self.actions[index]
-            self.rebuild_actions_list()
+    def move_action(self, source: int, target: int):
+        """
+        Move an action to another position in the sequence
+
+        Args:
+            source: Index the action is at now
+            target: Index it should end up at
+        """
+        if not 0 <= source < len(self.actions):
+            return
+        action = self.actions.pop(source)
+        self.actions.insert(max(0, min(target, len(self.actions))), action)
+        self.rebuild_actions_list()
 
 
 class ActionDialog(QDialog):
@@ -1598,8 +1603,11 @@ class AdvancedSettingsDialog(QDialog):
         
         # Settings form - using simple VBox instead of QGroupBox
         settings_container = QWidget()
+        settings_container.setObjectName("settingsCard")
+        # Scoped by name: a bare QWidget rule would draw the same border
+        # around every label inside the card as well.
         settings_container.setStyleSheet(f"""
-            QWidget {{
+            QWidget#settingsCard {{
                 background-color: {COLORS['bg_secondary']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 8px;
@@ -1629,7 +1637,6 @@ class AdvancedSettingsDialog(QDialog):
         self.interval_spin.setSuffix(" sec")
         self.interval_spin.setMinimumWidth(120)
         self.interval_spin.setMaximumWidth(140)
-        self.interval_spin.setMinimumHeight(30)
         time_layout.addWidget(self.interval_spin)
         
         # Default button
