@@ -53,10 +53,13 @@ class TestDeviceOrchestrator:
     def mock_registry(self):
         """Mock DeviceRegistry."""
         registry = Mock(spec=DeviceRegistry)
-        # Return a mock device
-        test_device = Mock()
-        test_device.device_info.serial = "SERIAL"
-        test_device.is_connected = True
+        # A real TrackedDevice around a mock device: the orchestrator unwraps
+        # registry entries by type, so a bare Mock would not be unwrapped.
+        device_info = Mock()
+        device_info.serial = "SERIAL"
+        test_device = TrackedDevice(device_info=device_info,
+                                    device_instance=Mock(),
+                                    is_connected=True)
         
         registry.get_all_devices.return_value = [test_device]
         return registry
