@@ -94,57 +94,101 @@ QMenu::item:selected {{
     color: white;
 }}
 
-/* Push Buttons */
+/* Push Buttons. Quiet by default, matching the device bar: a dialog full of
+   blue blocks reads as a wall of alerts. buttonType picks a louder variant. */
 QPushButton {{
-    background-color: {COLORS['primary']};
-    color: white;
-    border: none;
-    padding: 10px 20px;
+    background-color: {COLORS['bg_tertiary']};
+    color: {COLORS['text_primary']};
+    border: 1px solid {COLORS['border']};
+    padding: 0 12px;
     border-radius: 6px;
     font-weight: 500;
-    font-size: 14px;
-    min-height: 36px;
+    font-size: 13px;
+    min-height: 28px;
 }}
 
 QPushButton:hover {{
-    background-color: {COLORS['primary_hover']};
+    background-color: {COLORS['bg_hover']};
+    border-color: {COLORS['primary']};
 }}
 
 QPushButton:pressed {{
-    background-color: {COLORS['primary_dark']};
+    background-color: {COLORS['bg_tertiary']};
 }}
 
 QPushButton:disabled {{
     background-color: {COLORS['bg_tertiary']};
     color: {COLORS['text_secondary']};
+    border-color: {COLORS['border']};
+}}
+
+/* Primary buttons (Save, OK) */
+QPushButton[buttonType="primary"] {{
+    background-color: {COLORS['primary']};
+    color: white;
+    border-color: {COLORS['primary']};
+    font-weight: 600;
+}}
+
+QPushButton[buttonType="primary"]:hover {{
+    background-color: {COLORS['primary_hover']};
+    border-color: {COLORS['primary_hover']};
+}}
+
+QPushButton[buttonType="primary"]:pressed {{
+    background-color: {COLORS['primary_dark']};
+    border-color: {COLORS['primary_dark']};
 }}
 
 /* Success buttons (Add, Save) */
 QPushButton[buttonType="success"] {{
     background-color: {COLORS['success']};
+    color: white;
+    border-color: {COLORS['success']};
 }}
 
 QPushButton[buttonType="success"]:hover {{
     background-color: {COLORS['success_hover']};
+    border-color: {COLORS['success_hover']};
 }}
 
 /* Danger buttons (Delete, Remove) */
 QPushButton[buttonType="danger"] {{
     background-color: {COLORS['danger']};
+    color: white;
+    border-color: {COLORS['danger']};
 }}
 
 QPushButton[buttonType="danger"]:hover {{
     background-color: {COLORS['danger_hover']};
+    border-color: {COLORS['danger_hover']};
 }}
 
-/* Secondary buttons */
-QPushButton[buttonType="secondary"] {{
-    background-color: {COLORS['bg_secondary']};
-    color: white;
-}}
-
-QPushButton[buttonType="secondary"]:hover {{
+/* Segmented control: one pill, one option lit */
+QWidget#segmentedControl {{
     background-color: {COLORS['bg_tertiary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 8px;
+}}
+
+QPushButton[segment="true"] {{
+    background-color: transparent;
+    color: {COLORS['text_secondary']};
+    border: none;
+    border-radius: 6px;
+    padding: 0 18px;
+    min-height: 24px;
+    font-weight: 500;
+}}
+
+QPushButton[segment="true"]:hover {{
+    color: {COLORS['text_primary']};
+}}
+
+QPushButton[segment="true"]:checked {{
+    background-color: {COLORS['primary']};
+    color: white;
+    font-weight: 600;
 }}
 
 /* Text Input Fields */
@@ -294,6 +338,43 @@ QCheckBox::indicator:checked {{
     background-color: {COLORS['primary']};
     border-color: {COLORS['primary']};
     image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iOSIgdmlld0JveD0iMCAwIDEyIDkiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDQuNUw0LjUgOEwxMSAxIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+}}
+
+/* Sliders */
+QSlider::groove:horizontal {{
+    height: 4px;
+    background-color: {COLORS['bg_tertiary']};
+    border-radius: 2px;
+}}
+
+QSlider::sub-page:horizontal {{
+    background-color: {COLORS['primary']};
+    border-radius: 2px;
+}}
+
+QSlider::handle:horizontal {{
+    width: 14px;
+    height: 14px;
+    /* Negative vertical margin lifts the handle over the thin groove. */
+    margin: -6px 0;
+    border-radius: 7px;
+    background-color: {COLORS['text_primary']};
+}}
+
+QSlider::handle:horizontal:hover {{
+    background-color: {COLORS['primary_hover']};
+}}
+
+QSlider::handle:horizontal:disabled {{
+    background-color: {COLORS['border']};
+}}
+
+QSlider::sub-page:horizontal:disabled {{
+    background-color: {COLORS['border']};
+}}
+
+QLabel#brightnessValue {{
+    color: {COLORS['text_secondary']};
 }}
 
 /* Radio Buttons */
