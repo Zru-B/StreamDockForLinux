@@ -13,13 +13,16 @@ from StreamDock.application.configuration_manager import (
     relativize_icon_path,
     resolve_icon_path,
 )
-from StreamDock.ui.widgets import ActionListItem
+from StreamDock.ui.widgets import (
+    ActionListItem,
+    SegmentedControl,
+    ToggleSwitch,
+)
 from StreamDock.ui.styles import get_colors
 from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -27,7 +30,6 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -46,6 +48,14 @@ from PyQt6.QtWidgets import (
 )
 
 COLORS = get_colors()
+
+# The two ways a key can be drawn, as the segmented control spells them.
+DISPLAY_ICON = "Icon"
+DISPLAY_TEXT = "Text"
+
+# Dialog buttons follow the device bar: short, quiet, all one size.
+BUTTON_HEIGHT = 28
+BUTTON_WIDTH = 88
 
 
 # Labels that Title Case gets wrong. Everything else is derived from
@@ -100,59 +110,27 @@ def _as_int(value, default: int) -> int:
         return default
 
 
-def create_styled_button(text: str, icon: str = None, primary: bool = False) -> QPushButton:
-    """Create a consistently styled button with optional icon
-    
+def create_styled_button(text: str, primary: bool = False) -> QPushButton:
+    """Create a dialog button sized to match the device bar
+
+    The look itself comes from the stylesheet; this only fixes the geometry
+    so a row of dialog buttons lines up the way the device bar does.
+
     Args:
         text: Button text
-        icon: Unicode icon character (optional)
-        primary: If True, use primary (blue) styling
+        primary: If True, use the accent colour
+
+    Returns:
+        The button
     """
-    if icon:
-        button_text = f"{icon}  {text}"
-    else:
-        button_text = text
-    
-    btn = QPushButton(button_text)
-    btn.setMinimumHeight(32)
-    btn.setMinimumWidth(90)
-    
+    btn = QPushButton(text)
+    btn.setFixedHeight(BUTTON_HEIGHT)
+    btn.setMinimumWidth(BUTTON_WIDTH)
+    # Without this a button in an HBox swells to fill whatever is left.
+    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
     if primary:
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['primary']};
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['primary_hover']};
-            }}
-            QPushButton:pressed {{
-                background-color: {COLORS['primary']};
-            }}
-        """)
-    else:
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['bg_tertiary']};
-                color: {COLORS['text_primary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['bg_hover']};
-                border-color: {COLORS['primary']};
-            }}
-            QPushButton:pressed {{
-                background-color: {COLORS['bg_tertiary']};
-            }}
-        """)
-    
+        btn.setProperty("buttonType", "primary")
     return btn
 
 
@@ -189,20 +167,13 @@ class KeyEditorDialog(QDialog):
         name_layout.addWidget(self.name_edit)
         layout.addLayout(name_layout)
         
-        # Display type selection
-        display_group = QGroupBox("Display Type")
-        display_layout = QVBoxLayout()
-        
-        self.type_group = QButtonGroup(self)
-        self.icon_radio = QRadioButton("Icon")
-        self.text_radio = QRadioButton("Text")
-        self.type_group.addButton(self.icon_radio, 0)
-        self.type_group.addButton(self.text_radio, 1)
-        display_layout.addWidget(self.icon_radio)
-        display_layout.addWidget(self.text_radio)
-        
-        display_group.setLayout(display_layout)
-        layout.addWidget(display_group)
+        # Display type: two choices, so one pill rather than a box of radios
+        display_layout = QHBoxLayout()
+        display_layout.addWidget(QLabel("Display Type:"))
+        self.display_type = SegmentedControl([DISPLAY_ICON, DISPLAY_TEXT])
+        display_layout.addWidget(self.display_type)
+        display_layout.addStretch()
+        layout.addLayout(display_layout)
         
         # Icon settings (in a container for show/hide)
         self.icon_widget = QWidget()
@@ -211,7 +182,7 @@ class KeyEditorDialog(QDialog):
         icon_select_layout = QHBoxLayout()
         self.icon_path_label = QLabel("No icon selected")
         icon_select_layout.addWidget(self.icon_path_label)
-        self.icon_select_btn = QPushButton("Select Icon...")
+        self.icon_select_btn = create_styled_button("Select Icon...")
         self.icon_select_btn.clicked.connect(self.select_icon)
         icon_select_layout.addWidget(self.icon_select_btn)
         icon_layout.addLayout(icon_select_layout)
@@ -241,7 +212,7 @@ class KeyEditorDialog(QDialog):
         text_color_layout = QHBoxLayout()
         self.text_color_edit = QLineEdit("white")
         text_color_layout.addWidget(self.text_color_edit)
-        self.text_color_btn = QPushButton("Choose...")
+        self.text_color_btn = create_styled_button("Choose...")
         self.text_color_btn.clicked.connect(self.choose_text_color)
         text_color_layout.addWidget(self.text_color_btn)
         text_layout.addRow("Text Color:", text_color_layout)
@@ -249,7 +220,7 @@ class KeyEditorDialog(QDialog):
         bg_color_layout = QHBoxLayout()
         self.bg_color_edit = QLineEdit("black")
         bg_color_layout.addWidget(self.bg_color_edit)
-        self.bg_color_btn = QPushButton("Choose...")
+        self.bg_color_btn = create_styled_button("Choose...")
         self.bg_color_btn.clicked.connect(self.choose_bg_color)
         bg_color_layout.addWidget(self.bg_color_btn)
         text_layout.addRow("Background Color:", bg_color_layout)
@@ -259,9 +230,9 @@ class KeyEditorDialog(QDialog):
         self.font_size_spin.setValue(20)
         text_layout.addRow("Font Size:", self.font_size_spin)
         
-        self.bold_check = QCheckBox()
-        self.bold_check.setChecked(True)
-        text_layout.addRow("Bold:", self.bold_check)
+        self.bold_toggle = ToggleSwitch()
+        self.bold_toggle.setChecked(True)
+        text_layout.addRow("Bold:", self.bold_toggle)
         
         layout.addWidget(self.text_widget)
         
@@ -290,18 +261,17 @@ class KeyEditorDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
-        save_btn = create_styled_button("Save", "💾", primary=True)
+        save_btn = create_styled_button("Save", primary=True)
         save_btn.clicked.connect(self.accept)
         btn_layout.addWidget(save_btn)
         
         layout.addLayout(btn_layout)
         
-        # Connect type radio buttons
-        self.icon_radio.toggled.connect(self.update_display_type)
+        self.display_type.selection_changed.connect(self.update_display_type)
     
     def update_display_type(self):
         """Update visible widgets based on display type"""
-        is_icon = self.icon_radio.isChecked()
+        is_icon = self.display_type.current() == DISPLAY_ICON
         self.icon_widget.setVisible(is_icon)
         self.text_widget.setVisible(not is_icon)
     
@@ -377,22 +347,22 @@ class KeyEditorDialog(QDialog):
     def load_key_data(self):
         """Load existing key data into the dialog"""
         if self.key_def.is_icon_based():
-            self.icon_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_ICON)
             if self.key_def.icon:
                 self.icon_path_label.setText(self.key_def.icon)
                 self.selected_icon_path = self.key_def.icon
                 # Load and display the icon preview
                 self.load_icon_preview(self.key_def.icon)
         elif self.key_def.is_text_based():
-            self.text_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_TEXT)
             self.text_edit.setText(self.key_def.text or "")
             self.text_color_edit.setText(self.key_def.text_color)
             self.bg_color_edit.setText(self.key_def.background_color)
             self.font_size_spin.setValue(self.key_def.font_size)
-            self.bold_check.setChecked(self.key_def.bold)
+            self.bold_toggle.setChecked(self.key_def.bold)
         else:
             # Default to icon
-            self.icon_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_ICON)
         
         self.update_display_type()
         
@@ -405,7 +375,7 @@ class KeyEditorDialog(QDialog):
         """Get the key definition from the dialog"""
         key_def = KeyDefinition(self.name_edit.text())
         
-        if self.icon_radio.isChecked():
+        if self.display_type.current() == DISPLAY_ICON:
             key_def.icon = self.selected_icon_path or self.key_def.icon
             key_def.text = None
         else:
@@ -413,7 +383,7 @@ class KeyEditorDialog(QDialog):
             key_def.text_color = self.text_color_edit.text()
             key_def.background_color = self.bg_color_edit.text()
             key_def.font_size = self.font_size_spin.value()
-            key_def.bold = self.bold_check.isChecked()
+            key_def.bold = self.bold_toggle.isChecked()
             key_def.icon = None
         
         key_def.on_press_actions = self.press_actions_widget.get_actions()
@@ -451,15 +421,21 @@ class ActionEditorWidget(QWidget):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll.setFrameShape(QScrollArea.Shape.StyledPanel)
+        # The container has to carry the colour too: a bare QScrollArea rule
+        # leaves the viewport on the default palette, which is white.
         self.scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
                 background-color: {COLORS['bg_secondary']};
             }}
+            QWidget#actionsContainer {{
+                background-color: {COLORS['bg_secondary']};
+            }}
         """)
         
         self.actions_container = QWidget()
+        self.actions_container.setObjectName("actionsContainer")
         self.actions_layout = QVBoxLayout(self.actions_container)
         self.actions_layout.setContentsMargins(4, 4, 4, 4)
         self.actions_layout.setSpacing(4)
@@ -470,10 +446,8 @@ class ActionEditorWidget(QWidget):
         # Add action button - smaller and centered, completely separate
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        add_btn = create_styled_button("Add Action", "➕", primary=True)
+        add_btn = create_styled_button("Add Action", primary=True)
         add_btn.setMinimumWidth(120)
-        add_btn.setMaximumWidth(150)
-        add_btn.setFixedHeight(32)
         add_btn.clicked.connect(self.add_action)
         btn_layout.addWidget(add_btn)
         btn_layout.addStretch()
@@ -609,7 +583,7 @@ class ActionDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
-        save_btn = create_styled_button("OK", "✓", primary=True)
+        save_btn = create_styled_button("OK", primary=True)
         save_btn.clicked.connect(self.accept)
         btn_layout.addWidget(save_btn)
         
@@ -709,7 +683,7 @@ class ActionDialog(QDialog):
             img_layout = QHBoxLayout()
             self.image_path_edit = QLineEdit()
             img_layout.addWidget(self.image_path_edit)
-            browse_btn = QPushButton("Browse...")
+            browse_btn = create_styled_button("Browse...")
             browse_btn.clicked.connect(self.browse_image)
             img_layout.addWidget(browse_btn)
             self.fields_layout.addLayout(img_layout)
@@ -746,7 +720,7 @@ class ActionDialog(QDialog):
             icon_row = QHBoxLayout()
             self.key_text_icon_edit = QLineEdit()
             icon_row.addWidget(self.key_text_icon_edit)
-            icon_browse = QPushButton("Browse...")
+            icon_browse = create_styled_button("Browse...")
             icon_browse.clicked.connect(self.browse_key_text_icon)
             icon_row.addWidget(icon_browse)
             self.fields_layout.addLayout(icon_row)
@@ -1436,7 +1410,7 @@ class WindowRuleDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
-        save_btn = create_styled_button("Save", "💾", primary=True)
+        save_btn = create_styled_button("Save", primary=True)
         save_btn.clicked.connect(self.validate_and_accept)
         save_btn.setDefault(True)
         btn_layout.addWidget(save_btn)
@@ -1535,10 +1509,11 @@ class LayoutEditorDialog(QDialog):
         
         layout.addLayout(form_layout)
         
-        # Clear all icons checkbox
-        self.clear_all_check = QCheckBox("Clear all icons when switching to this layout")
-        self.clear_all_check.setChecked(clear_all)
-        layout.addWidget(self.clear_all_check)
+        # Clear all icons switch
+        self.clear_all_toggle = ToggleSwitch(
+            "Clear all icons when switching to this layout")
+        self.clear_all_toggle.setChecked(clear_all)
+        layout.addWidget(self.clear_all_toggle)
         
         # Help text
         help_label = QLabel(
@@ -1559,7 +1534,7 @@ class LayoutEditorDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
-        save_btn = create_styled_button("Save", "💾", primary=True)
+        save_btn = create_styled_button("Save", primary=True)
         save_btn.clicked.connect(self.validate_and_accept)
         save_btn.setDefault(True)
         btn_layout.addWidget(save_btn)
@@ -1585,7 +1560,7 @@ class LayoutEditorDialog(QDialog):
         """Get the layout data from the form"""
         return {
             'name': self.name_input.text().strip(),
-            'clear_all': self.clear_all_check.isChecked()
+            'clear_all': self.clear_all_toggle.isChecked()
         }
 
 
@@ -1658,8 +1633,7 @@ class AdvancedSettingsDialog(QDialog):
         time_layout.addWidget(self.interval_spin)
         
         # Default button
-        default_btn = QPushButton("Reset to Default")
-        default_btn.setMinimumHeight(30)
+        default_btn = create_styled_button("Reset to Default")
         default_btn.clicked.connect(lambda: self.interval_spin.setValue(0.3))
         time_layout.addWidget(default_btn)
         time_layout.addStretch()
@@ -1687,7 +1661,7 @@ class AdvancedSettingsDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         
-        save_btn = create_styled_button("Save", "💾", primary=True)
+        save_btn = create_styled_button("Save", primary=True)
         save_btn.clicked.connect(self.accept)
         save_btn.setDefault(True)
         btn_layout.addWidget(save_btn)

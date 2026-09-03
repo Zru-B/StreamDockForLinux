@@ -13,7 +13,11 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from StreamDock.application.config_document import ConfigDocument, KeyDefinition
+from StreamDock.application.config_document import (
+    MIN_BRIGHTNESS,
+    ConfigDocument,
+    KeyDefinition,
+)
 from StreamDock.ui.dialogs import ActionDialog
 from StreamDock.ui.main_window import MainWindow
 from StreamDock.ui.widgets import ActionListItem, KeySquare
@@ -61,18 +65,23 @@ class TestLoadingOddConfigs:
     """load_config must survive whatever the file holds."""
 
     def test_a_float_brightness_loads(self, window, workdir):
-        """The validator accepts it; QSpinBox does not take a float."""
+        """The validator accepts it; the slider does not take a float."""
         window.load_config(write_config(workdir, {**BASE, "settings": {"brightness": 50.5}}))
 
-        assert window.brightness_spin.value() == 50
+        assert window.brightness_slider.value() == 50
+        assert window.brightness_value.text() == "50%"
         assert window.config.settings.brightness == 50.5
 
-    @pytest.mark.parametrize("brightness", [0, 100])
-    def test_brightness_extremes_load(self, window, workdir, brightness):
+    @pytest.mark.parametrize("stored,shown", [(0, MIN_BRIGHTNESS),
+                                              (MIN_BRIGHTNESS, MIN_BRIGHTNESS),
+                                              (100, 100)])
+    def test_brightness_extremes_load(self, window, workdir, stored, shown):
+        """A file dimmer than the device honours lands on the slider minimum."""
         window.load_config(
-            write_config(workdir, {**BASE, "settings": {"brightness": brightness}}))
+            write_config(workdir, {**BASE, "settings": {"brightness": stored}}))
 
-        assert window.brightness_spin.value() == brightness
+        assert window.brightness_slider.value() == shown
+        assert window.brightness_value.text() == f"{shown}%"
 
     def test_unicode_names_load(self, window, workdir):
         source = {"keys": {"Ключ 🎹": key("日本")},

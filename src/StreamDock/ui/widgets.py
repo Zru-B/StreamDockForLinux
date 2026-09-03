@@ -12,9 +12,20 @@ from StreamDock.application.config_document import (
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
 from StreamDock.ui.styles import get_colors
-from PyQt6.QtCore import QMimeData, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QMimeData,
+    QPropertyAnimation,
+    QRectF,
+    QSize,
+    Qt,
+    pyqtProperty,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractButton,
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +33,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +56,24 @@ def _font_size(value) -> int:
     except (TypeError, ValueError):
         return DEFAULT_FONT_SIZE
     return size if size > 0 else DEFAULT_FONT_SIZE
+
+
+def _mix(start: str, end: str, ratio: float) -> QColor:
+    """
+    Blend two colours, with ratio 0 giving start and 1 giving end.
+
+    Args:
+        start: Colour at ratio 0
+        end: Colour at ratio 1
+        ratio: Position between the two
+
+    Returns:
+        The blended colour
+    """
+    first, second = QColor(start), QColor(end)
+    return QColor(
+        *(round(a + (b - a) * ratio)
+          for a, b in zip(first.getRgb(), second.getRgb())))
 
 
 class KeySquare(QFrame):
@@ -781,3 +811,178 @@ class WindowRulesWidget(QWidget):
         rule_name = item.data(Qt.ItemDataRole.UserRole)
         if rule_name:
             self.rule_selected.emit(rule_name)
+
+
+class ToggleSwitch(QAbstractButton):
+    """
+    A compact on/off switch with its own label.
+
+    Stands in for a QCheckBox where a 20px box with a tick reads as heavy: it
+    is checkable, emits toggled(bool) and answers isChecked() the same way.
+    """
+
+    TRACK_WIDTH = 34
+    TRACK_HEIGHT = 18
+    KNOB_MARGIN = 2
+    TEXT_SPACING = 10
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setText(text)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        self._knob = 0.0
+        self._hovered = False
+        self._slide = QPropertyAnimation(self, b"knob_position", self)
+        self._slide.setDuration(120)
+        self._slide.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    def _get_knob_position(self) -> float:
+        return self._knob
+
+    def _set_knob_position(self, value: float) -> None:
+        self._knob = value
+        self.update()
+
+    # Animated by _slide; Qt needs it as a property to drive it.
+    knob_position = pyqtProperty(float, _get_knob_position, _set_knob_position)
+
+    def _slide_knob(self) -> None:
+        """Run the knob to whichever end the current state calls for."""
+        self._slide.stop()
+        self._slide.setStartValue(self._knob)
+        self._slide.setEndValue(1.0 if self.isChecked() else 0.0)
+        self._slide.start()
+
+    def checkStateSet(self):
+        """Qt calls this when the state is set in code (setChecked)."""
+        self._slide_knob()
+
+    def nextCheckState(self):
+        """Qt calls this when the user clicks or presses space."""
+        super().nextCheckState()
+        self._slide_knob()
+
+    def sizeHint(self) -> QSize:
+        metrics = self.fontMetrics()
+        width = self.TRACK_WIDTH
+        if self.text():
+            width += self.TEXT_SPACING + metrics.horizontalAdvance(self.text())
+        return QSize(width, max(self.TRACK_HEIGHT, metrics.height()))
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        top = (self.height() - self.TRACK_HEIGHT) / 2
+        track_color = _mix(COLORS['bg_tertiary'],
+                           COLORS['primary_hover'] if self._hovered
+                           else COLORS['primary'],
+                           self._knob)
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(
+            QRectF(0, top, self.TRACK_WIDTH, self.TRACK_HEIGHT),
+            self.TRACK_HEIGHT / 2, self.TRACK_HEIGHT / 2)
+
+        diameter = self.TRACK_HEIGHT - 2 * self.KNOB_MARGIN
+        travel = self.TRACK_WIDTH - diameter - 2 * self.KNOB_MARGIN
+        painter.setBrush(_mix(COLORS['text_secondary'], 'white', self._knob))
+        painter.drawEllipse(
+            QRectF(self.KNOB_MARGIN + travel * self._knob,
+                   top + self.KNOB_MARGIN, diameter, diameter))
+
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QColor(COLORS['border_focus']))
+            painter.drawRoundedRect(
+                QRectF(-1.0, top - 1.0,
+                       self.TRACK_WIDTH + 2.0, self.TRACK_HEIGHT + 2.0),
+                (self.TRACK_HEIGHT + 2) / 2, (self.TRACK_HEIGHT + 2) / 2)
+
+        if self.text():
+            painter.setPen(QColor(COLORS['text_primary'] if self.isEnabled()
+                                  else COLORS['text_secondary']))
+            painter.drawText(
+                QRectF(self.TRACK_WIDTH + self.TEXT_SPACING, 0,
+                       self.width() - self.TRACK_WIDTH - self.TEXT_SPACING,
+                       self.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                self.text())
+
+
+class SegmentedControl(QWidget):
+    """
+    A short list of mutually exclusive options drawn as one pill.
+
+    Stands in for a group of radio buttons where there are only two or three
+    choices: the selection reads at a glance and costs one row, not one per
+    option.
+    """
+
+    selection_changed = pyqtSignal(str)
+
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self.setObjectName("segmentedControl")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(2)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons = {}
+
+        for option in options:
+            button = QPushButton(option)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setProperty("segment", "true")
+            self._group.addButton(button)
+            row.addWidget(button)
+            self._buttons[option] = button
+
+        if self._buttons:
+            next(iter(self._buttons.values())).setChecked(True)
+        self._group.buttonToggled.connect(self._on_button_toggled)
+
+    def _on_button_toggled(self, button, checked: bool) -> None:
+        # Switching selection toggles two buttons; only report the new one.
+        if checked:
+            self.selection_changed.emit(button.text())
+
+    def current(self) -> str:
+        """The selected option."""
+        button = self._group.checkedButton()
+        return button.text() if button else ""
+
+    def set_current(self, option: str) -> None:
+        """
+        Select an option.
+
+        Args:
+            option: One of the options the control was built with; anything
+                else leaves the selection alone
+        """
+        button = self._buttons.get(option)
+        if button:
+            button.setChecked(True)

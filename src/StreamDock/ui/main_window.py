@@ -16,6 +16,7 @@ from StreamDock.ui.dialogs import (
 )
 from StreamDock.application.config_document import (
     DEFAULT_BRIGHTNESS,
+    MIN_BRIGHTNESS,
     ConfigDocument,
     KeyDefinition,
     Layout,
@@ -23,12 +24,16 @@ from StreamDock.application.config_document import (
 )
 from StreamDock.ui.device_bar import DeviceBar
 from StreamDock.ui.settings_store import get_default_config_path, set_default_config_path
-from StreamDock.ui.widgets import KeySquare, LayoutListWidget, WindowRulesWidget
+from StreamDock.ui.widgets import (
+    KeySquare,
+    LayoutListWidget,
+    ToggleSwitch,
+    WindowRulesWidget,
+)
 from StreamDock.ui.styles import get_colors, get_stylesheet
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -40,7 +45,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QSpinBox,
+    QSlider,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -220,20 +225,36 @@ class MainWindow(QMainWindow):
         settings_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         
-        self.brightness_spin = QSpinBox()
-        self.brightness_spin.setRange(0, 100)
-        self.brightness_spin.setValue(DEFAULT_BRIGHTNESS)
-        self.brightness_spin.setSuffix("%")
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(MIN_BRIGHTNESS, 100)
+        self.brightness_slider.setValue(DEFAULT_BRIGHTNESS)
+        self.brightness_slider.setPageStep(5)
         # A form layout stretches its fields; a percentage does not need the
         # full width of the window.
-        self.brightness_spin.setFixedWidth(110)
-        self.brightness_spin.valueChanged.connect(self.on_settings_changed)
-        settings_layout.addRow("Brightness:", self.brightness_spin)
+        self.brightness_slider.setFixedWidth(200)
+        self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
         
-        self.lock_monitor_check = QCheckBox()
-        self.lock_monitor_check.setChecked(True)
-        self.lock_monitor_check.stateChanged.connect(self.on_settings_changed)
-        settings_layout.addRow("Lock Monitor:", self.lock_monitor_check)
+        self.brightness_value = QLabel()
+        self.brightness_value.setObjectName("brightnessValue")
+        self.brightness_value.setFixedWidth(40)
+        self.brightness_value.setAlignment(Qt.AlignmentFlag.AlignRight
+                                           | Qt.AlignmentFlag.AlignVCenter)
+        self.show_brightness(self.brightness_slider.value())
+        
+        brightness_row = QWidget()
+        brightness_row_layout = QHBoxLayout(brightness_row)
+        brightness_row_layout.setContentsMargins(0, 0, 0, 0)
+        brightness_row_layout.setSpacing(10)
+        brightness_row_layout.addWidget(self.brightness_slider)
+        brightness_row_layout.addWidget(self.brightness_value)
+        settings_layout.addRow("Brightness:", brightness_row)
+        
+        self.lock_monitor_toggle = ToggleSwitch(
+            "Turn off the device screen when the computer locks")
+        self.lock_monitor_toggle.setChecked(True)
+        self.lock_monitor_toggle.toggled.connect(self.on_settings_changed)
+        # Spans both columns: the switch carries its own label.
+        settings_layout.addRow(self.lock_monitor_toggle)
         
         settings_group.setLayout(settings_layout)
         center_layout.addWidget(settings_group)
@@ -410,15 +431,17 @@ class MainWindow(QMainWindow):
                 self.setWindowTitle("StreamDock Configuration Editor - Unsaved")
             
             # Block signals to prevent mark_modified from being called during load
-            self.brightness_spin.blockSignals(True)
-            self.lock_monitor_check.blockSignals(True)
+            self.brightness_slider.blockSignals(True)
+            self.lock_monitor_toggle.blockSignals(True)
             
-            # The validator accepts a float brightness, QSpinBox does not.
-            self.brightness_spin.setValue(int(self.config.settings.brightness))
-            self.lock_monitor_check.setChecked(bool(self.config.settings.lock_monitor))
+            # The validator accepts a float brightness, the slider does not.
+            # A file dimmer than the slider allows lands on its minimum.
+            self.brightness_slider.setValue(int(self.config.settings.brightness))
+            self.lock_monitor_toggle.setChecked(bool(self.config.settings.lock_monitor))
             
-            self.brightness_spin.blockSignals(False)
-            self.lock_monitor_check.blockSignals(False)
+            self.brightness_slider.blockSignals(False)
+            self.lock_monitor_toggle.blockSignals(False)
+            self.show_brightness(self.brightness_slider.value())
             
             self.update_layout_list()
             self.update_window_rules_list()
@@ -660,10 +683,19 @@ class MainWindow(QMainWindow):
             # closeEvent refused (the user cancelled the save prompt).
             self._quitting = False
 
+    def show_brightness(self, percent: int):
+        """Keep the readout beside the slider in step with it"""
+        self.brightness_value.setText(f"{percent}%")
+    
+    def on_brightness_changed(self, percent: int):
+        """Handle a move of the brightness slider"""
+        self.show_brightness(percent)
+        self.on_settings_changed()
+    
     def on_settings_changed(self):
         """Handle settings changes"""
-        self.config.settings.brightness = self.brightness_spin.value()
-        self.config.settings.lock_monitor = self.lock_monitor_check.isChecked()
+        self.config.settings.brightness = self.brightness_slider.value()
+        self.config.settings.lock_monitor = self.lock_monitor_toggle.isChecked()
         self.mark_modified()
     
     def show_advanced_settings(self):

@@ -26,6 +26,9 @@ from StreamDock.application.configuration_manager import (
 # Single source of truth. The editor used to default to 15 and the runtime to
 # 50, so a config written by the editor changed brightness on first save.
 DEFAULT_BRIGHTNESS = 50
+# The device ignores anything dimmer than this, so the editor does not
+# offer values below it.
+MIN_BRIGHTNESS = 15
 DEFAULT_TEXT_COLOR = "white"
 DEFAULT_BACKGROUND_COLOR = "black"
 DEFAULT_FONT_SIZE = 20
