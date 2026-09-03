@@ -3,6 +3,8 @@
 Main window for StreamDock Configuration Editor
 """
 
+import copy
+import os
 from pathlib import Path
 
 from StreamDock.ui.dialogs import (
@@ -18,8 +20,11 @@ from StreamDock.application.config_document import (
     Layout,
     WindowRule,
 )
+from StreamDock.ui.device_bar import DeviceBar
+from StreamDock.ui.settings_store import get_default_config_path, set_default_config_path
 from StreamDock.ui.widgets import KeySquare, LayoutListWidget, WindowRulesWidget
 from StreamDock.ui.styles import get_colors, get_stylesheet
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QAction, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -125,6 +130,16 @@ class KeyActionDialog(QMessageBox):
 
 class MainWindow(QMainWindow):
     """Main window for the configuration editor"""
+
+    # Device commands, connected to the worker thread by the application so
+    # Qt delivers them queued.
+    connect_requested = pyqtSignal(str, str)     # device_key, config_path
+    disconnect_requested = pyqtSignal()
+    apply_config_requested = pyqtSignal(dict, str)  # document, config_path
+    refresh_devices_requested = pyqtSignal()
+
+    quit_requested = pyqtSignal()
+    hidden_to_tray = pyqtSignal()
     
     def __init__(self):
         super().__init__()
@@ -133,6 +148,10 @@ class MainWindow(QMainWindow):
         self.config_file_path = None
         self.key_squares = []
         self.modified = False  # Track if config has unsaved changes
+        # Set by the application: without a tray, closing must really quit or
+        # the window becomes unreachable.
+        self.tray_available = False
+        self._quitting = False
         
         self.setWindowTitle("StreamDock Configuration Editor")
         self.setMinimumSize(1200, 800)
@@ -184,6 +203,10 @@ class MainWindow(QMainWindow):
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
         center_layout.setSpacing(16)
+        
+        # Device selection, connection state and Apply
+        self.device_bar = DeviceBar()
+        center_layout.addWidget(self.device_bar)
         
         # Settings panel with modern card design
         settings_group = QGroupBox("Device Settings")
@@ -276,7 +299,7 @@ class MainWindow(QMainWindow):
         
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence("Ctrl+Q"))
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self.request_quit)
         file_menu.addAction(exit_action)
         
         # Keys menu
@@ -323,6 +346,31 @@ class MainWindow(QMainWindow):
         
         if file_path:
             self.load_config(file_path)
+            self.offer_as_default_config(file_path)
+    
+    def offer_as_default_config(self, file_path: str) -> None:
+        """
+        Ask whether a newly opened file should become the startup default.
+
+        Args:
+            file_path: The configuration just opened
+        """
+        if os.path.abspath(file_path) == (get_default_config_path() or ""):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Default configuration",
+            f"Open {Path(file_path).name} automatically from now on?\n\n"
+            "Choosing No keeps your current default.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            set_default_config_path(file_path)
+            self.statusBar().showMessage(
+                f"{Path(file_path).name} is now the default configuration", 5000)
     
     def load_config(self, file_path: str, set_as_current_file: bool = True):
         """Load configuration from file
@@ -396,6 +444,9 @@ class MainWindow(QMainWindow):
     
     def save_config_to_file(self, file_path: str) -> bool:
         """Save configuration to specified file. Returns True if saved successfully."""
+        if not self.validate_current_config(allow_override=True):
+            return False
+
         try:
             self.config.save(file_path)
             self.config_file_path = file_path
@@ -425,7 +476,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
     
     def closeEvent(self, event):
-        """Handle window close event - warn about unsaved changes"""
+        """
+        Hide to the tray instead of quitting.
+
+        Prompting about unsaved changes on every minimise would be
+        intolerable, so that prompt belongs to request_quit() only.
+        """
+        if not self._quitting and self.tray_available:
+            event.ignore()
+            self.hide()
+            self.hidden_to_tray.emit()
+            return
+
         if self.modified:
             reply = QMessageBox.question(
                 self,
@@ -450,6 +512,103 @@ class MainWindow(QMainWindow):
         else:
             event.accept()
     
+    # ── device integration ────────────────────────────────────────────────
+
+    def validate_current_config(self, allow_override: bool = False) -> bool:
+        """
+        Check the open configuration against the runtime's rules.
+
+        Args:
+            allow_override: Offer a "Save anyway" escape. Saving a
+                work-in-progress config whose icon does not exist yet is
+                legitimate; applying one is not.
+
+        Returns:
+            True if the caller should proceed.
+        """
+        issues = self.config.validate()
+        if not issues:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Configuration is invalid")
+        box.setText(issues[0])
+        box.setDetailedText("\n".join(issues))
+
+        if allow_override:
+            box.setStandardButtons(QMessageBox.StandardButton.Cancel)
+            override = box.addButton("Save anyway", QMessageBox.ButtonRole.DestructiveRole)
+            box.exec()
+            return box.clickedButton() is override
+
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+        self.statusBar().showMessage(f"Invalid: {issues[0]}", 10000)
+        return False
+
+    def on_apply_requested(self) -> None:
+        """Send the open configuration to the connected device."""
+        if not self.validate_current_config():
+            return
+
+        self.statusBar().showMessage("Applying configuration to device...")
+        # Deep-copied at the boundary so the window stays editable while the
+        # worker thread applies it.
+        self.apply_config_requested.emit(
+            copy.deepcopy(self.config.to_dict()['streamdock']),
+            self.config.path or "")
+
+    def on_connect_requested(self, device_id: str) -> None:
+        """Connect, using the open configuration."""
+        if not self.config.path:
+            QMessageBox.warning(
+                self, "Save the configuration first",
+                "The device needs a configuration file. Save this one, or open "
+                "an existing configuration, then connect.")
+            return
+
+        self.connect_requested.emit(device_id, self.config.path)
+
+    def on_devices_discovered(self, devices) -> None:
+        """Populate the device picker."""
+        self.device_bar.set_devices(devices)
+        if not devices:
+            self.statusBar().showMessage("No Stream Dock found", 5000)
+
+    def on_connection_state_changed(self, state: str, detail: str) -> None:
+        """Reflect the connection state in the bar and the status line."""
+        self.device_bar.set_state(state, detail)
+        self.statusBar().showMessage(
+            f"{state.capitalize()}{f' — {detail}' if detail else ''}", 5000)
+
+    def on_config_applied(self, config_path: str) -> None:
+        """Report a successful apply."""
+        self.statusBar().showMessage("Configuration applied to device", 5000)
+
+    def on_device_error(self, title: str, message: str) -> None:
+        """Report a device-side failure."""
+        QMessageBox.critical(self, title, message)
+        self.statusBar().showMessage(f"{title}: {message}", 10000)
+
+    def on_layout_changed(self, layout_name: str) -> None:
+        """Report the layout the device switched to."""
+        self.statusBar().showMessage(f"Device layout: {layout_name}", 5000)
+
+    def request_quit(self) -> None:
+        """
+        Quit for real: prompt about unsaved changes, then close.
+
+        Reached from File > Exit and the tray's Quit entry.
+        """
+        self._quitting = True
+        self.close()
+        if not self.isVisible():
+            self.quit_requested.emit()
+        else:
+            # closeEvent refused (the user cancelled the save prompt).
+            self._quitting = False
+
     def on_settings_changed(self):
         """Handle settings changes"""
         self.config.settings.brightness = self.brightness_spin.value()
