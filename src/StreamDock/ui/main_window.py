@@ -1134,35 +1134,50 @@ class MainWindow(QMainWindow):
         self.mark_modified()
     
     def on_key_moved(self, from_position: int, to_position: int):
-        """Handle drag and drop of key from one position to another"""
-        if not self.current_layout:
+        """
+        Handle a key dragged onto another square
+
+        An empty target takes the key; an occupied one trades places with it.
+        Swapping is the only reordering that leaves every other key where the
+        user put it - on a physical deck, a key that shifts on its own is a
+        key pressed by mistake.
+
+        Args:
+            from_position: Square the drag started on
+            to_position: Square it was dropped on
+        """
+        if not self.current_layout or from_position == to_position:
             return
         
-        # Get key name from source position
-        key_name = self.current_layout.keys.get(from_position)
-        if not key_name:
+        moved = self.current_layout.keys.get(from_position)
+        if not moved or moved not in self.config.keys:
             return
         
-        # Get the key definition before clearing
-        key_def = self.config.keys.get(key_name)
-        if not key_def:
-            return
+        displaced = self.current_layout.keys.get(to_position)
+        self.current_layout.keys[to_position] = moved
+        if displaced:
+            self.current_layout.keys[from_position] = displaced
+        else:
+            self.current_layout.remove_key_at_position(from_position)
         
-        # Move key in layout
-        self.current_layout.remove_key_at_position(from_position)
-        self.current_layout.keys[to_position] = key_name
-        
-        # Get references to the squares
-        from_square = self.key_squares[from_position - 1]
-        to_square = self.key_squares[to_position - 1]
-        
-        # Clear source square first
-        from_square.set_empty()
-        
-        # Then set destination square
-        to_square.set_key(key_name, key_def)
-        
+        self.show_key_at(from_position)
+        self.show_key_at(to_position)
         self.mark_modified()
+    
+    def show_key_at(self, position: int):
+        """
+        Draw one square from whatever the current layout holds there
+
+        Args:
+            position: Key position, 1-15
+        """
+        square = self.key_squares[position - 1]
+        key_name = self.current_layout.keys.get(position) if self.current_layout else None
+        key_def = self.config.keys.get(key_name) if key_name else None
+        if key_def:
+            square.set_key(key_name, key_def)
+        else:
+            square.set_empty()
     
     def manage_all_keys(self):
         """Show dialog to manage all key definitions"""
