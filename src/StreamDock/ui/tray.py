@@ -22,7 +22,6 @@ class TrayIcon(QSystemTrayIcon):
 
     show_requested = pyqtSignal()
     quit_requested = pyqtSignal()
-    apply_requested = pyqtSignal()
     connect_requested = pyqtSignal()
     disconnect_requested = pyqtSignal()
 
@@ -49,10 +48,6 @@ class TrayIcon(QSystemTrayIcon):
         self.disconnect_action.triggered.connect(self.disconnect_requested)
         menu.addAction(self.disconnect_action)
 
-        self.apply_action = QAction("Apply Current Config", self)
-        self.apply_action.triggered.connect(self.apply_requested)
-        menu.addAction(self.apply_action)
-
         menu.addSeparator()
 
         self.quit_action = QAction("Quit", self)
@@ -72,7 +67,6 @@ class TrayIcon(QSystemTrayIcon):
         connected = state == STATE_CONNECTED
         self.connect_action.setVisible(not connected)
         self.disconnect_action.setVisible(connected)
-        self.apply_action.setEnabled(connected)
         self.setToolTip(f"StreamDock — {detail}" if detail else f"StreamDock — {state}")
 
     def _on_activated(self, reason) -> None:

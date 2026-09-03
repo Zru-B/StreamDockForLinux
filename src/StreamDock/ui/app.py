@@ -168,7 +168,6 @@ class StreamDockGui:
         if self._tray is not None:
             self._tray.show_requested.connect(self._raise_window)
             self._tray.quit_requested.connect(window.request_quit)
-            self._tray.apply_requested.connect(window.on_apply_requested)
             self._tray.connect_requested.connect(
                 lambda: window.on_connect_requested(
                     window.device_bar.selected_device_id() or ""))
