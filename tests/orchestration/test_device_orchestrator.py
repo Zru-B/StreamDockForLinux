@@ -33,6 +33,9 @@ class TestDeviceOrchestrator:
         """Mock SystemInterface."""
         system = Mock(spec=SystemInterface)
         system.start_lock_monitor.return_value = True
+        # Default to unlocked. Without this the auto-specced mock returns a
+        # truthy Mock and start() takes the "locked at startup" branch.
+        system.poll_lock_state.return_value = False
         return system
     
     @pytest.fixture
@@ -263,6 +266,11 @@ class TestDeviceOrchestrator:
                                           mock_windows):
         """CRITICAL: Window change triggers layout selection."""
         orchestrator.start()
+        
+        # start() applies the context-aware layout itself, so only count the
+        # lookups made by the event we are actually testing.
+        mock_windows.get_active_window.reset_mock()
+        mock_layout_manager.select_layout.reset_mock()
         
         # Simulate window change
         orchestrator._on_window_changed(SystemEvent.WINDOW_CHANGED)
