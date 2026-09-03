@@ -4,11 +4,17 @@ Dialogs for StreamDock Configuration Editor
 Handles key editing, action editing, and layout management
 """
 
+import os
 from pathlib import Path
 
-from config_editor_models import KeyDefinition
-from config_editor_widgets import ActionListItem
-from modern_styles import get_colors
+from StreamDock.application.config_document import KeyDefinition
+from StreamDock.business_logic.action_type import ActionType
+from StreamDock.application.configuration_manager import (
+    relativize_icon_path,
+    resolve_icon_path,
+)
+from StreamDock.ui.widgets import ActionListItem
+from StreamDock.ui.styles import get_colors
 from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -40,6 +46,23 @@ from PyQt6.QtWidgets import (
 )
 
 COLORS = get_colors()
+
+
+# Labels that Title Case gets wrong. Everything else is derived from
+# ActionType, so an action added to the runtime cannot go missing from the
+# editor - CHANGE_KEY_TEXT was absent from the hand-written list for exactly
+# that reason.
+_ACTION_TYPE_LABEL_OVERRIDES = {
+    "DBUS": "D-Bus",
+    "CHANGE_KEY_IMAGE": "Change Key Image",
+    "CHANGE_KEY_TEXT": "Change Key Text",
+}
+
+_ACTION_TYPE_DISPLAY = {
+    action.name: _ACTION_TYPE_LABEL_OVERRIDES.get(
+        action.name, action.name.replace("_", " ").title())
+    for action in ActionType
+}
 
 
 def create_styled_button(text: str, icon: str = None, primary: bool = False) -> QPushButton:
@@ -102,13 +125,16 @@ class KeyEditorDialog(QDialog):
     """Dialog for creating or editing a key"""
     
     def __init__(self, key_def: KeyDefinition = None, existing_keys: list = None, 
-                 available_layouts: list = None, available_keys: list = None, parent=None):
+                 available_layouts: list = None, available_keys: list = None,
+                 config_dir: str = None, parent=None):
         super().__init__(parent)
         self.key_def = key_def or KeyDefinition("NewKey")
         self.existing_keys = existing_keys or []
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
         self.selected_icon_path = None
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         
         self.setWindowTitle("Edit Key" if key_def else "Create New Key")
         self.setMinimumSize(600, 750)
@@ -207,13 +233,16 @@ class KeyEditorDialog(QDialog):
         # Actions tabs
         self.tabs = QTabWidget()
         
-        self.press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.press_actions_widget, "On Press Actions")
         
-        self.release_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.release_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.release_actions_widget, "On Release Actions")
         
-        self.double_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.double_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.double_press_actions_widget, "On Double Press Actions")
         
         layout.addWidget(self.tabs)
@@ -251,20 +280,20 @@ class KeyEditorDialog(QDialog):
         )
         
         if file_path:
-            self.selected_icon_path = file_path
+            # Store relative when the icon lives under the config directory,
+            # so the configuration stays portable.
+            self.selected_icon_path = relativize_icon_path(file_path, self.config_dir)
             self.icon_path_label.setText(Path(file_path).name)
-            self.load_icon_preview(file_path)
+            self.load_icon_preview(self.selected_icon_path)
     
     def load_icon_preview(self, icon_path: str):
         """Load and display icon preview"""
         if not icon_path:
             return
         
-        # Handle relative paths
-        icon_file = Path(icon_path)
-        if not icon_file.is_absolute():
-            # Try relative to src directory
-            icon_file = Path(__file__).parent / 'src' / icon_path
+        # Relative paths resolve against the config file's directory, the
+        # same rule the runtime applies.
+        icon_file = Path(resolve_icon_path(icon_path, self.config_dir))
         
         if not icon_file.exists():
             self.icon_preview.setText(f"Icon not found:\n{icon_path}")
@@ -362,11 +391,14 @@ class KeyEditorDialog(QDialog):
 class ActionEditorWidget(QWidget):
     """Widget for editing a list of actions"""
     
-    def __init__(self, available_layouts: list = None, available_keys: list = None, parent=None):
+    def __init__(self, available_layouts: list = None, available_keys: list = None,
+                 config_dir: str = None, parent=None):
         super().__init__(parent)
         self.actions = []
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         self.setup_ui()
     
     def setup_ui(self):
@@ -447,7 +479,8 @@ class ActionEditorWidget(QWidget):
     
     def add_action(self):
         """Add a new action"""
-        dialog = ActionDialog(None, self.available_layouts, self.available_keys)
+        dialog = ActionDialog(None, self.available_layouts, self.available_keys,
+                              config_dir=self.config_dir)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action = dialog.get_action()
             if action:
@@ -457,7 +490,8 @@ class ActionEditorWidget(QWidget):
     def edit_action(self, index: int):
         """Edit an existing action"""
         if 0 <= index < len(self.actions):
-            dialog = ActionDialog(self.actions[index], self.available_layouts, self.available_keys)
+            dialog = ActionDialog(self.actions[index], self.available_layouts,
+                                  self.available_keys, config_dir=self.config_dir)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 action = dialog.get_action()
                 if action:
@@ -487,29 +521,19 @@ class ActionDialog(QDialog):
     """Dialog for creating or editing a single action"""
     
     # Mapping from backend keys to user-friendly display names
-    ACTION_TYPE_DISPLAY = {
-        "EXECUTE_COMMAND": "Execute Command",
-        "LAUNCH_APPLICATION": "Launch Application",
-        "KEY_PRESS": "Key Press",
-        "TYPE_TEXT": "Type Text",
-        "WAIT": "Wait",
-        "CHANGE_KEY_IMAGE": "Change Key Image",
-        "CHANGE_KEY": "Change Key",
-        "CHANGE_LAYOUT": "Change Layout",
-        "DBUS": "D-Bus",
-        "DEVICE_BRIGHTNESS_UP": "Device Brightness Up",
-        "DEVICE_BRIGHTNESS_DOWN": "Device Brightness Down"
-    }
+    ACTION_TYPE_DISPLAY = _ACTION_TYPE_DISPLAY
     
     # Reverse mapping for quick lookup
     ACTION_TYPE_BACKEND = {v: k for k, v in ACTION_TYPE_DISPLAY.items()}
     
     def __init__(self, action_dict: dict = None, available_layouts: list = None, 
-                 available_keys: list = None, parent=None):
+                 available_keys: list = None, config_dir: str = None, parent=None):
         super().__init__(parent)
         self.action_dict = action_dict or {}
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         
         self.setWindowTitle("Edit Action" if action_dict else "Add Action")
         self.setMinimumWidth(500)
@@ -655,6 +679,43 @@ class ActionDialog(QDialog):
             img_layout.addWidget(browse_btn)
             self.fields_layout.addLayout(img_layout)
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            self.fields_layout.addWidget(QLabel("Text:"))
+            self.key_text_edit = QLineEdit()
+            self.fields_layout.addWidget(self.key_text_edit)
+
+            style_layout = QFormLayout()
+
+            self.key_text_color_edit = QLineEdit("white")
+            style_layout.addRow("Text color:", self.key_text_color_edit)
+
+            self.key_text_bg_edit = QLineEdit("black")
+            style_layout.addRow("Background:", self.key_text_bg_edit)
+
+            self.key_text_size_spin = QSpinBox()
+            self.key_text_size_spin.setRange(6, 96)
+            self.key_text_size_spin.setValue(20)
+            style_layout.addRow("Font size:", self.key_text_size_spin)
+
+            self.key_text_position_combo = QComboBox()
+            self.key_text_position_combo.addItems(["bottom", "center", "top"])
+            style_layout.addRow("Position:", self.key_text_position_combo)
+
+            self.fields_layout.addLayout(style_layout)
+
+            self.key_text_bold_check = QCheckBox("Bold")
+            self.key_text_bold_check.setChecked(True)
+            self.fields_layout.addWidget(self.key_text_bold_check)
+
+            self.fields_layout.addWidget(QLabel("Background image (optional):"))
+            icon_row = QHBoxLayout()
+            self.key_text_icon_edit = QLineEdit()
+            icon_row.addWidget(self.key_text_icon_edit)
+            icon_browse = QPushButton("Browse...")
+            icon_browse.clicked.connect(self.browse_key_text_icon)
+            icon_row.addWidget(icon_browse)
+            self.fields_layout.addLayout(icon_row)
+
         elif action_type == "CHANGE_KEY":
             label = QLabel("Change to Key:")
             self.fields_layout.addWidget(label)
@@ -749,6 +810,15 @@ class ActionDialog(QDialog):
             label = QLabel("No additional parameters needed")
             self.fields_layout.addWidget(label)
     
+    def browse_key_text_icon(self):
+        """Pick a background image for a CHANGE_KEY_TEXT action."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Background Image", "",
+            "Images (*.png *.jpg *.jpeg *.gif *.svg *.bmp)")
+        if file_path:
+            self.key_text_icon_edit.setText(
+                relativize_icon_path(file_path, self.config_dir))
+
     def browse_image(self):
         """Browse for an image file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -817,6 +887,20 @@ class ActionDialog(QDialog):
         elif action_type == "CHANGE_KEY_IMAGE":
             self.image_path_edit.setText(action_value)
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            # The runtime accepts a bare string or the full styled dict.
+            values = action_value if isinstance(action_value, dict) else {'text': action_value}
+            self.key_text_edit.setText(str(values.get('text', '')))
+            self.key_text_color_edit.setText(str(values.get('text_color', 'white')))
+            self.key_text_bg_edit.setText(str(values.get('background_color', 'black')))
+            self.key_text_size_spin.setValue(int(values.get('font_size', 20)))
+            self.key_text_bold_check.setChecked(bool(values.get('bold', True)))
+            self.key_text_icon_edit.setText(str(values.get('icon', '')))
+            index = self.key_text_position_combo.findText(
+                str(values.get('text_position', 'bottom')))
+            if index >= 0:
+                self.key_text_position_combo.setCurrentIndex(index)
+
         elif action_type == "CHANGE_KEY":
             # Set the combo box to the key name
             index = self.change_key_combo.findText(action_value)
@@ -927,6 +1011,24 @@ class ActionDialog(QDialog):
                 return None
             return {action_type: value}
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            text = self.key_text_edit.text()
+            if not text:
+                return None
+
+            value = {
+                'text': text,
+                'text_color': self.key_text_color_edit.text().strip() or 'white',
+                'background_color': self.key_text_bg_edit.text().strip() or 'black',
+                'font_size': self.key_text_size_spin.value(),
+                'bold': self.key_text_bold_check.isChecked(),
+                'text_position': self.key_text_position_combo.currentText(),
+            }
+            icon = self.key_text_icon_edit.text().strip()
+            if icon:
+                value['icon'] = icon
+            return {action_type: value}
+
         elif action_type == "CHANGE_KEY":
             value = self.change_key_combo.currentText()
             if not value or value == "No keys available":
@@ -1508,7 +1610,7 @@ class AdvancedSettingsDialog(QDialog):
         self.interval_spin.setRange(0.1, 2.0)
         self.interval_spin.setSingleStep(0.05)
         self.interval_spin.setDecimals(2)
-        self.interval_spin.setValue(self.config.double_press_interval)
+        self.interval_spin.setValue(self.config.settings.double_press_interval)
         self.interval_spin.setSuffix(" sec")
         self.interval_spin.setMinimumWidth(120)
         self.interval_spin.setMaximumWidth(140)

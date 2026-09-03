@@ -134,6 +134,30 @@ class TestRoundTrip:
         assert reload(workdir, source)['layouts']['Main']['keys'] == \
             [{1: 'Key1'}, {3: 'Key1'}]
 
+    def test_default_styling_is_not_written_unless_it_was_there(self, workdir):
+        """Opening and saving must not churn the file with implicit defaults."""
+        source = {**BASE, 'keys': {'Key1': {
+            'text': 'A', 'on_press_actions': [{'KEY_PRESS': 'a'}]}}}
+
+        assert reload(workdir, source)['keys']['Key1'] == source['keys']['Key1']
+
+    def test_explicit_defaults_are_kept(self, workdir):
+        """A field the user spelled out stays spelled out, even at its default."""
+        source = {**BASE, 'keys': {'Key1': {
+            'text': 'A', 'text_color': 'white',
+            'on_press_actions': [{'KEY_PRESS': 'a'}]}}}
+
+        assert reload(workdir, source)['keys']['Key1']['text_color'] == 'white'
+
+    def test_changed_styling_is_written(self, workdir):
+        path = write_config(workdir, BASE)
+        document = ConfigDocument.load(path)
+        document.keys['Key1'].font_size = 44
+        document.save()
+
+        with open(path) as f:
+            assert yaml.safe_load(f)['streamdock']['keys']['Key1']['font_size'] == 44
+
     def test_a_saved_config_still_validates(self, workdir):
         path = write_config(workdir, BASE)
         document = ConfigDocument.load(path)

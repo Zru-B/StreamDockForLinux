@@ -5,16 +5,21 @@ Main window for StreamDock Configuration Editor
 
 from pathlib import Path
 
-from config_editor_dialogs import (
+from StreamDock.ui.dialogs import (
     AdvancedSettingsDialog,
     KeyEditorDialog,
     LayoutEditorDialog,
     ManageKeysDialog,
     WindowRuleDialog,
 )
-from config_editor_models import KeyDefinition, Layout, StreamDockConfig, WindowRule
-from config_editor_widgets import KeySquare, LayoutListWidget, WindowRulesWidget
-from modern_styles import get_colors, get_stylesheet
+from StreamDock.application.config_document import (
+    ConfigDocument,
+    KeyDefinition,
+    Layout,
+    WindowRule,
+)
+from StreamDock.ui.widgets import KeySquare, LayoutListWidget, WindowRulesWidget
+from StreamDock.ui.styles import get_colors, get_stylesheet
 from PyQt6.QtGui import QAction, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -30,6 +35,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSpinBox,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -117,12 +123,12 @@ class KeyActionDialog(QMessageBox):
             self.action = self.CANCEL
 
 
-class ConfigEditorMainWindow(QMainWindow):
+class MainWindow(QMainWindow):
     """Main window for the configuration editor"""
     
     def __init__(self):
         super().__init__()
-        self.config = StreamDockConfig()
+        self.config = ConfigDocument.new_empty()
         self.current_layout = None
         self.config_file_path = None
         self.key_squares = []
@@ -136,11 +142,9 @@ class ConfigEditorMainWindow(QMainWindow):
         
         self.setup_ui()
         self.setup_menu()
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage("Ready")
         
-        # Try to load default config as template (don't set as current file)
-        default_config = Path(__file__).parent.parent / "config.yml"
-        if default_config.exists():
-            self.load_config(str(default_config), set_as_current_file=False)
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -299,7 +303,7 @@ class ConfigEditorMainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.config = StreamDockConfig()
+            self.config = ConfigDocument.new_empty()
             self.config_file_path = None  # No file path for new config
             self.current_layout = None
             self.modified = False  # Start as unmodified
@@ -328,7 +332,7 @@ class ConfigEditorMainWindow(QMainWindow):
             set_as_current_file: If True, set this as the current file path for saving
         """
         try:
-            self.config.load_from_file(file_path)
+            self.config = ConfigDocument.load(file_path)
             
             if set_as_current_file:
                 self.config_file_path = file_path
@@ -344,8 +348,8 @@ class ConfigEditorMainWindow(QMainWindow):
             self.brightness_spin.blockSignals(True)
             self.lock_monitor_check.blockSignals(True)
             
-            self.brightness_spin.setValue(self.config.brightness)
-            self.lock_monitor_check.setChecked(self.config.lock_monitor)
+            self.brightness_spin.setValue(self.config.settings.brightness)
+            self.lock_monitor_check.setChecked(self.config.settings.lock_monitor)
             
             self.brightness_spin.blockSignals(False)
             self.lock_monitor_check.blockSignals(False)
@@ -393,11 +397,11 @@ class ConfigEditorMainWindow(QMainWindow):
     def save_config_to_file(self, file_path: str) -> bool:
         """Save configuration to specified file. Returns True if saved successfully."""
         try:
-            self.config.save_to_file(file_path)
+            self.config.save(file_path)
             self.config_file_path = file_path
             self.modified = False  # Clear modified flag after save
             self.update_window_title()
-            QMessageBox.information(self, "Success", "Configuration saved successfully!")
+            self.statusBar().showMessage(f"Saved {Path(file_path).name}", 5000)
             return True
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
@@ -448,8 +452,8 @@ class ConfigEditorMainWindow(QMainWindow):
     
     def on_settings_changed(self):
         """Handle settings changes"""
-        self.config.brightness = self.brightness_spin.value()
-        self.config.lock_monitor = self.lock_monitor_check.isChecked()
+        self.config.settings.brightness = self.brightness_spin.value()
+        self.config.settings.lock_monitor = self.lock_monitor_check.isChecked()
         self.mark_modified()
     
     def show_advanced_settings(self):
@@ -458,7 +462,7 @@ class ConfigEditorMainWindow(QMainWindow):
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             settings = dialog.get_settings()
-            self.config.double_press_interval = settings['double_press_interval']
+            self.config.settings.double_press_interval = settings['double_press_interval']
             self.mark_modified()
     
     def update_layout_list(self):
@@ -476,8 +480,11 @@ class ConfigEditorMainWindow(QMainWindow):
     
     def display_layout(self, layout: Layout):
         """Display a layout on the key grid"""
+        config_dir = self.config.config_dir
+
         # Clear all squares first
         for square in self.key_squares:
+            square.config_dir = config_dir
             square.set_empty()
         
         # Set keys according to layout
@@ -790,6 +797,7 @@ class ConfigEditorMainWindow(QMainWindow):
         editor = KeyEditorDialog(existing_keys=existing_keys, 
                                 available_layouts=available_layouts,
                                 available_keys=available_keys,
+                                config_dir=self.config.config_dir,
                                 parent=self)
         
         if editor.exec() == editor.DialogCode.Accepted:
@@ -826,7 +834,8 @@ class ConfigEditorMainWindow(QMainWindow):
         available_layouts = list(self.config.layouts.keys())
         available_keys = [k for k in self.config.keys.keys() if k != key_name]
         
-        editor = KeyEditorDialog(key_def, existing_keys, available_layouts, available_keys, self)
+        editor = KeyEditorDialog(key_def, existing_keys, available_layouts, available_keys,
+                                 config_dir=self.config.config_dir, parent=self)
         
         if editor.exec() == editor.DialogCode.Accepted:
             new_key_def = editor.get_key_definition()
