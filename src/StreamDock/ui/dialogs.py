@@ -843,6 +843,11 @@ class ActionDialog(QDialog):
         index = self.action_type_combo.findText(display_name)
         if index >= 0:
             self.action_type_combo.setCurrentIndex(index)
+
+        # setCurrentIndex only emits when the index actually changes, so an
+        # action whose type is already selected - the first one alphabetically
+        # - would never have its field widgets built.
+        self.update_action_fields()
         
         # Load specific fields based on type
         if action_type == "EXECUTE_COMMAND":
