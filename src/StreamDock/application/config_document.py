@@ -338,6 +338,9 @@ class ConfigDocument:
         self.layouts: Dict[str, Layout] = {}
         self.window_rules: Dict[str, WindowRule] = {}
         self.extra: Dict[str, Any] = {}
+        # Optional sections the source file actually contained, so opening and
+        # saving does not add empty ones it never had.
+        self._present_sections: set = set()
         self._path: Optional[str] = path
         self._dirty: bool = False
 
@@ -402,6 +405,8 @@ class ConfigDocument:
             for name, data in _section(streamdock, 'windows_rules').items()
         }
         document.extra = _extras(streamdock, cls.KNOWN_SECTIONS)
+        document._present_sections = {
+            name for name in cls.KNOWN_SECTIONS if name in streamdock}
         return document
 
     @classmethod
@@ -419,12 +424,22 @@ class ConfigDocument:
             A dictionary ready to be written as YAML or validated
         """
         streamdock: Dict[str, Any] = dict(self.extra)
-        streamdock['settings'] = self.settings.to_dict()
+
+        # keys and layouts are required, so they are always written. The
+        # optional sections are written when they hold something or when the
+        # source file spelled them out.
+        settings = self.settings.to_dict()
+        if settings or 'settings' in self._present_sections:
+            streamdock['settings'] = settings
+
         streamdock['keys'] = {name: key.to_dict() for name, key in self.keys.items()}
         streamdock['layouts'] = {
             name: layout.to_dict() for name, layout in self.layouts.items()}
-        streamdock['windows_rules'] = {
-            name: rule.to_dict() for name, rule in self.window_rules.items()}
+
+        rules = {name: rule.to_dict() for name, rule in self.window_rules.items()}
+        if rules or 'windows_rules' in self._present_sections:
+            streamdock['windows_rules'] = rules
+
         return {'streamdock': streamdock}
 
     def save(self, path: Optional[str] = None) -> None:
@@ -454,8 +469,10 @@ class ConfigDocument:
             delete=False, encoding='utf-8')
         try:
             with handle:
-                yaml.dump(self.to_dict(), handle, default_flow_style=False,
-                          sort_keys=False, allow_unicode=True)
+                # safe_dump, not dump: dump() happily writes !!python/object
+                # tags that safe_load() then refuses to read back.
+                yaml.safe_dump(self.to_dict(), handle, default_flow_style=False,
+                               sort_keys=False, allow_unicode=True)
             os.replace(handle.name, target)
         except BaseException:
             try:
