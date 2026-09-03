@@ -2,6 +2,8 @@
 Modern UI Styles for StreamDock Configuration Editor
 """
 
+from pathlib import Path
+
 # Modern Color Palette - Dark Mode
 COLORS = {
     # Primary colors
@@ -432,10 +434,84 @@ QToolTip {{
 """
 
 
+# Assets referenced from the stylesheet need absolute paths.
+CHEVRON_PATH = (Path(__file__).parent / "resources" / "chevron-down.svg").as_posix()
+
 # Connection indicator and status bar, used by DeviceBar and MainWindow.
 MODERN_STYLESHEET += f"""
+/* The global down-arrow above is a bordered box, which Qt stylesheets cannot
+   rotate into a chevron - it renders as an L. Use a real asset instead. */
+QComboBox::down-arrow {{
+    image: url({CHEVRON_PATH});
+    border: none;
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+}}
+
+QWidget#deviceBar {{
+    background-color: {COLORS['bg_secondary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 8px;
+}}
+
+QComboBox#deviceCombo {{
+    background-color: {COLORS['bg_tertiary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 6px;
+    padding: 0 8px;
+    min-height: 26px;
+    max-height: 26px;
+    color: {COLORS['text_primary']};
+}}
+QComboBox#deviceCombo:hover {{ border-color: {COLORS['primary']}; }}
+QComboBox#deviceCombo:disabled {{ color: {COLORS['text_secondary']}; }}
+
+QPushButton[barButton="normal"] {{
+    min-height: 26px;
+    max-height: 26px;
+    background-color: {COLORS['bg_tertiary']};
+    color: {COLORS['text_primary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 6px;
+    padding: 0 8px;
+    font-weight: 500;
+}}
+QPushButton[barButton="normal"]:hover {{
+    background-color: {COLORS['bg_hover']};
+    border-color: {COLORS['primary']};
+}}
+QPushButton[barButton="normal"]:disabled {{
+    color: {COLORS['text_secondary']};
+    border-color: {COLORS['border']};
+}}
+
+QPushButton[barButton="primary"] {{
+    min-height: 26px;
+    max-height: 26px;
+    background-color: {COLORS['primary']};
+    color: white;
+    border: 1px solid {COLORS['primary']};
+    border-radius: 6px;
+    padding: 0 8px;
+    font-weight: 600;
+}}
+QPushButton[barButton="primary"]:hover {{
+    background-color: {COLORS['primary_hover']};
+    border-color: {COLORS['primary_hover']};
+}}
+QPushButton[barButton="primary"]:disabled {{
+    background-color: {COLORS['bg_tertiary']};
+    color: {COLORS['text_secondary']};
+    border-color: {COLORS['border']};
+}}
+
+QLabel#connectionStatus {{
+    color: {COLORS['text_secondary']};
+}}
+
 QLabel#connectionDot {{
-    font-size: 16px;
+    font-size: 15px;
     color: {COLORS['text_secondary']};
 }}
 QLabel#connectionDot[state="disconnected"] {{ color: {COLORS['text_secondary']}; }}

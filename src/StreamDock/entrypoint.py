@@ -110,9 +110,12 @@ def run_headless(config_path: str, device_id: str = "") -> int:
         Process exit code
     """
     # Imported here so --headless never pulls in Qt.
+    import threading
+
     from StreamDock.application import Application
     from StreamDock.application.configuration_manager import ConfigValidationError
-    from StreamDock.application.device_discovery import find_device
+    from StreamDock.application.device_discovery import device_key, device_label
+    from StreamDock.application.device_watcher import DeviceWatcher
     from StreamDock.application.instance_lock import InstanceLock
 
     lock = InstanceLock()
@@ -122,43 +125,94 @@ def run_headless(config_path: str, device_id: str = "") -> int:
                       f" (pid {pid})" if pid else "")
         return 1
 
-    try:
-        device_info = find_device(device_id) if device_id else None
-        if device_id and device_info is None:
-            logging.error("Device not found: %s", device_id)
-            return 1
+    state = {'app': None, 'device': None}
+    changed = threading.Event()
 
+    def start_for(device_info) -> bool:
+        """
+        Build and start a runtime for one device.
+
+        Returns:
+            True only when the device actually opened. Application.start()
+            succeeds without a device, which would otherwise look connected.
+        """
         try:
             app = Application(config_path, device_info=device_info)
         except FileNotFoundError as e:
             logging.error("Configuration file not found: %s", e)
-            return 1
+            return False
         except ConfigValidationError as e:
             logging.error("Configuration validation error: %s", e)
-            return 1
+            return False
 
-        logging.info("Starting StreamDock application...")
-        try:
-            if not app.start():
-                logging.error("Failed to start application")
-                return 1
-
-            logging.info("✓ StreamDock is ready. Press Ctrl+C to exit.")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                logging.info("Shutting down...")
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logging.exception("Error during application runtime: %s", e)
-            return 1
-        finally:
+        if not app.start():
+            logging.error("Failed to start application")
             app.stop(force=True)
-            logging.info("✓ Shutdown complete")
+            return False
 
+        if app.get_device() is None:
+            logging.error("Could not open the device; another process may be using it")
+            app.stop(force=True)
+            return False
+
+        state['app'] = app
+        state['device'] = app.get_device_info()
+        logging.info("Connected: %s", device_label(state['device']))
+        return True
+
+    def stop_running(reason: str) -> None:
+        """Release the current runtime, if any."""
+        if state['app'] is None:
+            return
+        logging.info("Releasing device: %s", reason)
+        state['app'].stop(force=True)
+        state['app'] = None
+        state['device'] = None
+
+    # Reconcile on the main thread: udev notifies from its own, and device
+    # work must not run there.
+    watcher = DeviceWatcher(lambda devices: changed.set())
+    watcher.start()
+
+    try:
+        if watcher.devices():
+            start_for(watcher.devices()[0])
+        else:
+            logging.warning("No device attached; waiting for one to be plugged in")
+
+        logging.info("✓ StreamDock is ready. Press Ctrl+C to exit.")
+
+        while True:
+            if changed.wait(timeout=1.0):
+                changed.clear()
+                attached = {device_key(d): d for d in watcher.devices()}
+
+                current = state['device']
+                if current is not None and device_key(current) not in attached:
+                    stop_running(f"{device_label(current)} was unplugged")
+
+                if state['app'] is None and attached:
+                    # Honour an explicit --device; otherwise take any.
+                    if device_id:
+                        target = next((d for k, d in attached.items()
+                                       if device_id in (k, d.device_id)), None)
+                    else:
+                        target = next(iter(attached.values()))
+                    if target is not None:
+                        logging.info("Device available: %s", device_label(target))
+                        start_for(target)
+            time.sleep(0)
+    except KeyboardInterrupt:
+        logging.info("Shutting down...")
         return 0
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logging.exception("Error during application runtime: %s", e)
+        return 1
     finally:
+        watcher.stop()
+        stop_running("shutting down")
         lock.release()
+        logging.info("✓ Shutdown complete")
 
 
 def main(argv=None) -> int:
