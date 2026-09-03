@@ -50,12 +50,11 @@ def window(qtbot):
 class TestCloseToTray:
     """Closing must not stop the device when a tray is available."""
 
-    def test_close_hides_when_a_tray_exists(self, window, qtbot):
+    def test_close_hides_when_a_tray_exists(self, window):
         window.tray_available = True
         window.show()
 
-        with qtbot.waitSignal(window.hidden_to_tray):
-            window.close()
+        window.close()
 
         assert not window.isVisible()
 

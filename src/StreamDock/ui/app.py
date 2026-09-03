@@ -178,7 +178,6 @@ class StreamDockGui:
                 lambda label: self._notify_tray("Device connected", label))
             service.device_detached.connect(
                 lambda label: self._notify_tray("Device unplugged", label))
-            window.hidden_to_tray.connect(self._notify_hidden)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -194,12 +193,6 @@ class StreamDockGui:
         if self._tray is not None:
             self._tray.showMessage(title, message,
                                    QSystemTrayIcon.MessageIcon.Information, 4000)
-
-    def _notify_hidden(self) -> None:
-        if self._tray is not None:
-            self._tray.showMessage(
-                "StreamDock", "Still running in the tray.",
-                QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def _warn_device_in_use(self) -> None:
         pid = self._lock.owner_pid()
