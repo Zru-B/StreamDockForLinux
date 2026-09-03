@@ -176,6 +176,42 @@ streamdock:
     @patch('StreamDock.application.application.USBHardware')
     @patch('StreamDock.application.application.LinuxSystemInterface')
     @patch('StreamDock.application.application.DeviceRegistry')
+    def test_initialize_applies_configured_brightness_to_device(
+        self, mock_registry, mock_system, mock_hardware,
+        temp_dir, valid_config_content
+    ):
+        """CRITICAL: Device is initialized with the configured brightness, not full brightness."""
+        config_path = self.create_config_file(temp_dir, valid_config_content)
+        app = Application(config_path)
+
+        # Mock infrastructure with one discovered device
+        device_info = Mock(
+            vendor_id=0x6603,
+            product_id=0x1006,
+            serial_number='TESTSERIAL',
+            path='/dev/hidraw0',
+            manufacturer='Test',
+            product='StreamDock'
+        )
+        hw_instance = Mock()
+        hw_instance.enumerate_devices = Mock(return_value=[device_info])
+        mock_hardware.return_value = hw_instance
+        mock_system.return_value = Mock()
+        mock_registry.return_value = Mock()
+
+        device = Mock()
+        device.open = Mock(return_value=True)
+
+        with patch('StreamDock.devices.stream_dock_293_v3.StreamDock293V3',
+                   return_value=device):
+            app.initialize()
+
+        # Brightness from the YAML settings section (80), not a hardcoded 100
+        device.init.assert_called_once_with(80)
+
+    @patch('StreamDock.application.application.USBHardware')
+    @patch('StreamDock.application.application.LinuxSystemInterface')
+    @patch('StreamDock.application.application.DeviceRegistry')
     def test_initialize_adds_window_rules(
         self, mock_registry, mock_system, mock_hardware,
         temp_dir, valid_config_content

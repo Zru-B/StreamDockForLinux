@@ -31,6 +31,9 @@ DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
 # Default number of worker threads for callback processing
 DEFAULT_WORKER_THREADS = 4
 
+# Default screen brightness (percent) used when none is configured
+DEFAULT_BRIGHTNESS = 100
+
 class StreamDock(ABC):
     """
     Represents a physically attached StreamDock device.
@@ -88,6 +91,9 @@ class StreamDock(ABC):
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
         self.screenlicent = None
 
+        # Last brightness applied to the device, used by brightness up/down actions
+        self._current_brightness = DEFAULT_BRIGHTNESS
+
     def __del__(self):
         """
         Delete handler for the StreamDock, automatically closing the transport
@@ -140,9 +146,16 @@ class StreamDock(ABC):
         self._setup_reader(self._read)
         return True
 
-    def init(self):
+    def init(self, brightness=DEFAULT_BRIGHTNESS):
+        """
+        Wake the screen and bring the device to a known state.
+
+        :param int brightness: Brightness percentage (0-100) to apply.
+        """
+        brightness = max(0, min(100, int(brightness)))
         self.wake_screen()
-        self.set_brightness(100)
+        self.set_brightness(brightness)
+        self._current_brightness = brightness
         self.clear_all_icons()
         self.refresh()
 

@@ -218,7 +218,6 @@ class DeviceOrchestrator:
         - Gets tracked devices from registry
         - Creates device instances (future: via factory)
         - Applies default layout
-        - Sets default brightness
         """
         logger.debug("Initializing devices from registry")
 
@@ -385,7 +384,7 @@ class DeviceOrchestrator:
 
                 # Initialize hardware or turn on screen physically to break out of factory mode
                 if hasattr(device, 'init'):
-                    device.init()
+                    device.init(self._default_brightness)
                     logger.debug("Device %s initialized (exited factory mode)", device_id)
                 elif hasattr(device, 'screen_on'):
                     device.screen_on()

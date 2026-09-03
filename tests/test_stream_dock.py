@@ -3,7 +3,8 @@ import time
 import unittest
 from unittest.mock import ANY, MagicMock, patch
 
-from StreamDock.devices.stream_dock import (DEFAULT_DOUBLE_PRESS_INTERVAL,
+from StreamDock.devices.stream_dock import (DEFAULT_BRIGHTNESS,
+                                            DEFAULT_DOUBLE_PRESS_INTERVAL,
                                             StreamDock)
 
 
@@ -93,6 +94,38 @@ class TestStreamDock(unittest.TestCase):
         self.device.screen_on()
         self.mock_transport.screen_on.assert_called_once()
         
+    def test_init_applies_requested_brightness(self):
+        """Test init() applies the requested brightness instead of forcing 100%."""
+        self.device.set_brightness = MagicMock()
+
+        self.device.init(15)
+
+        self.device.set_brightness.assert_called_once_with(15)
+        self.assertEqual(self.device._current_brightness, 15)
+        self.mock_transport.wake_screen.assert_called_once()
+        self.mock_transport.key_all_clear.assert_called_once()
+        self.mock_transport.refresh.assert_called_once()
+
+    def test_init_defaults_to_full_brightness(self):
+        """Test init() falls back to the default brightness when none is given."""
+        self.device.set_brightness = MagicMock()
+
+        self.device.init()
+
+        self.device.set_brightness.assert_called_once_with(DEFAULT_BRIGHTNESS)
+        self.assertEqual(self.device._current_brightness, DEFAULT_BRIGHTNESS)
+
+    def test_init_clamps_brightness(self):
+        """Test init() clamps the brightness to the 0-100 range."""
+        self.device.set_brightness = MagicMock()
+
+        self.device.init(150)
+        self.device.set_brightness.assert_called_once_with(100)
+
+        self.device.set_brightness.reset_mock()
+        self.device.init(-10)
+        self.device.set_brightness.assert_called_once_with(0)
+
     def _process_queue(self):
         """Helper to process all events in the queue."""
         while not self.device._event_queue.empty():

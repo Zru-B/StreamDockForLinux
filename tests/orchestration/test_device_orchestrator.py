@@ -181,7 +181,7 @@ class TestDeviceOrchestrator:
         # Verify brightness restored and screen turned on
         device = mock_registry.get_all_devices.return_value[0].device_instance
         device.open.assert_called_once()
-        device.init.assert_called_once()
+        device.init.assert_called_once_with(75)
         device.set_brightness.assert_called_once_with(75)
         assert orchestrator.is_locked() is False
     

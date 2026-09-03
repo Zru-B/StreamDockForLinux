@@ -143,8 +143,8 @@ class Application:
             success = self._device.open()
             if success:
                 logger.info("✓ Device opened successfully")
-                self._device.init()
-                logger.info("✓ Device initialized")
+                self._device.init(self._config.brightness)
+                logger.info("✓ Device initialized (brightness=%s%%)", self._config.brightness)
             else:
                 logger.error("✗ Failed to open device")
                 self._device = None
