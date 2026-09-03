@@ -40,11 +40,15 @@ lock-monitor = [
 ]
 
 [tool.setuptools]
-packages = ["StreamDock"]
 package-dir = {"" = "src"}
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["StreamDock*"]
+
 [tool.setuptools.package-data]
-StreamDock = ["*.yml", "*.yaml"]
+"StreamDock" = ["*.yml", "*.yaml"]
+"StreamDock.ui.resources" = ["*.svg"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -54,6 +58,7 @@ markers = [
 ]
 testpaths = ["tests"]
 pythonpath = ["src"]
+qt_api = "pyqt6"
 
 [tool.isort]
 profile = "black"
