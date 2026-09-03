@@ -164,6 +164,40 @@ QPushButton[buttonType="danger"]:hover {{
     border-color: {COLORS['danger_hover']};
 }}
 
+/* Action rows: one card per action, all the same height */
+QWidget#actionRow {{
+    background-color: {COLORS['bg_tertiary']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 6px;
+}}
+
+QWidget#actionRow:hover {{
+    border-color: {COLORS['primary']};
+}}
+
+QLabel#actionGrip {{
+    color: {COLORS['border']};
+    font-size: 13px;
+}}
+
+QWidget#actionRow:hover QLabel#actionGrip {{
+    color: {COLORS['text_secondary']};
+}}
+
+QLabel#actionIndex {{
+    color: {COLORS['text_secondary']};
+    font-size: 12px;
+}}
+
+QLabel#actionText {{
+    font-size: 13px;
+}}
+
+QLabel#actionsEmpty {{
+    color: {COLORS['text_secondary']};
+    font-size: 13px;
+}}
+
 /* Segmented control: one pill, one option lit */
 QWidget#segmentedControl {{
     background-color: {COLORS['bg_tertiary']};
@@ -191,14 +225,21 @@ QPushButton[segment="true"]:checked {{
     font-weight: 600;
 }}
 
-/* Text Input Fields */
+/* Text Input Fields. One height and one border weight for every field,
+   matching the device bar's combo: tall boxes made short forms look like
+   forms to fill in rather than settings to glance at. */
 QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {COLORS['bg_tertiary']};
-    border: 2px solid {COLORS['border']};
+    border: 1px solid {COLORS['border']};
     border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 14px;
+    padding: 3px 10px;
+    font-size: 13px;
+    min-height: 26px;
     color: {COLORS['text_primary']};
+}}
+
+QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover {{
+    border-color: {COLORS['primary']};
 }}
 
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
@@ -207,14 +248,18 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     background-color: {COLORS['bg_hover']};
 }}
 
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
+    color: {COLORS['text_secondary']};
+}}
+
 /* ComboBox (Dropdowns) */
 QComboBox {{
     background-color: {COLORS['bg_tertiary']};
-    border: 2px solid {COLORS['border']};
+    border: 1px solid {COLORS['border']};
     border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 14px;
-    min-height: 36px;
+    padding: 3px 10px;
+    font-size: 13px;
+    min-height: 26px;
     color: {COLORS['text_primary']};
 }}
 
@@ -410,18 +455,23 @@ QRadioButton::indicator:checked::after {{
 /* Spin Boxes */
 QSpinBox, QDoubleSpinBox {{
     background-color: {COLORS['bg_tertiary']};
-    border: 2px solid {COLORS['border']};
+    border: 1px solid {COLORS['border']};
     border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 14px;
-    min-height: 36px;
+    padding: 3px 8px;
+    font-size: 13px;
+    min-height: 26px;
     color: {COLORS['text_primary']};
+}}
+
+QSpinBox:hover, QDoubleSpinBox:hover {{
+    border-color: {COLORS['primary']};
 }}
 
 QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {COLORS['border_focus']};
     background-color: {COLORS['bg_hover']};
 }}
+
 
 /* Scroll Bars */
 QScrollBar:vertical {{
@@ -517,6 +567,7 @@ QToolTip {{
 
 # Assets referenced from the stylesheet need absolute paths.
 CHEVRON_PATH = (Path(__file__).parent / "resources" / "chevron-down.svg").as_posix()
+CHEVRON_UP_PATH = (Path(__file__).parent / "resources" / "chevron-up.svg").as_posix()
 
 # Connection indicator and status bar, used by DeviceBar and MainWindow.
 MODERN_STYLESHEET += f"""
@@ -528,6 +579,40 @@ QComboBox::down-arrow {{
     width: 14px;
     height: 14px;
     margin-right: 6px;
+}}
+
+/* Spin box steppers. Qt draws no arrow at all once the buttons are styled,
+   and the CSS-border triangle cannot be rotated, so both chevrons are
+   assets - the same ones the combo boxes use. */
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    background-color: transparent;
+    border: none;
+    width: 16px;
+    height: 12px;
+}}
+
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    margin: 1px 4px 0 0;
+}}
+
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    margin: 0 4px 1px 0;
+}}
+
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url({CHEVRON_UP_PATH});
+    width: 12px;
+    height: 12px;
+}}
+
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url({CHEVRON_PATH});
+    width: 12px;
+    height: 12px;
 }}
 
 QWidget#deviceBar {{

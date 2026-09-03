@@ -22,9 +22,19 @@ from PyQt6.QtCore import (
     pyqtProperty,
     pyqtSignal,
 )
-from PyQt6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPixmap
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QDrag,
+    QFont,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QAbstractButton,
+    QAbstractScrollArea,
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -39,6 +49,10 @@ from PyQt6.QtWidgets import (
 )
 
 COLORS = get_colors()
+
+# Carried by a row being dragged to a new position in its list. Its own
+# format, so a row cannot be dropped on anything else that takes text.
+ACTION_MIME_TYPE = "application/x-streamdock-action"
 
 
 def _font_size(value) -> int:
@@ -74,6 +88,79 @@ def _mix(start: str, end: str, ratio: float) -> QColor:
     return QColor(
         *(round(a + (b - a) * ratio)
           for a, b in zip(first.getRgb(), second.getRgb())))
+
+
+class ElidedLabel(QLabel):
+    """
+    A label that shortens its own text instead of widening its row.
+
+    A QLabel reports the full text as its minimum width, so one long action
+    description would push the whole list wider than the box holding it.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self._elide()
+
+    def full_text(self) -> str:
+        """The text as given, before any shortening."""
+        return self._full_text
+
+    def minimumSizeHint(self) -> QSize:
+        # Keep the height, drop the width: the row decides how much it gets.
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        shown = self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, max(0, self.width()))
+        super().setText(shown)
+        # Only worth a tooltip when something is actually hidden.
+        self.setToolTip("" if shown == self._full_text else self._full_text)
+
+
+def glyph_button(glyph: str, color: str, hover: str, tooltip: str,
+                 size: int = 22) -> QPushButton:
+    """
+    Build a borderless icon button.
+
+    Args:
+        glyph: The character to show
+        color: Resting colour
+        hover: Colour under the pointer
+        tooltip: Hover text
+        size: Width and height in pixels
+
+    Returns:
+        The button
+    """
+    button = QPushButton(glyph)
+    button.setFixedSize(size, size)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setToolTip(tooltip)
+    button.setStyleSheet(f"""
+        QPushButton {{
+            background: transparent;
+            color: {color};
+            border: none;
+            font-size: {size - 6}px;
+            font-weight: bold;
+            padding: 0px;
+        }}
+        QPushButton:hover {{
+            color: {hover};
+        }}
+    """)
+    return button
 
 
 class KeySquare(QFrame):
@@ -395,22 +482,9 @@ class LayoutListWidget(QWidget):
         title_layout.addStretch()
         
         # Green + icon
-        self.add_btn = QPushButton("+")
-        self.add_btn.setFixedSize(24, 24)
-        self.add_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['success']};
-                font-size: 24px;
-                font-weight: bold;
-                border: none;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['success_hover']};
-            }}
-        """)
-        self.add_btn.setToolTip("Add new layout")
+        self.add_btn = glyph_button(
+            "+", COLORS['success'], COLORS['success_hover'], "Add new layout",
+            size=24)
         self.add_btn.clicked.connect(self.add_layout_clicked.emit)
         title_layout.addWidget(self.add_btn)
         
@@ -505,106 +579,97 @@ class ActionListItem(QWidget):
     
     remove_clicked = pyqtSignal(int)  # Emits index
     edit_clicked = pyqtSignal(int)  # Emits index
-    move_up_clicked = pyqtSignal(int)  # Emits index
-    move_down_clicked = pyqtSignal(int)  # Emits index
-    
+
+    ROW_HEIGHT = 32
+    # Grip dots. DejaVu and Noto both carry this one; a dedicated drag glyph
+    # would be tofu on a bare system.
+    GRIP = "⠿"
+
     def __init__(self, index: int, action_dict: dict, parent=None):
         super().__init__(parent)
         self.index = index
         self.action_dict = action_dict
+        self._drag_start = None
         self.setup_ui()
-    
+
     def setup_ui(self):
         """Setup the UI"""
+        self.setObjectName("actionRow")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(self.ROW_HEIGHT)
+
+        # Rows are reordered by dragging them, so say so with the pointer.
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to reorder")
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-        
-        # Action description
-        action_text = self._format_action()
-        self.label = QLabel(action_text)
+        layout.setContentsMargins(6, 0, 4, 0)
+        layout.setSpacing(4)
+
+        grip = QLabel(self.GRIP)
+        grip.setObjectName("actionGrip")
+        layout.addWidget(grip)
+
+        # Position in the sequence: actions run in order, so it is worth
+        # numbering them.
+        self.number = QLabel(f"{self.index + 1}")
+        self.number.setObjectName("actionIndex")
+        self.number.setFixedWidth(16)
+        self.number.setAlignment(Qt.AlignmentFlag.AlignRight
+                                 | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.number)
+
+        self.label = ElidedLabel(self._format_action())
+        self.label.setObjectName("actionText")
         layout.addWidget(self.label, stretch=1)
-        
-        # Buttons with modern styling and proper size
-        btn_up = QPushButton("↑")
-        btn_up.setFixedSize(28, 28)
-        btn_up.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['text_secondary']};
-                border: none;
-                font-size: 20px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['primary']};
-            }}
-        """)
-        btn_up.setToolTip("Move up")
-        btn_up.clicked.connect(lambda: self.move_up_clicked.emit(self.index))
-        layout.addWidget(btn_up)
-        
-        btn_down = QPushButton("↓")
-        btn_down.setFixedSize(28, 28)
-        btn_down.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['text_secondary']};
-                border: none;
-                font-size: 20px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['primary']};
-            }}
-        """)
-        btn_down.setToolTip("Move down")
-        btn_down.clicked.connect(lambda: self.move_down_clicked.emit(self.index))
-        layout.addWidget(btn_down)
-        
-        btn_edit = QPushButton("✎")
-        btn_edit.setFixedSize(28, 28)
-        btn_edit.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['info']};
-                border: none;
-                font-size: 20px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['info_hover']};
-            }}
-        """)
-        btn_edit.setToolTip("Edit action")
-        btn_edit.clicked.connect(lambda: self.edit_clicked.emit(self.index))
-        layout.addWidget(btn_edit)
-        
-        btn_remove = QPushButton("✕")
-        btn_remove.setFixedSize(28, 28)
-        btn_remove.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['danger']};
-                border: none;
-                font-size: 20px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['danger_hover']};
-            }}
-        """)
-        btn_remove.setToolTip("Remove action")
-        btn_remove.clicked.connect(lambda: self.remove_clicked.emit(self.index))
-        layout.addWidget(btn_remove)
-        
-        # Set minimum height for the widget
-        self.setMinimumHeight(42)
-    
+
+        for glyph, color, hover, tooltip, signal in (
+                ("✎", COLORS['info'], COLORS['info_hover'],
+                 "Edit action", self.edit_clicked),
+                ("✕", COLORS['danger'], COLORS['danger_hover'],
+                 "Remove action", self.remove_clicked)):
+            button = glyph_button(glyph, color, hover, tooltip)
+            # The buttons keep the normal pointer; only the row is draggable.
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda _checked, emit=signal: emit.emit(self.index))
+            layout.addWidget(button)
+
+    # ── dragging the row to a new position ───────────────────────────────
+
+    def mousePressEvent(self, event):
+        """Remember where a press started, in case it becomes a drag"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """A press that never moved far enough was not a drag"""
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Carry the row to wherever it is dropped"""
+        if self._drag_start is None:
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if ((event.pos() - self._drag_start).manhattanLength()
+                < QApplication.startDragDistance()):
+            return
+
+        mime = QMimeData()
+        mime.setData(ACTION_MIME_TYPE, str(self.index).encode())
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        # A snapshot of the row itself, so what you carry is what you moved.
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(event.pos())
+        drag.exec(Qt.DropAction.MoveAction)
+        self._drag_start = None
+
     def _format_action(self) -> str:
         """Format action dictionary for display"""
         if not self.action_dict:
@@ -675,6 +740,149 @@ class ActionListItem(QWidget):
         return f"{action_type}: {action_value}"
 
 
+class ActionListContainer(QWidget):
+    """
+    Holds the action rows and reorders them by drag and drop.
+
+    Owns the drop arithmetic: which gap the pointer is nearest, the line
+    drawn there while a drag is in flight, and the move that results.
+    """
+
+    action_moved = pyqtSignal(int, int)  # Emits (from_index, to_index)
+
+    # How close to an edge the pointer has to be before the list scrolls.
+    SCROLL_MARGIN = 24
+    SCROLL_STEP = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("actionsContainer")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAcceptDrops(True)
+        # The gap the indicator sits in, or None when no drag is in flight.
+        self._drop_gap = None
+
+    def rows(self) -> list:
+        """The action rows, top to bottom."""
+        layout = self.layout()
+        if layout is None:
+            return []
+        widgets = (layout.itemAt(i).widget() for i in range(layout.count()))
+        return [w for w in widgets if isinstance(w, ActionListItem)]
+
+    def gap_at(self, y: float) -> int:
+        """
+        The gap a drop at this height would land in.
+
+        Gap 0 is above the first row, gap len(rows) is below the last.
+
+        Args:
+            y: Height within this widget
+
+        Returns:
+            The gap index
+        """
+        rows = self.rows()
+        for index, row in enumerate(rows):
+            if y < row.geometry().center().y():
+                return index
+        return len(rows)
+
+    # ── drop handling ────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        """Take rows from this list and nothing else"""
+        if event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        """Track where the row would land"""
+        if not event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            event.ignore()
+            return
+        self._set_drop_gap(self.gap_at(event.position().y()))
+        self._scroll_towards(event.position().y())
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        """Drop the indicator when the drag goes elsewhere"""
+        self._set_drop_gap(None)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        """Move the dragged row into the gap it was dropped on"""
+        if not event.mimeData().hasFormat(ACTION_MIME_TYPE):
+            event.ignore()
+            return
+
+        source = int(bytes(event.mimeData().data(ACTION_MIME_TYPE)).decode())
+        gap = self.gap_at(event.position().y())
+        self._set_drop_gap(None)
+        event.acceptProposedAction()
+
+        # The gaps either side of a row are where it already is.
+        if gap in (source, source + 1):
+            return
+        # Removing the row first shifts every later gap up by one.
+        self.action_moved.emit(source, gap - 1 if gap > source else gap)
+
+    def _set_drop_gap(self, gap) -> None:
+        if gap != self._drop_gap:
+            self._drop_gap = gap
+            self.update()
+
+    def _scroll_towards(self, y: float) -> None:
+        """
+        Scroll when the pointer nears an edge, so a long list can be crossed.
+
+        Args:
+            y: Height within this widget
+        """
+        area = self._scroll_area()
+        if area is None:
+            return
+        bar = area.verticalScrollBar()
+        offset = y - bar.value()
+        if offset < self.SCROLL_MARGIN:
+            bar.setValue(bar.value() - self.SCROLL_STEP)
+        elif offset > area.viewport().height() - self.SCROLL_MARGIN:
+            bar.setValue(bar.value() + self.SCROLL_STEP)
+
+    def _scroll_area(self):
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QAbstractScrollArea):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def paintEvent(self, event):
+        """Draw the line marking where the row would land"""
+        super().paintEvent(event)
+        if self._drop_gap is None:
+            return
+
+        rows = self.rows()
+        spacing = self.layout().spacing() if self.layout() else 0
+        margins = self.contentsMargins()
+        if not rows:
+            y = margins.top()
+        elif self._drop_gap < len(rows):
+            y = rows[self._drop_gap].geometry().top() - spacing / 2
+        else:
+            y = rows[-1].geometry().bottom() + spacing / 2
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(COLORS['primary']), 2,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(margins.left(), int(y),
+                         self.width() - margins.right(), int(y))
+
+
 class WindowRulesWidget(QWidget):
     """Widget for managing window rules"""
     
@@ -712,22 +920,9 @@ class WindowRulesWidget(QWidget):
         title_layout.addStretch()
         
         # Green + icon
-        self.add_btn = QPushButton("+")
-        self.add_btn.setFixedSize(24, 24)
-        self.add_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['success']};
-                font-size: 24px;
-                font-weight: bold;
-                border: none;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['success_hover']};
-            }}
-        """)
-        self.add_btn.setToolTip("Add new window rule")
+        self.add_btn = glyph_button(
+            "+", COLORS['success'], COLORS['success_hover'], "Add new window rule",
+            size=24)
         self.add_btn.clicked.connect(self.add_rule_clicked.emit)
         title_layout.addWidget(self.add_btn)
         
