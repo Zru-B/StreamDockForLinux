@@ -141,7 +141,6 @@ class MainWindow(QMainWindow):
     watch_devices_requested = pyqtSignal()
 
     quit_requested = pyqtSignal()
-    hidden_to_tray = pyqtSignal()
     
     def __init__(self):
         super().__init__()
@@ -509,7 +508,6 @@ class MainWindow(QMainWindow):
         if not self._quitting and self.tray_available:
             event.ignore()
             self.hide()
-            self.hidden_to_tray.emit()
             return
 
         if self.modified:
