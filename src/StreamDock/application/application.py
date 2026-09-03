@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from StreamDock.application.configuration_manager import ConfigurationManager, StreamDockConfig
+from StreamDock.application.device_discovery import discover_devices
 from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.infrastructure import (
@@ -113,10 +114,7 @@ class Application:
 
         # 2.5. Enumerate and create device
         logger.debug("Enumerating devices...")
-        # Device VID/PID from lsusb
-        STREAMDECK_VID = 0x6603  # HOTSPOTEKUSB
-        STREAMDECK_PID = 0x1006  # HID DEMO
-        devices = self._hardware.enumerate_devices(STREAMDECK_VID, STREAMDECK_PID)
+        devices = discover_devices(self._hardware)
         logger.info("Found %d StreamDeck device(s)", len(devices))
 
         # Create device wrapper for first device

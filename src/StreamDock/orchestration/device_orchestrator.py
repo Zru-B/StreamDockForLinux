@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.devices.product_ids import STREAMDOCK_293V3_PID, STREAMDOCK_VID
 from StreamDock.infrastructure import DeviceRegistry, HardwareInterface, SystemInterface
 from StreamDock.infrastructure.window_interface import WindowInterface
 
@@ -384,8 +385,8 @@ class DeviceOrchestrator:
                     if not success:
                         path_str = getattr(device, 'path', 'unknown')
                         logger.warning("Device %s failed to open at %s. Re-enumerating USB...", device_id, path_str)
-                        vid = getattr(device, 'vendor_id', 0x6603)
-                        pid = getattr(device, 'product_id', 0x1006)
+                        vid = getattr(device, 'vendor_id', STREAMDOCK_VID)
+                        pid = getattr(device, 'product_id', STREAMDOCK_293V3_PID)
                         devices = self._hardware.enumerate_devices(vid, pid)
                         
                         if devices:
