@@ -9,15 +9,39 @@ import functools
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.devices.product_ids import STREAMDOCK_293V3_PID, STREAMDOCK_VID
-from StreamDock.infrastructure import DeviceRegistry, HardwareInterface, SystemInterface
+from StreamDock.infrastructure import (
+    DeviceRegistry,
+    HardwareInterface,
+    SystemInterface,
+    TrackedDevice,
+)
 from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap(device: Any) -> Any:
+    """
+    Return the real device behind a registry wrapper.
+
+    Checked by type rather than with hasattr: every attribute exists on a Mock,
+    so duck-typing here silently swaps the device for a child mock and device
+    calls vanish in tests.
+
+    Args:
+        device: Either a device instance or a TrackedDevice wrapping one
+
+    Returns:
+        The device instance
+    """
+    if isinstance(device, TrackedDevice):
+        return device.device_instance
+    return device
 
 
 def _serialized(method):
@@ -114,12 +138,93 @@ class DeviceOrchestrator:
         # Device configuration callback (HYBRID: for ConfigLoader integration)
         self._device_config_callback: Optional[Any] = None
 
+        # Notified with the layout name whenever the active layout changes.
+        # A plain callable, not a Qt signal: this layer must stay GUI-free.
+        self._layout_changed_callback: Optional[Callable[[str], None]] = None
+
         # Register event handlers with SystemEventMonitor
         self._event_monitor.register_handler(SystemEvent.LOCK, self._on_lock)
         self._event_monitor.register_handler(SystemEvent.UNLOCK, self._on_unlock)
         self._event_monitor.register_handler(SystemEvent.WINDOW_CHANGED, self._on_window_changed)
 
         logger.debug("DeviceOrchestrator initialized with dependencies")
+
+    def attach_device(self, device_id: str, device: Any,
+                      current_layout: Optional[str] = None) -> None:
+        """
+        Put a device under this orchestrator's control.
+
+        Args:
+            device_id: Identifier to track the device by
+            device: Device instance (already open)
+            current_layout: Layout already on screen, so the first window
+                change does not redundantly re-render it
+
+        Design Contract:
+            - Does NOT open or configure the device; the caller owns that
+            - Replaces any device previously attached under this id
+        """
+        with self._device_lock:
+            self._devices[device_id] = device
+            if current_layout is not None:
+                self._current_layouts[device_id] = current_layout
+            else:
+                self._current_layouts.pop(device_id, None)
+
+        logger.debug("Attached device %s (layout=%s)", device_id, current_layout)
+
+    @_serialized
+    def detach_device(self, device_id: str, *, screen_off: bool = True,
+                      close: bool = True) -> None:
+        """
+        Release a device from this orchestrator's control.
+
+        Args:
+            device_id: Identifier the device was attached under
+            screen_off: Blank the screen on the way out
+            close: Close the connection on the way out
+
+        Design Contract:
+            - Both flags off means "stop tracking but leave the hardware
+              alone", which is what a configuration reload needs: the HID
+              handle and its reader thread must survive
+            - Safe to call for an unknown device_id
+        """
+        device = self._devices.pop(device_id, None)
+        self._current_layouts.pop(device_id, None)
+
+        if device is None:
+            return
+
+        device = _unwrap(device)
+
+        try:
+            if screen_off and hasattr(device, 'screen_off'):
+                device.screen_off()
+            if close and hasattr(device, 'close'):
+                device.close()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception("Error detaching device %s: %s", device_id, e)
+
+        logger.debug("Detached device %s (screen_off=%s, close=%s)",
+                     device_id, screen_off, close)
+
+    @_serialized
+    def run_exclusive(self, operation: Callable[[], Any]) -> Any:
+        """
+        Run an operation holding the device lock.
+
+        Multi-packet HID transfers interleave if two threads write at once, so
+        anything that talks to the device from outside the orchestrator must
+        go through here rather than calling the device directly.
+
+        Args:
+            operation: Zero-argument callable performing the device work
+
+        Returns:
+            Whatever the operation returns
+        """
+        return operation()
 
     def register_layout(self, name: str, layout: Any) -> None:
         """
@@ -150,6 +255,29 @@ class DeviceOrchestrator:
         """
         self._default_brightness = max(0, min(100, brightness))
         logger.debug("Default brightness set to: %s", self._default_brightness)
+
+    def set_layout_changed_callback(self, callback: Optional[Callable[[str], None]]) -> None:
+        """
+        Register a callback fired whenever the active layout changes.
+
+        Args:
+            callback: Called with the new layout name, or None to clear
+
+        Design Contract:
+            - Called on whichever thread applied the layout, usually the
+              window-poll thread; the callback must not touch a GUI directly
+            - Exceptions raised by the callback are caught and logged
+        """
+        self._layout_changed_callback = callback
+
+    def _notify_layout_changed(self, layout_name: str) -> None:
+        """Fire the layout-changed callback, never letting it break a render."""
+        if self._layout_changed_callback is None:
+            return
+        try:
+            self._layout_changed_callback(layout_name)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception("Error in layout changed callback: %s", e)
 
     def set_device_config_callback(self, callback: Any) -> None:
         """
@@ -214,9 +342,16 @@ class DeviceOrchestrator:
             logger.exception("Error starting DeviceOrchestrator: %s", e)
             return False
 
-    def stop(self) -> None:
+    def stop(self, *, release_devices: bool = True) -> None:
         """
         Stop orchestrator and clean up resources.
+
+        Args:
+            release_devices: Blank and close the devices on the way out. A
+                configuration reload passes False: it rebuilds everything
+                above the device but keeps the HID handle, its reader thread
+                and its workers alive, so the deck does not go dark on every
+                Apply.
 
         Design Contract:
             - Stops system event monitoring
@@ -226,7 +361,7 @@ class DeviceOrchestrator:
         """
         try:
             self._event_monitor.stop_monitoring()
-            self._cleanup_devices()
+            self._cleanup_devices(release=release_devices)
             logger.info("DeviceOrchestrator stopped")
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error stopping DeviceOrchestrator: %s", e)
@@ -278,32 +413,18 @@ class DeviceOrchestrator:
         logger.info("Initialized %d device(s)", len(self._devices))
 
     @_serialized
-    def _cleanup_devices(self) -> None:
+    def _cleanup_devices(self, release: bool = True) -> None:
         """
         Clean up device resources.
 
-        Called during stop() to release resources.
+        Args:
+            release: Blank and close each device. False stops tracking them
+                but leaves the hardware connected (configuration reload).
         """
-        logger.debug("Cleaning up %d device(s)", len(self._devices))
-        
-        for device_id, device in self._devices.items():
-            try:
-                # Handle TrackedDevice wrapper if present
-                if hasattr(device, 'device_instance'):
-                    dev = device.device_instance
-                else:
-                    dev = device
-                
-                # Turn off screen gracefully on application exit
-                if hasattr(dev, 'screen_off'):
-                    dev.screen_off()
-                    logger.debug("Device %s screen turned off during cleanup", device_id)
-                
-                if hasattr(dev, 'close'):
-                    dev.close()
-                    logger.debug("Device %s connection closed during cleanup", device_id)
-            except Exception as e:
-                logger.exception("Error cleaning up device %s: %s", device_id, e)
+        logger.debug("Cleaning up %d device(s) (release=%s)", len(self._devices), release)
+
+        for device_id in list(self._devices):
+            self.detach_device(device_id, screen_off=release, close=release)
 
         self._devices.clear()
         self._current_layouts.clear()
@@ -329,9 +450,7 @@ class DeviceOrchestrator:
         # Turn off all device screens and close connections
         for device_id, device in self._devices.items():
             try:
-                # Handle TrackedDevice wrapper if present (Registry integration)
-                if hasattr(device, 'device_instance'):
-                    device = device.device_instance
+                device = _unwrap(device)
 
                 # Turn off screen physically if supported
                 if hasattr(device, 'screen_off'):
@@ -374,9 +493,7 @@ class DeviceOrchestrator:
         # Restore device screens
         for device_id, device in self._devices.items():
             try:
-                # Handle TrackedDevice wrapper if present (Registry integration)
-                if hasattr(device, 'device_instance'):
-                    device = device.device_instance
+                device = _unwrap(device)
 
                 # Reopen connection
                 success = True
@@ -516,6 +633,7 @@ class DeviceOrchestrator:
             layout.apply()
             self._current_layouts[device_id] = layout_name
             logger.info("✓ Applied layout '%s' to device %s", layout_name, device_id)
+            self._notify_layout_changed(layout_name)
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error applying layout '%s' to %s: %s", layout_name, device_id, e)
