@@ -65,6 +65,41 @@ _ACTION_TYPE_DISPLAY = {
 }
 
 
+def _as_text(value) -> str:
+    """
+    Render an action payload as editable text.
+
+    Payloads are only loosely validated - `KEY_PRESS: ["ctrl","c"]` and
+    `TYPE_TEXT: 42` both pass - and a QLineEdit accepts nothing but a string.
+
+    Args:
+        value: Whatever the configuration held
+
+    Returns:
+        A string safe to put in a text field
+    """
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _as_int(value, default: int) -> int:
+    """
+    Coerce an action payload into a spin-box value.
+
+    Args:
+        value: Whatever the configuration held
+        default: Used when the value is missing or not a number
+
+    Returns:
+        An int
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def create_styled_button(text: str, icon: str = None, primary: bool = False) -> QPushButton:
     """Create a consistently styled button with optional icon
     
@@ -881,16 +916,16 @@ class ActionDialog(QDialog):
                     self.launch_force_check.setChecked(action_value['force_new'])
         
         elif action_type == "KEY_PRESS":
-            self.key_combo_edit.setText(action_value)
+            self.key_combo_edit.setText(_as_text(action_value))
         
         elif action_type == "TYPE_TEXT":
-            self.type_text_edit.setPlainText(action_value)
+            self.type_text_edit.setPlainText(_as_text(action_value))
         
         elif action_type == "WAIT":
-            self.wait_spin.setValue(int(action_value))
+            self.wait_spin.setValue(_as_int(action_value, 1))
         
         elif action_type == "CHANGE_KEY_IMAGE":
-            self.image_path_edit.setText(action_value)
+            self.image_path_edit.setText(_as_text(action_value))
         
         elif action_type == "CHANGE_KEY_TEXT":
             # The runtime accepts a bare string or the full styled dict.
@@ -898,7 +933,7 @@ class ActionDialog(QDialog):
             self.key_text_edit.setText(str(values.get('text', '')))
             self.key_text_color_edit.setText(str(values.get('text_color', 'white')))
             self.key_text_bg_edit.setText(str(values.get('background_color', 'black')))
-            self.key_text_size_spin.setValue(int(values.get('font_size', 20)))
+            self.key_text_size_spin.setValue(_as_int(values.get('font_size'), 20))
             self.key_text_bold_check.setChecked(bool(values.get('bold', True)))
             self.key_text_icon_edit.setText(str(values.get('icon', '')))
             index = self.key_text_position_combo.findText(
