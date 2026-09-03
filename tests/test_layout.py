@@ -25,10 +25,12 @@ class TestLayout:
         with pytest.raises(TypeError):
             Layout(mock_device, "not a list")
             
-        # Invalid: empty list (less than 1 op)
-        with pytest.raises(ValueError):
-            Layout(mock_device, [])
-            
+        # Valid: an empty layout. Every slot set to null is a documented
+        # configuration, so it must build rather than raise.
+        empty = Layout(mock_device, [])
+        assert empty.keys == []
+
+        
         # Invalid: too many keys
         many_keys = [MagicMock(spec=Key) for _ in range(16)]
         with pytest.raises(ValueError):

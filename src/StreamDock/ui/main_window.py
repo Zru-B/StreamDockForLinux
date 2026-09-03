@@ -390,7 +390,12 @@ class MainWindow(QMainWindow):
             set_as_current_file: If True, set this as the current file path for saving
         """
         try:
-            self.config = ConfigDocument.load(file_path)
+            # Parsed before anything is swapped in: a failure part way through
+            # would otherwise leave the new document beside the old grid and
+            # layout list.
+            document = ConfigDocument.load(file_path)
+
+            self.config = document
             self.set_needs_apply(
                 os.path.abspath(file_path) != (self._applied_path or ""))
             
@@ -408,8 +413,9 @@ class MainWindow(QMainWindow):
             self.brightness_spin.blockSignals(True)
             self.lock_monitor_check.blockSignals(True)
             
-            self.brightness_spin.setValue(self.config.settings.brightness)
-            self.lock_monitor_check.setChecked(self.config.settings.lock_monitor)
+            # The validator accepts a float brightness, QSpinBox does not.
+            self.brightness_spin.setValue(int(self.config.settings.brightness))
+            self.lock_monitor_check.setChecked(bool(self.config.settings.lock_monitor))
             
             self.brightness_spin.blockSignals(False)
             self.lock_monitor_check.blockSignals(False)

@@ -20,6 +20,7 @@ from StreamDock.application.configuration_manager import (
     ConfigurationManager,
     ConfigValidationError,
     StreamDockConfig,
+    read_streamdock_section,
 )
 
 # Single source of truth. The editor used to default to 15 and the runtime to
@@ -40,6 +41,52 @@ ACTION_FIELDS = ('on_press_actions', 'on_release_actions', 'on_double_press_acti
 def _extras(data: Dict[str, Any], known: tuple) -> Dict[str, Any]:
     """Everything in data that this model does not represent explicitly."""
     return {k: copy.deepcopy(v) for k, v in data.items() if k not in known}
+
+
+def _section(streamdock: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """
+    Fetch one top-level section as a mapping.
+
+    Args:
+        streamdock: The 'streamdock' subtree
+        name: Section name
+
+    Returns:
+        The section, or {} when absent or null
+
+    Raises:
+        ConfigValidationError: If the section is present but not a mapping
+    """
+    value = streamdock.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigValidationError(
+            f"'{name}' must be a dictionary, not {type(value).__name__}")
+    return value
+
+
+def _entry(data: Any, section: str, name: str) -> Dict[str, Any]:
+    """
+    Fetch one entry of a section as a mapping.
+
+    Args:
+        data: The entry's value
+        section: Section it came from, for the error message
+        name: Entry name, for the error message
+
+    Returns:
+        The entry, or {} when null
+
+    Raises:
+        ConfigValidationError: If the entry is present but not a mapping
+    """
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigValidationError(
+            f"'{section}.{name}' must be a dictionary, not {type(data).__name__}")
+    return data
 
 
 class KeyDefinition:
@@ -152,7 +199,13 @@ class Layout:
         for item in data.get('keys', []) or []:
             if isinstance(item, dict):
                 for key_num, key_name in item.items():
-                    self.keys[int(key_num)] = key_name
+                    try:
+                        position = int(key_num)
+                    except (TypeError, ValueError) as e:
+                        raise ConfigValidationError(
+                            f"Layout '{self.name}': key position {key_num!r} "
+                            "is not a number") from e
+                    self.keys[position] = key_name
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise back to a YAML layout definition, preserving unknown fields."""
@@ -309,19 +362,9 @@ class ConfigDocument:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Configuration file not found: {path}")
 
-        with open(path, 'r') as f:
-            try:
-                data = yaml.safe_load(f)
-            except yaml.YAMLError as e:
-                raise ConfigValidationError(f"Could not parse {path}: {e}") from e
-
-        if not data:
-            raise ConfigValidationError("Configuration file is empty")
-        if 'streamdock' not in data:
-            raise ConfigValidationError(
-                "Configuration must contain 'streamdock' root element")
-
-        return cls.from_dict(data['streamdock'], path)
+        # Shared with ConfigurationManager so the editor and the runtime
+        # reject the same files with the same wording.
+        return cls.from_dict(read_streamdock_section(path), path)
 
     @classmethod
     def from_dict(cls, streamdock: Dict[str, Any],
@@ -335,20 +378,28 @@ class ConfigDocument:
 
         Returns:
             The document
+
+        Raises:
+            ConfigValidationError: If the subtree or one of its sections is
+                not a mapping. A section that is null still means "defaults".
         """
+        if not isinstance(streamdock, dict):
+            raise ConfigValidationError(
+                f"'streamdock' must be a dictionary, not {type(streamdock).__name__}")
+
         document = cls(path)
-        document.settings = Settings(streamdock.get('settings', {}))
+        document.settings = Settings(_section(streamdock, 'settings'))
         document.keys = {
-            name: KeyDefinition(name, data or {})
-            for name, data in (streamdock.get('keys') or {}).items()
+            name: KeyDefinition(name, _entry(data, 'keys', name))
+            for name, data in _section(streamdock, 'keys').items()
         }
         document.layouts = {
-            name: Layout(name, data or {})
-            for name, data in (streamdock.get('layouts') or {}).items()
+            name: Layout(name, _entry(data, 'layouts', name))
+            for name, data in _section(streamdock, 'layouts').items()
         }
         document.window_rules = {
-            name: WindowRule(name, data or {})
-            for name, data in (streamdock.get('windows_rules') or {}).items()
+            name: WindowRule(name, _entry(data, 'windows_rules', name))
+            for name, data in _section(streamdock, 'windows_rules').items()
         }
         document.extra = _extras(streamdock, cls.KNOWN_SECTIONS)
         return document

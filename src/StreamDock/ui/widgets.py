@@ -6,7 +6,10 @@ Custom widgets for StreamDock Configuration Editor
 import os
 from pathlib import Path
 
-from StreamDock.application.config_document import KeyDefinition
+from StreamDock.application.config_document import (
+    DEFAULT_FONT_SIZE,
+    KeyDefinition,
+)
 from StreamDock.application.configuration_manager import resolve_icon_path
 from StreamDock.ui.styles import get_colors
 from PyQt6.QtCore import QMimeData, QSize, Qt, pyqtSignal
@@ -24,6 +27,23 @@ from PyQt6.QtWidgets import (
 )
 
 COLORS = get_colors()
+
+
+def _font_size(value) -> int:
+    """
+    Coerce a configured font size into something QFont accepts.
+
+    Args:
+        value: Whatever the configuration held
+
+    Returns:
+        A usable point size, falling back to the default
+    """
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_FONT_SIZE
+    return size if size > 0 else DEFAULT_FONT_SIZE
 
 
 class KeySquare(QFrame):
@@ -146,15 +166,20 @@ class KeySquare(QFrame):
                 # Icon not found
                 self._show_error("Not Found")
         
-        elif key_def.is_text_based():
-            # Text mode: centered text with specified colors
+        elif key_def.has_text():
+            # Text mode: centered text with specified colors.
+            # has_text() rather than is_text_based() so a key carrying both an
+            # icon and text still renders something; the icon branch above
+            # already handled the case where the icon loaded.
             self.label.setPixmap(QPixmap())  # Clear any pixmap
-            self.label.setText(key_def.text)
+            self.label.setText(str(key_def.text))
             
-            # Set font
+            # Set font. font_size comes straight from the file, and QFont
+            # rejects anything but an int - which would raise out of a Qt slot
+            # and take the window down.
             font = QFont()
-            font.setPointSize(key_def.font_size)
-            font.setBold(key_def.bold)
+            font.setPointSize(_font_size(key_def.font_size))
+            font.setBold(bool(key_def.bold))
             self.label.setFont(font)
             
             # Fill entire square with background color
@@ -179,6 +204,12 @@ class KeySquare(QFrame):
                     margin: 0px;
                 }}
             """)
+        
+        else:
+            # Neither field usable. Without this the square keeps its empty
+            # styling while key_name is set, so is_empty() disagrees with what
+            # the user sees.
+            self._show_error("No icon\nor text")
         
         # Update cursor for drag capability
         self._update_cursor()
@@ -548,6 +579,12 @@ class ActionListItem(QWidget):
         """Format action dictionary for display"""
         if not self.action_dict:
             return "Empty action"
+
+        # The validator accepts a bare string action, e.g. "- WAIT".
+        if isinstance(self.action_dict, str):
+            return str(self.action_dict)
+        if not isinstance(self.action_dict, dict):
+            return str(self.action_dict)
         
         # Get the action type (first key in dict)
         action_type = list(self.action_dict.keys())[0]
@@ -577,7 +614,10 @@ class ActionListItem(QWidget):
             return f"Key Press: {action_value}"
         
         elif action_type == "TYPE_TEXT":
-            preview = action_value[:30] + "..." if len(action_value) > 30 else action_value
+            # The payload is not guaranteed to be a string: `TYPE_TEXT: 42`
+            # passes validation.
+            text = action_value if isinstance(action_value, str) else str(action_value)
+            preview = text[:30] + "..." if len(text) > 30 else text
             return f"Type: {preview}"
         
         elif action_type == "WAIT":

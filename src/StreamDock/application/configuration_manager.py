@@ -56,6 +56,60 @@ VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_acti
 
 ICON_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')
 
+# A key is 112x112 px, so anything outside this cannot render usefully.
+MIN_FONT_SIZE = 1
+MAX_FONT_SIZE = 200
+
+
+def read_streamdock_section(config_path: str) -> Dict[str, Any]:
+    """
+    Read a configuration file and return its 'streamdock' subtree.
+
+    Every failure here is reported as a ConfigValidationError, because these
+    are all things a hand-edited file does and the message is shown to the
+    user verbatim.
+
+    Args:
+        config_path: Path to the YAML file
+
+    Returns:
+        The 'streamdock' mapping
+
+    Raises:
+        ConfigValidationError: If the file cannot be parsed, is not UTF-8, or
+            does not have the expected shape
+    """
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigValidationError(f"Could not parse {config_path}: {e}") from e
+    except UnicodeDecodeError as e:
+        raise ConfigValidationError(
+            f"{config_path} is not valid UTF-8 text: {e}") from e
+
+    if not config:
+        raise ConfigValidationError("Configuration file is empty")
+
+    # Without this, 'streamdock' in config is a substring test on a string and
+    # an element test on a list, so both slip through to a TypeError below.
+    if not isinstance(config, dict):
+        raise ConfigValidationError(
+            "Configuration must be a mapping with a 'streamdock' root element, "
+            f"not {type(config).__name__}")
+
+    if 'streamdock' not in config:
+        raise ConfigValidationError("Configuration must contain 'streamdock' root element")
+
+    streamdock = config['streamdock']
+    if streamdock is None:
+        raise ConfigValidationError("'streamdock' section is empty")
+    if not isinstance(streamdock, dict):
+        raise ConfigValidationError(
+            f"'streamdock' must be a dictionary, not {type(streamdock).__name__}")
+
+    return streamdock
+
 
 def resolve_icon_path(icon_path: str, config_dir: str) -> str:
     """
@@ -261,16 +315,7 @@ class ConfigurationManager:
         if not os.path.exists(self._config_path):
             raise FileNotFoundError(f"Configuration file not found: {self._config_path}")
 
-        with open(self._config_path, 'r') as f:
-            config = yaml.safe_load(f)
-
-        if not config:
-            raise ConfigValidationError("Configuration file is empty")
-
-        if 'streamdock' not in config:
-            raise ConfigValidationError("Configuration must contain 'streamdock' root element")
-
-        self._raw_config = config['streamdock']
+        self._raw_config = read_streamdock_section(self._config_path)
 
     def _validate_config(self) -> None:
         """
@@ -384,8 +429,28 @@ class ConfigurationManager:
                 if not key_def['text'].strip():
                     raise ConfigValidationError(f"Key '{key_name}' text field cannot be empty")
 
-            # Validate unsupported actions
+            # font_size reaches both the renderer and the editor's QFont, and
+            # neither survives a non-integer.
+            if 'font_size' in key_def:
+                font_size = key_def['font_size']
+                if isinstance(font_size, bool) or not isinstance(font_size, int):
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' font_size must be a whole number "
+                        f"between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}"
+                    )
+                if font_size < MIN_FONT_SIZE or font_size > MAX_FONT_SIZE:
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' font_size must be between "
+                        f"{MIN_FONT_SIZE} and {MAX_FONT_SIZE}"
+                    )
+
+            # Validate unsupported actions. YAML turns a bare `on:` into the
+            # boolean True, so field names are not necessarily strings.
             for key in key_def:
+                if not isinstance(key, str):
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' has a non-text field name: {key!r}"
+                    )
                 if (key.startswith('on_') or key == 'actions') and key not in VALID_ACTIONS:
                     valid_actions_str = ", ".join(f"'{a}'" for a in VALID_ACTIONS)
                     raise ConfigValidationError(
@@ -468,6 +533,13 @@ class ConfigurationManager:
                     )
 
                 action_type_str = list(action.keys())[0]
+
+                # `- on: x` and `- 1: x` both parse to a non-string name.
+                if not isinstance(action_type_str, str):
+                    raise ConfigValidationError(
+                        f"{context}[{i}]: action type must be text, "
+                        f"not {type(action_type_str).__name__}"
+                    )
 
                 # Validate action type exists
                 try:
@@ -552,6 +624,12 @@ class ConfigurationManager:
                 key_numbers.add(key_number)
 
                 # Check if referenced key exists (None is allowed for empty keys)
+                if key_name is not None and not isinstance(key_name, str):
+                    raise ConfigValidationError(
+                        f"Layout '{layout_name}': key name at position {key_number} "
+                        f"must be text or null, not {type(key_name).__name__}"
+                    )
+
                 if key_name is not None and key_name not in self._raw_config['keys']:
                     raise ConfigValidationError(
                         f"Layout '{layout_name}' references undefined key: '{key_name}'"
@@ -607,6 +685,12 @@ class ConfigurationManager:
 
             # Check if referenced layout exists
             layout_name = rule_def['layout']
+            if not isinstance(layout_name, str):
+                raise ConfigValidationError(
+                    f"Window rule '{rule_name}': 'layout' must be text, "
+                    f"not {type(layout_name).__name__}"
+                )
+
             if layout_name not in self._raw_config['layouts']:
                 raise ConfigValidationError(
                     f"Window rule '{rule_name}' references undefined layout: '{layout_name}'"
