@@ -3,10 +3,12 @@
 Custom widgets for StreamDock Configuration Editor
 """
 
+import os
 from pathlib import Path
 
-from config_editor_models import KeyDefinition
-from modern_styles import get_colors
+from StreamDock.application.config_document import KeyDefinition
+from StreamDock.application.configuration_manager import resolve_icon_path
+from StreamDock.ui.styles import get_colors
 from PyQt6.QtCore import QMimeData, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPixmap
 from PyQt6.QtWidgets import (
@@ -36,6 +38,9 @@ class KeySquare(QFrame):
         self.key_definition: KeyDefinition = None
         self.key_name: str = None
         self.drag_start_position = None
+        # Directory relative icon paths resolve against; set by the main
+        # window whenever the open configuration changes.
+        self.config_dir: str = os.getcwd()
         
         # Fixed size matching physical device screen
         self.setFixedSize(112, 112)
@@ -93,10 +98,10 @@ class KeySquare(QFrame):
         self.key_definition = key_def
         
         if key_def.is_icon_based():
-            # Icon mode: fill entire square with icon
-            icon_path = Path(key_def.icon)
-            if not icon_path.is_absolute():
-                icon_path = Path(__file__).parent.parent / icon_path
+            # Icon mode: fill entire square with icon.
+            # Relative paths resolve against the config file's directory, the
+            # same rule the runtime applies, so the preview matches the device.
+            icon_path = Path(resolve_icon_path(key_def.icon, self.config_dir))
             
             if icon_path.exists():
                 original_pixmap = QPixmap(str(icon_path))

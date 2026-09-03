@@ -45,8 +45,8 @@ def _extras(data: Dict[str, Any], known: tuple) -> Dict[str, Any]:
 class KeyDefinition:
     """A single key definition."""
 
-    KNOWN_FIELDS = ('icon', 'text', 'text_color', 'background_color', 'font_size',
-                    'bold', 'text_position') + ACTION_FIELDS
+    STYLE_FIELDS = ('text_color', 'background_color', 'font_size', 'bold', 'text_position')
+    KNOWN_FIELDS = ('icon', 'text') + STYLE_FIELDS + ACTION_FIELDS
 
     def __init__(self, name: str, data: Optional[Dict[str, Any]] = None):
         self.name = name
@@ -61,6 +61,10 @@ class KeyDefinition:
         self.on_release_actions: List[Dict[str, Any]] = []
         self.on_double_press_actions: List[Dict[str, Any]] = []
         self.extra: Dict[str, Any] = {}
+        # Styling fields the source file spelled out. Written back even when
+        # they equal the default, so opening and saving does not churn the
+        # user's file in either direction.
+        self._explicit: set = set()
 
         if data:
             self.load_from_dict(data)
@@ -78,6 +82,7 @@ class KeyDefinition:
         self.on_release_actions = copy.deepcopy(data.get('on_release_actions', []))
         self.on_double_press_actions = copy.deepcopy(data.get('on_double_press_actions', []))
         self.extra = _extras(data, self.KNOWN_FIELDS)
+        self._explicit = {f for f in self.STYLE_FIELDS if f in data}
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise back to a YAML key definition, preserving unknown fields."""
@@ -89,12 +94,14 @@ class KeyDefinition:
             result['icon'] = self.icon
         elif self.text:
             result['text'] = self.text
-            result['text_color'] = self.text_color
-            result['background_color'] = self.background_color
-            result['font_size'] = self.font_size
-            result['bold'] = self.bold
-            if self.text_position != DEFAULT_TEXT_POSITION:
-                result['text_position'] = self.text_position
+            for field, default in (('text_color', DEFAULT_TEXT_COLOR),
+                                   ('background_color', DEFAULT_BACKGROUND_COLOR),
+                                   ('font_size', DEFAULT_FONT_SIZE),
+                                   ('bold', DEFAULT_BOLD),
+                                   ('text_position', DEFAULT_TEXT_POSITION)):
+                value = getattr(self, field)
+                if value != default or field in self._explicit:
+                    result[field] = value
 
         for field in ACTION_FIELDS:
             actions = getattr(self, field)
