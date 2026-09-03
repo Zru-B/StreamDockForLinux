@@ -431,6 +431,25 @@ QToolTip {{
 }}
 """
 
+
+# Connection indicator and status bar, used by DeviceBar and MainWindow.
+MODERN_STYLESHEET += f"""
+QLabel#connectionDot {{
+    font-size: 16px;
+    color: {COLORS['text_secondary']};
+}}
+QLabel#connectionDot[state="disconnected"] {{ color: {COLORS['text_secondary']}; }}
+QLabel#connectionDot[state="connecting"]   {{ color: {COLORS['warning']}; }}
+QLabel#connectionDot[state="connected"]    {{ color: {COLORS['success']}; }}
+QLabel#connectionDot[state="error"]        {{ color: {COLORS['danger']}; }}
+
+QStatusBar {{
+    background-color: {COLORS['bg_secondary']};
+    color: {COLORS['text_secondary']};
+}}
+"""
+
+
 def get_stylesheet():
     """Get the modern stylesheet"""
     return MODERN_STYLESHEET
