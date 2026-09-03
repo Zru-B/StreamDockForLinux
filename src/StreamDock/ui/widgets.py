@@ -5,6 +5,7 @@ Custom widgets for StreamDock Configuration Editor
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from StreamDock.application.config_document import (
     DEFAULT_FONT_SIZE,
@@ -70,6 +71,21 @@ def _font_size(value) -> int:
     except (TypeError, ValueError):
         return DEFAULT_FONT_SIZE
     return size if size > 0 else DEFAULT_FONT_SIZE
+
+
+def _rgba(color: str, alpha: int) -> str:
+    """
+    A stylesheet rgba() string for a colour at a given transparency.
+
+    Args:
+        color: Any colour QColor understands
+        alpha: 0 (invisible) to 255 (solid)
+
+    Returns:
+        The rgba(...) text
+    """
+    rgb = QColor(color)
+    return f"rgba({rgb.red()}, {rgb.green()}, {rgb.blue()}, {alpha})"
 
 
 def _mix(start: str, end: str, ratio: float) -> QColor:
@@ -175,6 +191,9 @@ class KeySquare(QFrame):
         self.key_definition: KeyDefinition = None
         self.key_name: str = None
         self.drag_start_position = None
+        # Drawn over the key image while a drag hovers here. A border on the
+        # square itself would sit under the icon, which covers all 112px.
+        self._overlay = None
         # Directory relative icon paths resolve against; set by the main
         # window whenever the open configuration changes.
         self.config_dir: str = os.getcwd()
@@ -399,38 +418,75 @@ class KeySquare(QFrame):
         drag.exec(Qt.DropAction.MoveAction)
         self.drag_start_position = None
     
+    def dragged_position(self, mime) -> Optional[int]:
+        """
+        The square a drag started from, or None if it did not start here.
+
+        Args:
+            mime: The drag's mime data
+
+        Returns:
+            A key position, or None when the drag is not one of ours or
+            started on this very square
+        """
+        if not mime.hasText():
+            return None
+        try:
+            position = int(mime.text())
+        except ValueError:
+            return None
+        return None if position == self.position else position
+
     def dragEnterEvent(self, event):
-        """Accept drag if this square is empty"""
-        if self.is_empty() and event.mimeData().hasText():
-            event.acceptProposedAction()
-            # Highlight empty square when dragging over
-            self.setStyleSheet(f"""
-                KeySquare {{
-                    background-color: #252525;
-                    border: 2px solid {COLORS['success']};
-                }}
-            """)
-        else:
+        """Take any key dragged from another square"""
+        if self.dragged_position(event.mimeData()) is None:
             event.ignore()
+            return
+
+        event.acceptProposedAction()
+        # Green where the key would land on its own, blue where two keys
+        # would trade places - the outcome differs, so the colour does too.
+        color = COLORS['success'] if self.is_empty() else COLORS['primary']
+        self._highlight(color)
     
     def dragLeaveEvent(self, event):
         """Remove highlight when drag leaves"""
-        if self.is_empty():
-            self.set_empty()
+        self._clear_highlight()
     
     def dropEvent(self, event):
-        """Handle drop - move key from source to this empty square"""
-        if self.is_empty() and event.mimeData().hasText():
-            from_position = int(event.mimeData().text())
-            to_position = self.position
-            
-            event.acceptProposedAction()
-            
-            # Emit signal to notify parent to update layout
-            # Parent will handle setting the key on this square
-            self.key_moved.emit(from_position, to_position)
-        else:
+        """Move the dragged key here, trading places with whatever is here"""
+        self._clear_highlight()
+        from_position = self.dragged_position(event.mimeData())
+        if from_position is None:
             event.ignore()
+            return
+
+        event.acceptProposedAction()
+        # The window owns the layout, so it decides whether this is a move
+        # into an empty square or a swap.
+        self.key_moved.emit(from_position, self.position)
+
+    def _highlight(self, color: str) -> None:
+        """
+        Outline the square while a drag hovers over it.
+
+        Args:
+            color: Border colour; the fill is the same colour, faint
+        """
+        if self._overlay is None:
+            self._overlay = QWidget(self)
+            self._overlay.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._overlay.setGeometry(self.rect())
+        self._overlay.setStyleSheet(
+            f"background-color: {_rgba(color, 45)}; border: 2px solid {color};")
+        self._overlay.raise_()
+        self._overlay.show()
+
+    def _clear_highlight(self) -> None:
+        """Put the square back to how it looked before the drag."""
+        if self._overlay is not None:
+            self._overlay.hide()
     
     def _update_cursor(self):
         """Update cursor based on whether key is defined"""
