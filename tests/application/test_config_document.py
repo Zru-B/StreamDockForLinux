@@ -158,6 +158,12 @@ class TestRoundTrip:
         with open(path) as f:
             assert yaml.safe_load(f)['streamdock']['keys']['Key1']['font_size'] == 44
 
+    def test_settings_absent_from_the_file_stay_absent(self, workdir):
+        """A real config omitting lock_verification_delay must not gain one."""
+        source = {**BASE, 'settings': {'brightness': 30}}
+
+        assert reload(workdir, source)['settings'] == {'brightness': 30}
+
     def test_a_saved_config_still_validates(self, workdir):
         path = write_config(workdir, BASE)
         document = ConfigDocument.load(path)

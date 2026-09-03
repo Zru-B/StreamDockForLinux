@@ -236,6 +236,9 @@ class Settings:
         self.lock_verification_delay: float = DEFAULT_LOCK_VERIFICATION_DELAY
         self.double_press_interval: float = DEFAULT_DOUBLE_PRESS_INTERVAL
         self.extra: Dict[str, Any] = {}
+        # Settings the source file spelled out, so opening and saving does not
+        # add entries the user never wrote.
+        self._explicit: set = set()
 
         if data:
             self.load_from_dict(data)
@@ -249,14 +252,20 @@ class Settings:
         self.double_press_interval = data.get(
             'double_press_interval', DEFAULT_DOUBLE_PRESS_INTERVAL)
         self.extra = _extras(data, self.KNOWN_FIELDS)
+        self._explicit = {f for f in self.KNOWN_FIELDS if f in data}
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise back to a YAML settings section, preserving unknown fields."""
         result: Dict[str, Any] = dict(self.extra)
-        result['brightness'] = self.brightness
-        result['lock_monitor'] = self.lock_monitor
-        result['lock_verification_delay'] = self.lock_verification_delay
-        result['double_press_interval'] = self.double_press_interval
+        for field, default in (('brightness', DEFAULT_BRIGHTNESS),
+                               ('lock_monitor', True),
+                               ('lock_verification_delay',
+                                DEFAULT_LOCK_VERIFICATION_DELAY),
+                               ('double_press_interval',
+                                DEFAULT_DOUBLE_PRESS_INTERVAL)):
+            value = getattr(self, field)
+            if value != default or field in self._explicit:
+                result[field] = value
         return result
 
 
