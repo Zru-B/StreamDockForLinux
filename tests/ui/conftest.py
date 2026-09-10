@@ -11,6 +11,7 @@ import pytest
 from PyQt6.QtWidgets import QMessageBox
 
 from StreamDock.ui.main_window import MainWindow
+from StreamDock.ui.theme.manager import theme_manager
 
 
 @pytest.fixture(autouse=True)
@@ -19,3 +20,18 @@ def discard_unsaved_changes(monkeypatch):
     monkeypatch.setattr(
         MainWindow, 'ask_about_unsaved_changes',
         lambda self: QMessageBox.StandardButton.Discard)
+
+
+@pytest.fixture(autouse=True)
+def plasma_design():
+    """
+    Start every GUI test on the Plasma design.
+
+    These tests are about behaviour, not appearance, and the design decides
+    where the menus and the status line are: left to follow the session, the
+    same test would find a menu bar on one developer's machine and a header
+    bar on another's. Tests about the designs themselves override this.
+    """
+    theme_manager().set_preferences(flavor='kde', scheme='dark')
+    yield
+    theme_manager().set_preferences(flavor='auto', scheme='auto')

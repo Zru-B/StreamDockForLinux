@@ -2,7 +2,7 @@
 Device selection and connection controls.
 
 Sits above the key grid in the main window. Not a QToolBar: the stylesheet
-has no QToolBar rules, so one would render unstyled against the dark theme.
+has no QToolBar rules, so one would render unstyled whichever design is on.
 """
 
 import logging
@@ -26,15 +26,13 @@ from StreamDock.ui.device_service import (
     STATE_ERROR,
 )
 from StreamDock.ui.resources import load_app_icon
-from StreamDock.ui.styles import get_colors
+from StreamDock.ui.theme import current_theme, theme_manager
 
 logger = logging.getLogger(__name__)
 
-COLORS = get_colors()
-
-# One height and one minimum width for every control, so the row lines up.
-CONTROL_HEIGHT = 28  # matches the min/max-height in the bar's stylesheet
-BUTTON_WIDTH = 92  # fits 'Disconnect'; every text button shares it
+# Every control in the row shares a height, so the strip reads as one strip.
+# The height itself belongs to the design: Breeze is tighter than Adwaita.
+BUTTON_WIDTH = 96  # fits 'Disconnect'; every text button shares it
 
 # U+21BB renders in the default UI fonts; U+27F3 falls back to a tofu box.
 REFRESH_GLYPH = "\u21bb"
@@ -59,18 +57,22 @@ class DeviceBar(QWidget):
         super().__init__(parent)
         self._connected = False
         self._busy = False
+        self._sized: List[QWidget] = []
         # Apply stays disabled while the device already matches the open
         # configuration; there is nothing to send.
         self._needs_apply = False
         self._setup_ui()
         self.set_state(STATE_DISCONNECTED)
+        theme_manager().changed.connect(self._apply_metrics)
 
     def _setup_ui(self) -> None:
         self.setObjectName("deviceBar")
 
+        metrics = current_theme().metrics
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(metrics.card_padding, metrics.spacing_tight,
+                                  metrics.card_padding, metrics.spacing_tight)
+        layout.setSpacing(metrics.spacing)
 
         icon_label = QLabel()
         icon_label.setPixmap(load_app_icon().pixmap(QSize(18, 18)))
@@ -78,7 +80,7 @@ class DeviceBar(QWidget):
 
         self.device_combo = QComboBox()
         self.device_combo.setObjectName("deviceCombo")
-        self.device_combo.setFixedHeight(CONTROL_HEIGHT)
+        self._sized.append(self.device_combo)
         self.device_combo.setMinimumWidth(200)
         self.device_combo.setMaximumWidth(280)
         self.device_combo.setIconSize(QSize(14, 14))
@@ -88,8 +90,8 @@ class DeviceBar(QWidget):
         self.device_combo.setToolTip("Stream Dock devices currently attached")
         layout.addWidget(self.device_combo)
 
-        self.refresh_button = self._make_button(REFRESH_GLYPH, "Look for attached devices again")
-        self.refresh_button.setFixedWidth(CONTROL_HEIGHT)  # square
+        self.refresh_button = self._make_button(REFRESH_GLYPH,
+                                               "Look for attached devices again")
         self.refresh_button.clicked.connect(self.refresh_requested)
         layout.addWidget(self.refresh_button)
 
@@ -114,6 +116,8 @@ class DeviceBar(QWidget):
         self.apply_button.clicked.connect(self.apply_requested)
         layout.addWidget(self.apply_button)
 
+        self._apply_metrics()
+
     def _make_button(self, text: str, tooltip: str = "",
                      primary: bool = False) -> QPushButton:
         """
@@ -131,15 +135,23 @@ class DeviceBar(QWidget):
             The button
         """
         button = QPushButton(text)
-        button.setFixedHeight(CONTROL_HEIGHT)
         # Fixed, not minimum: Connect/Disconnect must not resize as its label
         # changes, or the row jumps every time you connect.
         button.setFixedWidth(BUTTON_WIDTH)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sized.append(button)
         button.setProperty("barButton", "primary" if primary else "normal")
         if tooltip:
             button.setToolTip(tooltip)
         return button
+
+    def _apply_metrics(self) -> None:
+        """Put every control in the row on the current design's control height."""
+        height = current_theme().metrics.control_height
+        for widget in self._sized:
+            widget.setFixedHeight(height)
+        # The refresh button carries a single glyph, so it stays square.
+        self.refresh_button.setFixedWidth(height)
 
     # ── device list ───────────────────────────────────────────────────────
 

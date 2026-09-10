@@ -13,13 +13,16 @@ from StreamDock.application.configuration_manager import (
     relativize_icon_path,
     resolve_icon_path,
 )
+from StreamDock.ui.chrome import ThemedDialog, make_button
 from StreamDock.ui.widgets import (
     ActionListContainer,
     ActionListItem,
     SegmentedControl,
     ToggleSwitch,
+    glyph_button,
 )
 from StreamDock.ui.styles import get_colors
+from StreamDock.ui.theme import current_theme
 from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -53,10 +56,6 @@ COLORS = get_colors()
 # The two ways a key can be drawn, as the segmented control spells them.
 DISPLAY_ICON = "Icon"
 DISPLAY_TEXT = "Text"
-
-# Dialog buttons follow the device bar: short, quiet, all one size.
-BUTTON_HEIGHT = 28
-BUTTON_WIDTH = 88
 
 
 # Labels that Title Case gets wrong. Everything else is derived from
@@ -112,10 +111,7 @@ def _as_int(value, default: int) -> int:
 
 
 def create_styled_button(text: str, primary: bool = False) -> QPushButton:
-    """Create a dialog button sized to match the device bar
-
-    The look itself comes from the stylesheet; this only fixes the geometry
-    so a row of dialog buttons lines up the way the device bar does.
+    """Create a dialog button at the size the active design uses
 
     Args:
         text: Button text
@@ -124,24 +120,16 @@ def create_styled_button(text: str, primary: bool = False) -> QPushButton:
     Returns:
         The button
     """
-    btn = QPushButton(text)
-    btn.setFixedHeight(BUTTON_HEIGHT)
-    btn.setMinimumWidth(BUTTON_WIDTH)
-    # Without this a button in an HBox swells to fill whatever is left.
-    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    if primary:
-        btn.setProperty("buttonType", "primary")
-    return btn
+    return make_button(text, "primary" if primary else "")
 
 
-class KeyEditorDialog(QDialog):
+class KeyEditorDialog(ThemedDialog):
     """Dialog for creating or editing a key"""
     
     def __init__(self, key_def: KeyDefinition = None, existing_keys: list = None, 
                  available_layouts: list = None, available_keys: list = None,
                  config_dir: str = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.key_def = key_def or KeyDefinition("NewKey")
         self.existing_keys = existing_keys or []
         self.available_layouts = available_layouts or []
@@ -159,7 +147,7 @@ class KeyEditorDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Key name
         name_layout = QHBoxLayout()
@@ -254,19 +242,7 @@ class KeyEditorDialog(QDialog):
         
         layout.addWidget(self.tabs)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", primary=True)
-        save_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.accept)
         
         self.display_type.selection_changed.connect(self.update_display_type)
     
@@ -409,9 +385,11 @@ class ActionEditorWidget(QWidget):
     
     def setup_ui(self):
         """Setup the UI"""
+        metrics = current_theme().metrics
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(metrics.spacing_tight, metrics.spacing_tight,
+                                  metrics.spacing_tight, metrics.spacing_tight)
+        layout.setSpacing(metrics.spacing)
         
         # Scroll area for actions list
         self.scroll = QScrollArea()
@@ -427,7 +405,7 @@ class ActionEditorWidget(QWidget):
         self.scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 1px solid {COLORS['border']};
-                border-radius: 4px;
+                border-radius: {current_theme().metrics.radius}px;
                 background-color: {COLORS['bg_secondary']};
             }}
             QWidget#actionsContainer {{
@@ -531,7 +509,7 @@ class ActionEditorWidget(QWidget):
         self.rebuild_actions_list()
 
 
-class ActionDialog(QDialog):
+class ActionDialog(ThemedDialog):
     """Dialog for creating or editing a single action"""
     
     # Mapping from backend keys to user-friendly display names
@@ -542,7 +520,7 @@ class ActionDialog(QDialog):
     
     def __init__(self, action_dict: dict = None, available_layouts: list = None, 
                  available_keys: list = None, config_dir: str = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.action_dict = action_dict or {}
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
@@ -562,7 +540,7 @@ class ActionDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Action type selection
         type_layout = QHBoxLayout()
@@ -580,19 +558,7 @@ class ActionDialog(QDialog):
         self.fields_layout = QVBoxLayout(self.fields_widget)
         layout.addWidget(self.fields_widget)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("OK", primary=True)
-        save_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("OK", self.accept)
     
     def update_action_fields(self):
         """Update fields based on selected action type"""
@@ -1084,11 +1050,11 @@ class ActionDialog(QDialog):
         return None
 
 
-class ManageKeysDialog(QDialog):
+class ManageKeysDialog(ThemedDialog):
     """Dialog for managing all key definitions"""
     
     def __init__(self, config, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.config = config
         self.modified = False
         
@@ -1100,34 +1066,18 @@ class ManageKeysDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Title bar with add button
         title_layout = QHBoxLayout()
         
         title = QLabel("All Key Definitions")
-        title.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        title.setProperty("headingLevel", "2")
         title_layout.addWidget(title)
         
         title_layout.addStretch()
         
-        # Green + icon
-        self.add_btn = QPushButton("+")
-        self.add_btn.setFixedSize(24, 24)
-        self.add_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['success']};
-                font-size: 24px;
-                font-weight: bold;
-                border: none;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['success_hover']};
-            }}
-        """)
-        self.add_btn.setToolTip("Add new key")
+        self.add_btn = glyph_button("+", "add", "Add new key", size=24)
         self.add_btn.clicked.connect(self.add_new_key)
         title_layout.addWidget(self.add_btn)
         
@@ -1137,15 +1087,7 @@ class ManageKeysDialog(QDialog):
         self.keys_list = QListWidget()
         layout.addWidget(self.keys_list)
         
-        # Close button at bottom
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        self.close_btn = create_styled_button("Close", primary=True)
-        self.close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(self.close_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Close", self.accept, cancel=None)
     
     def refresh_keys_list(self):
         """Refresh the keys list display"""
@@ -1180,43 +1122,11 @@ class ManageKeysDialog(QDialog):
             
             widget_layout.addStretch()
             
-            # Cyan pencil edit icon
-            edit_btn = QPushButton("✎")
-            edit_btn.setFixedSize(20, 20)
-            edit_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {COLORS['info']};
-                    font-size: 18px;
-                    font-weight: bold;
-                    border: none;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    color: {COLORS['info_hover']};
-                }}
-            """)
-            edit_btn.setToolTip("Edit key")
+            edit_btn = glyph_button("✎", "edit", "Edit key", size=20)
             edit_btn.clicked.connect(lambda checked, n=key_name: self.edit_key_by_name(n))
             widget_layout.addWidget(edit_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
-            # Red X delete icon
-            delete_btn = QPushButton("✕")
-            delete_btn.setFixedSize(20, 20)
-            delete_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {COLORS['danger']};
-                    font-size: 18px;
-                    font-weight: bold;
-                    border: none;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    color: {COLORS['danger_hover']};
-                }}
-            """)
-            delete_btn.setToolTip("Delete key")
+            delete_btn = glyph_button("✕", "remove", "Delete key", size=20)
             delete_btn.clicked.connect(lambda checked, n=key_name: self.delete_key_by_name(n))
             widget_layout.addWidget(delete_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
@@ -1339,11 +1249,11 @@ class ManageKeysDialog(QDialog):
         return self.modified
 
 
-class WindowRuleDialog(QDialog):
+class WindowRuleDialog(ThemedDialog):
     """Dialog for adding/editing a window rule"""
     
     def __init__(self, available_layouts: list, rule_name: str = None, window_rule=None, existing_rules: list = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.available_layouts = available_layouts
         self.original_rule_name = rule_name
         self.window_rule = window_rule
@@ -1359,7 +1269,7 @@ class WindowRuleDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Form layout
         form = QFormLayout()
@@ -1407,20 +1317,7 @@ class WindowRuleDialog(QDialog):
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", primary=True)
-        save_btn.clicked.connect(self.validate_and_accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.validate_and_accept)
     
     def _update_placeholder(self, match_field: str):
         """Update the placeholder text based on selected match field"""
@@ -1483,12 +1380,12 @@ class WindowRuleDialog(QDialog):
         }
 
 
-class LayoutEditorDialog(QDialog):
+class LayoutEditorDialog(ThemedDialog):
     """Dialog for creating or editing a layout"""
     
     def __init__(self, layout_name: str = None, clear_all: bool = False, 
                  existing_layouts: list = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.original_name = layout_name
         self.existing_layouts = existing_layouts or []
         
@@ -1499,7 +1396,7 @@ class LayoutEditorDialog(QDialog):
     
     def setup_ui(self, layout_name: str, clear_all: bool):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         layout.setSpacing(16)
         
         # Layout name
@@ -1531,20 +1428,7 @@ class LayoutEditorDialog(QDialog):
         
         layout.addStretch()
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", primary=True)
-        save_btn.clicked.connect(self.validate_and_accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.validate_and_accept)
     
     def validate_and_accept(self):
         """Validate the form before accepting"""
@@ -1569,11 +1453,11 @@ class LayoutEditorDialog(QDialog):
         }
 
 
-class AdvancedSettingsDialog(QDialog):
+class AdvancedSettingsDialog(ThemedDialog):
     """Dialog for advanced device settings"""
     
     def __init__(self, config, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.config = config
         
         self.setWindowTitle("Advanced Settings")
@@ -1584,7 +1468,7 @@ class AdvancedSettingsDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
         
@@ -1660,20 +1544,7 @@ class AdvancedSettingsDialog(QDialog):
         layout.addWidget(settings_container)
         layout.addStretch()
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", primary=True)
-        save_btn.clicked.connect(self.accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.accept)
     
     def get_settings(self) -> dict:
         """Get the settings from the form"""

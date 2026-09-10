@@ -13,6 +13,7 @@ from StreamDock.application.config_document import (
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
 from StreamDock.ui.styles import get_colors
+from StreamDock.ui.theme import current_theme, theme_manager
 from PyQt6.QtCore import (
     QEasingCurve,
     QMimeData,
@@ -144,15 +145,18 @@ class ElidedLabel(QLabel):
         self.setToolTip("" if shown == self._full_text else self._full_text)
 
 
-def glyph_button(glyph: str, color: str, hover: str, tooltip: str,
+def glyph_button(glyph: str, role: str, tooltip: str,
                  size: int = 22) -> QPushButton:
     """
     Build a borderless icon button.
 
+    The colour comes from the role rather than from the caller, so the same
+    add or remove affordance stays recognisable across both designs and both
+    colour schemes.
+
     Args:
         glyph: The character to show
-        color: Resting colour
-        hover: Colour under the pointer
+        role: 'add', 'edit', 'remove' or 'neutral'
         tooltip: Hover text
         size: Width and height in pixels
 
@@ -163,19 +167,11 @@ def glyph_button(glyph: str, color: str, hover: str, tooltip: str,
     button.setFixedSize(size, size)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setToolTip(tooltip)
-    button.setStyleSheet(f"""
-        QPushButton {{
-            background: transparent;
-            color: {color};
-            border: none;
-            font-size: {size - 6}px;
-            font-weight: bold;
-            padding: 0px;
-        }}
-        QPushButton:hover {{
-            color: {hover};
-        }}
-    """)
+    button.setProperty("buttonType", "glyph")
+    button.setProperty("glyphRole", role)
+    # Set here rather than in the sheet: the caller picks the size, and a
+    # glyph has to grow with its button to stay centred.
+    button.setStyleSheet(f"font-size: {size - 6}px;")
     return button
 
 
@@ -217,6 +213,18 @@ class KeySquare(QFrame):
         
         # Make clickable - will change cursor based on state
         self._update_cursor()
+        
+        theme_manager().changed.connect(self._on_theme_changed)
+    
+    def _on_theme_changed(self) -> None:
+        """
+        Redraw an empty slot in the new theme.
+
+        A filled square is a picture of the device's own screen, which no
+        desktop theme has any say over, so it is left alone.
+        """
+        if self.is_empty():
+            self.set_empty()
     
     def set_empty(self):
         """Set the square to empty state"""
@@ -228,17 +236,20 @@ class KeySquare(QFrame):
         self.label.setPixmap(QPixmap())
         
         # Completely reset label stylesheet
-        self.label.setStyleSheet("background-color: transparent; color: white;")
+        self.label.setStyleSheet(
+            f"background-color: transparent; color: {COLORS['text_secondary']};")
         
-        # Empty state: dark with dashed border
+        # Empty state: an outlined slot, drawn in the theme's own colours so a
+        # light desktop does not get a black hole in the middle of the grid.
         self.setStyleSheet(f"""
             KeySquare {{
-                background-color: #1A1A1A !important;
-                border: 1px dashed #444444 !important;
+                background-color: {COLORS['bg_alternate']};
+                border: 1px dashed {COLORS['border_strong']};
+                border-radius: {current_theme().metrics.radius}px;
             }}
             KeySquare:hover {{
-                background-color: #252525 !important;
-                border: 1px solid {COLORS['primary']} !important;
+                background-color: {COLORS['bg_hover']};
+                border: 1px solid {COLORS['primary']};
             }}
         """)
         
@@ -361,13 +372,15 @@ class KeySquare(QFrame):
         font.setPointSize(8)
         self.label.setFont(font)
         
-        self.setStyleSheet("""
-            KeySquare {
-                background-color: #1A1A1A;
-                border: 1px solid #FF0000;
-            }
+        self.setStyleSheet(f"""
+            KeySquare {{
+                background-color: {COLORS['bg_input']};
+                border: 1px solid {COLORS['danger']};
+                border-radius: {current_theme().metrics.radius}px;
+            }}
         """)
-        self.label.setStyleSheet("color: #FF0000; background-color: #1A1A1A;")
+        self.label.setStyleSheet(
+            f"color: {COLORS['danger']}; background-color: {COLORS['bg_input']};")
     
     def mousePressEvent(self, event):
         """Handle mouse clicks and prepare for potential drag"""
@@ -515,18 +528,16 @@ class LayoutListWidget(QWidget):
     
     def setup_ui(self):
         """Setup the UI"""
-        # Add card styling to the widget itself
-        self.setStyleSheet(f"""
-            LayoutListWidget {{
-                background-color: {COLORS['bg_card']};
-                border-radius: 12px;
-                padding: 16px;
-            }}
-        """)
+        # The card look lives in the stylesheet, which knows which design is
+        # running; a plain QWidget needs the attribute to honour it at all.
+        self.setObjectName("sidePanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         
+        metrics = current_theme().metrics
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(metrics.spacing)
+        layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
+                                  metrics.card_padding, metrics.card_padding)
         
         # Title bar with add button
         title_layout = QHBoxLayout()
@@ -537,10 +548,7 @@ class LayoutListWidget(QWidget):
         
         title_layout.addStretch()
         
-        # Green + icon
-        self.add_btn = glyph_button(
-            "+", COLORS['success'], COLORS['success_hover'], "Add new layout",
-            size=24)
+        self.add_btn = glyph_button("+", "add", "Add new layout", size=24)
         self.add_btn.clicked.connect(self.add_layout_clicked.emit)
         title_layout.addWidget(self.add_btn)
         
@@ -680,12 +688,10 @@ class ActionListItem(QWidget):
         self.label.setObjectName("actionText")
         layout.addWidget(self.label, stretch=1)
 
-        for glyph, color, hover, tooltip, signal in (
-                ("✎", COLORS['info'], COLORS['info_hover'],
-                 "Edit action", self.edit_clicked),
-                ("✕", COLORS['danger'], COLORS['danger_hover'],
-                 "Remove action", self.remove_clicked)):
-            button = glyph_button(glyph, color, hover, tooltip)
+        for glyph, role, tooltip, signal in (
+                ("✎", "edit", "Edit action", self.edit_clicked),
+                ("✕", "remove", "Remove action", self.remove_clicked)):
+            button = glyph_button(glyph, role, tooltip)
             # The buttons keep the normal pointer; only the row is draggable.
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(
@@ -953,18 +959,16 @@ class WindowRulesWidget(QWidget):
     
     def setup_ui(self):
         """Setup the UI"""
-        # Add card styling to the widget itself
-        self.setStyleSheet(f"""
-            WindowRulesWidget {{
-                background-color: {COLORS['bg_card']};
-                border-radius: 12px;
-                padding: 16px;
-            }}
-        """)
+        # The card look lives in the stylesheet, which knows which design is
+        # running; a plain QWidget needs the attribute to honour it at all.
+        self.setObjectName("sidePanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         
+        metrics = current_theme().metrics
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(metrics.spacing)
+        layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
+                                  metrics.card_padding, metrics.card_padding)
         
         # Title bar with add button
         title_layout = QHBoxLayout()
@@ -975,10 +979,7 @@ class WindowRulesWidget(QWidget):
         
         title_layout.addStretch()
         
-        # Green + icon
-        self.add_btn = glyph_button(
-            "+", COLORS['success'], COLORS['success_hover'], "Add new window rule",
-            size=24)
+        self.add_btn = glyph_button("+", "add", "Add new window rule", size=24)
         self.add_btn.clicked.connect(self.add_rule_clicked.emit)
         title_layout.addWidget(self.add_btn)
         
@@ -1086,6 +1087,8 @@ class ToggleSwitch(QAbstractButton):
 
         self._knob = 0.0
         self._hovered = False
+        # Painted by hand, so a theme change has to be repainted by hand.
+        theme_manager().changed.connect(self.update)
         self._slide = QPropertyAnimation(self, b"knob_position", self)
         self._slide.setDuration(120)
         self._slide.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -1142,7 +1145,9 @@ class ToggleSwitch(QAbstractButton):
         painter.setPen(Qt.PenStyle.NoPen)
 
         top = (self.height() - self.TRACK_HEIGHT) / 2
-        track_color = _mix(COLORS['bg_tertiary'],
+        # Off, the track has to stand out from a card that may be the same
+        # colour as any raised control, so it starts from the border shade.
+        track_color = _mix(COLORS['border_strong'],
                            COLORS['primary_hover'] if self._hovered
                            else COLORS['primary'],
                            self._knob)

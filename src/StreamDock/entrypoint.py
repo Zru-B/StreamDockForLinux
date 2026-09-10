@@ -30,6 +30,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Start the GUI hidden in the system tray")
     parser.add_argument('--device', default='',
                         help="Device to use, as reported in the device list")
+    parser.add_argument('--design', choices=('auto', 'kde', 'gnome'),
+                        help="Force the interface design for this run instead "
+                             "of following the running desktop")
     parser.add_argument('--check-deps', action='store_true',
                         help="Check dependencies and exit")
     parser.add_argument('--debug', action='store_true',
@@ -235,7 +238,7 @@ def main(argv=None) -> int:
 
     from StreamDock.ui.app import main as run_gui
     return run_gui(config_path=config_path, device_id=args.device,
-                   start_minimized=args.minimized)
+                   start_minimized=args.minimized, design=args.design)
 
 
 def main_gui(argv=None) -> int:

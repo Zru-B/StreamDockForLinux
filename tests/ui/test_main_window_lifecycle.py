@@ -180,7 +180,7 @@ class TestDeviceFeedback:
     def test_layout_change_is_reported(self, window):
         window.on_layout_changed("Firefox")
 
-        assert "Firefox" in window.statusBar().currentMessage()
+        assert "Firefox" in window.current_status()
 
 
 class TestApplyGate:

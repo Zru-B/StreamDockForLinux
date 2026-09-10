@@ -68,6 +68,47 @@ different file it asks whether that should become the new default; answering
 *No* keeps the current one. Without a stored default it looks for `config.yml`
 in the working directory, then next to `main.py`, and otherwise starts empty.
 
+## Appearance
+
+The window follows the desktop it is running on. On Plasma, LXQt and other Qt
+sessions it wears **Breeze**: a menu bar along the top, a status bar along the
+bottom, tight corners, and — this is the part worth knowing — the colour scheme
+you actually chose in *System Settings > Colours*. The accent, the window and
+view backgrounds, and the positive, negative and neutral colours are read from
+`kdeglobals`, so a custom scheme or a custom accent comes through without the
+application knowing anything about it.
+
+On GNOME, Cinnamon, XFCE and other GTK sessions it wears **Adwaita** instead,
+and that is a different arrangement rather than a repaint:
+
+| | Plasma (Breeze) | GNOME (Adwaita) |
+|---|---|---|
+| Commands | Menu bar: File, Keys, Settings | Header bar with Open and Save, everything else under ☰ |
+| Messages | Status bar along the bottom | A toast that floats over the content and fades |
+| Dialogs | Cancel and the action at the bottom right | Cancel at the header's left, the action at its right |
+| Document name | In the window title | Under the title in the header bar |
+| Shape | 3px corners, outlined controls | 8–12px corners, filled controls |
+
+Light and dark follow the session too, through the cross-desktop portal that
+both Plasma and GNOME publish. Turn on your desktop's night mode and the window
+follows it while it is open. Swapping to a different colour scheme entirely, or
+changing your accent, is picked up the next time the application starts.
+
+### Choosing for yourself
+
+*Settings > Appearance* overrides both, and the choice is remembered:
+
+- **Design** — *Follow the desktop*, *Plasma (Breeze)*, or *GNOME (Adwaita)*.
+- **Colours** — *Follow the desktop*, *Light*, or *Dark*.
+
+Switching either takes effect immediately; there is no restart. Forcing a
+design that is not the session's own uses that design's stock colours rather
+than the desktop's, since Breeze blue on a GNOME layout belongs to neither.
+
+`--design gnome` forces the design for one run without changing what is
+remembered. `STREAMDOCK_QT_STYLE=Breeze` swaps the Qt widget style underneath
+the theme, for anything the stylesheet does not paint.
+
 ## The system tray
 
 Closing the window hides it in the tray, and the device keeps switching
@@ -100,7 +141,8 @@ connecting disabled.
 ## Command line
 
 ```
-streamdock [CONFIG] [--headless] [--minimized] [--device ID] [--check-deps] [--debug]
+streamdock [CONFIG] [--headless] [--minimized] [--device ID] [--design NAME]
+           [--check-deps] [--debug]
 ```
 
 | Option | Effect |
@@ -109,5 +151,6 @@ streamdock [CONFIG] [--headless] [--minimized] [--device ID] [--check-deps] [--d
 | `--headless` | Run the controller with no GUI |
 | `--minimized` | Start hidden in the system tray |
 | `--device ID` | Connect to a specific device, as shown in the device list |
+| `--design NAME` | Force `kde`, `gnome` or `auto` for this run only |
 | `--check-deps` | Print a dependency report and exit |
 | `--debug` | Verbose logging |

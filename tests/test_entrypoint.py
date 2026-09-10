@@ -33,6 +33,16 @@ class TestArguments:
     def test_minimized_flag(self):
         assert parse_args(['--minimized']).minimized is True
 
+    def test_the_design_follows_the_desktop_unless_forced(self):
+        assert parse_args([]).design is None
+
+    def test_the_design_can_be_forced_for_one_run(self):
+        assert parse_args(['--design', 'gnome']).design == 'gnome'
+
+    def test_an_unknown_design_is_refused(self):
+        with pytest.raises(SystemExit):
+            parse_args(['--design', 'aqua'])
+
     def test_mock_flag_is_gone(self):
         """It was a dead alias and MockDevice does not work."""
         with pytest.raises(SystemExit):

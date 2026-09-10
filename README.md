@@ -10,6 +10,9 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 - 🪟 **Context-Aware** - Automatically switch layouts when you open Firefox, VSCode, or Spotify.
 - 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks.
 - 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME).
+- 🎭 **Desktop Native** - Wears Breeze on Plasma, following your own colour
+  scheme and accent, and Adwaita on GNOME, header bar and all. It picks the
+  right one on its own.
 - 🎨 **Visuals** - Support for PNG, JPG, GIF, SVG, and dynamic text generation.
 - 🛠️ **Hackable** - Pure Python with a plugin-friendly architecture.
 

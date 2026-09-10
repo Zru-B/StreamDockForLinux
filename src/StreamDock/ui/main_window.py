@@ -22,18 +22,27 @@ from StreamDock.application.config_document import (
     Layout,
     WindowRule,
 )
+from StreamDock.ui.chrome import SEPARATOR, ChromeModel, MenuSpec, make_chrome
 from StreamDock.ui.device_bar import DeviceBar
-from StreamDock.ui.settings_store import get_default_config_path, set_default_config_path
+from StreamDock.ui.settings_store import (
+    get_default_config_path,
+    get_design,
+    get_scheme,
+    set_default_config_path,
+    set_design,
+    set_scheme,
+)
 from StreamDock.ui.widgets import (
     KeySquare,
     LayoutListWidget,
     ToggleSwitch,
     WindowRulesWidget,
 )
-from StreamDock.ui.styles import get_colors, get_stylesheet
+from StreamDock.ui.theme import apply_theme, current_theme, theme_manager
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QCursor, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -46,10 +55,20 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSlider,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
+
+WINDOW_TITLE = "StreamDock Configuration Editor"
+
+# Appearance menu entries, as (label, stored value) pairs.
+DESIGN_CHOICES = (("Follow the &desktop", "auto"),
+                  ("&Plasma (Breeze)", "kde"),
+                  ("&GNOME (Adwaita)", "gnome"))
+
+SCHEME_CHOICES = (("Follow the d&esktop", "auto"),
+                  ("&Light", "light"),
+                  ("&Dark", "dark"))
 
 
 class KeySelectionDialog(QMessageBox):
@@ -163,32 +182,42 @@ class MainWindow(QMainWindow):
         self._applied_path = None
         self._needs_apply = False
         
-        self.setWindowTitle("StreamDock Configuration Editor")
+        self._chrome = None
+
+        self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(1200, 800)
-        
-        # Apply modern stylesheet
-        self.setStyleSheet(get_stylesheet())
-        
+
+        # The application normally themes itself before building the window.
+        # Opened on its own - a test, or an embedder - it still has to arrive
+        # dressed, so paint whatever has not been painted yet.
+        application = QApplication.instance()
+        if application is not None and not application.styleSheet():
+            apply_theme(application, get_design(), get_scheme())
+
         self.setup_ui()
-        self.setup_menu()
-        self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Ready")
-        
+        self.setup_actions()
+        self.install_chrome()
+        self.show_status("Ready")
+
+        theme_manager().changed.connect(self.on_theme_changed)
     
     def setup_ui(self):
         """Setup the user interface"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(16)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        metrics = current_theme().metrics
+        margin = metrics.window_margin
+        
+        self.main_layout = QHBoxLayout(central_widget)
+        self.main_layout.setSpacing(margin)
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
         
         # Left panel - Split vertically for layouts and window rules
         left_panel = QWidget()
         left_panel.setMaximumWidth(300)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(16)
+        left_layout.setSpacing(margin)
         left_layout.setContentsMargins(0, 0, 0, 0)
         
         # Layout list (upper half)
@@ -207,12 +236,12 @@ class MainWindow(QMainWindow):
         self.window_rules_widget.edit_rule_clicked.connect(self.edit_window_rule)
         left_layout.addWidget(self.window_rules_widget)
         
-        main_layout.addWidget(left_panel)
+        self.main_layout.addWidget(left_panel)
         
         # Center panel - Key grid with modern card design
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        center_layout.setSpacing(16)
+        center_layout.setSpacing(margin)
         
         # Device selection, connection state and Apply
         self.device_bar = DeviceBar()
@@ -259,28 +288,25 @@ class MainWindow(QMainWindow):
         settings_group.setLayout(settings_layout)
         center_layout.addWidget(settings_group)
         
-        # Key grid container with dark mode styling
+        # Key grid, drawn as one card
         grid_container = QWidget()
-        grid_container.setStyleSheet(f"""
-            QWidget {{
-                background-color: {get_colors()['bg_secondary']};
-                border-radius: 12px;
-                padding: 20px;
-            }}
-        """)
-        grid_container_layout = QVBoxLayout(grid_container)
-        grid_container_layout.setContentsMargins(0, 0, 0, 0)
+        grid_container.setObjectName("keyGrid")
+        # A plain QWidget ignores a stylesheet background without this.
+        grid_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.grid_container_layout = QVBoxLayout(grid_container)
+        self.grid_container_layout.setContentsMargins(
+            margin, margin, margin, margin)
+        self.grid_container_layout.setSpacing(metrics.spacing)
         
         # Grid title
         grid_title = QLabel("StreamDock Keys")
         grid_title.setProperty("headingLevel", "2")
-        grid_title.setStyleSheet(f"color: {get_colors()['text_primary']}; margin-bottom: 12px;")
-        grid_container_layout.addWidget(grid_title)
+        self.grid_container_layout.addWidget(grid_title)
         
         # Key grid (3 rows x 5 columns)
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
-        grid_layout.setSpacing(12)
+        grid_layout.setSpacing(metrics.spacing)
         
         # Create 15 key squares (3x5)
         position = 1
@@ -293,59 +319,178 @@ class MainWindow(QMainWindow):
                 self.key_squares.append(key_square)
                 position += 1
         
-        grid_container_layout.addWidget(grid_widget)
+        self.grid_container_layout.addWidget(grid_widget)
         center_layout.addWidget(grid_container)
         center_layout.addStretch()
         
-        main_layout.addWidget(center_widget, stretch=1)
+        self.main_layout.addWidget(center_widget, stretch=1)
     
-    def setup_menu(self):
-        """Setup the menu bar"""
-        menubar = self.menuBar()
-        
-        # File menu
-        file_menu = menubar.addMenu("&File")
-        
-        new_action = QAction("&New Configuration", self)
-        new_action.setShortcut(QKeySequence.StandardKey.New)
-        new_action.triggered.connect(self.new_config)
-        file_menu.addAction(new_action)
-        
-        open_action = QAction("&Open...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.open_config)
-        file_menu.addAction(open_action)
-        
-        save_action = QAction("&Save", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self.save_config)
-        file_menu.addAction(save_action)
-        
-        save_as_action = QAction("Save &As...", self)
-        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
-        save_as_action.triggered.connect(self.save_config_as)
-        file_menu.addAction(save_as_action)
-        
-        file_menu.addSeparator()
-        
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
-        exit_action.triggered.connect(self.request_quit)
-        file_menu.addAction(exit_action)
-        
-        # Keys menu
-        keys_menu = menubar.addMenu("Keys")
-        
-        manage_keys_action = QAction("Manage All Keys...", self)
-        manage_keys_action.triggered.connect(self.manage_all_keys)
-        keys_menu.addAction(manage_keys_action)
-        
-        # Settings menu
-        settings_menu = menubar.addMenu("&Settings")
-        
-        advanced_settings_action = QAction("&Advanced Settings...", self)
-        advanced_settings_action.triggered.connect(self.show_advanced_settings)
-        settings_menu.addAction(advanced_settings_action)
+    # ── commands and chrome ───────────────────────────────────────────────
+
+    def setup_actions(self):
+        """
+        Create every command the window offers and group them.
+
+        Where the groups end up is the chrome's business: a menu bar on
+        Plasma, a header bar and one primary menu on GNOME.
+        """
+        self.new_action = self._command(
+            "&New Configuration", self.new_config, QKeySequence.StandardKey.New)
+        self.open_action = self._command(
+            "&Open...", self.open_config, QKeySequence.StandardKey.Open,
+            "Open a configuration file")
+        self.save_action = self._command(
+            "&Save", self.save_config, QKeySequence.StandardKey.Save,
+            "Save the open configuration")
+        self.save_as_action = self._command(
+            "Save &As...", self.save_config_as, QKeySequence.StandardKey.SaveAs)
+        self.quit_action = self._command(
+            "E&xit", self.request_quit, QKeySequence("Ctrl+Q"))
+        self.manage_keys_action = self._command(
+            "Manage All &Keys...", self.manage_all_keys)
+        self.advanced_settings_action = self._command(
+            "&Advanced Settings...", self.show_advanced_settings)
+
+        appearance = MenuSpec("&Appearance", [
+            MenuSpec("&Design", self._appearance_group(
+                DESIGN_CHOICES, get_design(), self.on_design_chosen)),
+            MenuSpec("&Colours", self._appearance_group(
+                SCHEME_CHOICES, get_scheme(), self.on_scheme_chosen)),
+        ])
+
+        self.chrome_model = ChromeModel(
+            menus=[
+                MenuSpec("&File", [self.new_action, self.open_action,
+                                   self.save_action, self.save_as_action,
+                                   SEPARATOR, self.quit_action]),
+                MenuSpec("&Keys", [self.manage_keys_action]),
+                MenuSpec("&Settings", [self.advanced_settings_action,
+                                       SEPARATOR, appearance]),
+            ],
+            open_action=self.open_action,
+            save_action=self.save_action,
+            title="StreamDock",
+        )
+
+    def _command(self, text: str, handler, shortcut=None,
+                 tooltip: str = "") -> QAction:
+        """
+        Build one command.
+
+        Args:
+            text: Menu label, with its mnemonic
+            handler: What triggering it does
+            shortcut: A QKeySequence or standard key, if it has one
+            tooltip: Hover text, used when the action is promoted to a button
+
+        Returns:
+            The action, owned by the window
+        """
+        action = QAction(text, self)
+        if shortcut is not None:
+            action.setShortcut(shortcut)
+        if tooltip:
+            action.setToolTip(tooltip)
+        action.triggered.connect(handler)
+        return action
+
+    def _appearance_group(self, choices, current: str, handler) -> list:
+        """
+        Build one exclusive set of appearance choices.
+
+        Args:
+            choices: (label, stored value) pairs
+            current: The value to start checked
+            handler: Called with the chosen value
+
+        Returns:
+            The actions, ready to go into a menu
+        """
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        actions = []
+
+        for label, value in choices:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.setData(value)
+            action.triggered.connect(
+                lambda _checked, chosen=value: handler(chosen))
+            group.addAction(action)
+            actions.append(action)
+
+        return actions
+
+    def install_chrome(self):
+        """Dress the window in the arrangement the active design calls for."""
+        if self._chrome is not None:
+            self._chrome.remove()
+
+        self._chrome = make_chrome(self, self.chrome_model)
+        self._chrome.install()
+        self.update_window_title()
+
+    def show_status(self, message: str, timeout: int = 0):
+        """
+        Report something to the user, wherever this design puts messages.
+
+        Args:
+            message: The text to show
+            timeout: Milliseconds before it clears, 0 to leave it up
+        """
+        if self._chrome is not None:
+            self._chrome.show_status(message, timeout)
+
+    def current_status(self) -> str:
+        """
+        Whatever the window is currently reporting.
+
+        Returns:
+            The message, or '' when there is none
+        """
+        return self._chrome.current_status() if self._chrome is not None else ""
+
+    # ── appearance ────────────────────────────────────────────────────────
+
+    def on_design_chosen(self, design: str):
+        """
+        Switch between the Plasma and GNOME designs.
+
+        Args:
+            design: 'auto', 'kde' or 'gnome'
+        """
+        set_design(design)
+        theme_manager().set_preferences(flavor=design)
+
+    def on_scheme_chosen(self, scheme: str):
+        """
+        Switch between light and dark.
+
+        Args:
+            scheme: 'auto', 'light' or 'dark'
+        """
+        set_scheme(scheme)
+        theme_manager().set_preferences(scheme=scheme)
+
+    def on_theme_changed(self):
+        """
+        Rebuild what a stylesheet cannot reach.
+
+        Colours repaint themselves the moment the application stylesheet
+        changes. The arrangement does not: a switch between the designs moves
+        the menus, the messages and every margin.
+        """
+        metrics = current_theme().metrics
+        margin = metrics.window_margin
+
+        self.main_layout.setSpacing(margin)
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.grid_container_layout.setContentsMargins(
+            margin, margin, margin, margin)
+
+        self.install_chrome()
+        self.show_status("Appearance updated", 4000)
     
     def new_config(self):
         """Create a new configuration"""
@@ -400,7 +545,7 @@ class MainWindow(QMainWindow):
 
         if reply == QMessageBox.StandardButton.Yes:
             set_default_config_path(file_path)
-            self.statusBar().showMessage(
+            self.show_status(
                 f"{Path(file_path).name} is now the default configuration", 5000)
     
     def load_config(self, file_path: str, set_as_current_file: bool = True):
@@ -428,7 +573,7 @@ class MainWindow(QMainWindow):
                 # Loading as template - no file path set
                 self.config_file_path = None
                 self.modified = False
-                self.setWindowTitle("StreamDock Configuration Editor - Unsaved")
+                self.update_window_title()
             
             # Block signals to prevent mark_modified from being called during load
             self.brightness_slider.blockSignals(True)
@@ -458,7 +603,7 @@ class MainWindow(QMainWindow):
                 self.update_window_title()
             else:
                 self.modified = False
-                self.setWindowTitle("StreamDock Configuration Editor - Unsaved")
+                self.update_window_title()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
@@ -493,7 +638,7 @@ class MainWindow(QMainWindow):
             self.config_file_path = file_path
             self.modified = False  # Clear modified flag after save
             self.update_window_title()
-            self.statusBar().showMessage(f"Saved {Path(file_path).name}", 5000)
+            self.show_status(f"Saved {Path(file_path).name}", 5000)
             return True
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
@@ -517,15 +662,17 @@ class MainWindow(QMainWindow):
     
     def update_window_title(self):
         """Update window title to reflect current file and modified state"""
-        if self.config_file_path:
-            title = f"StreamDock Configuration Editor - {Path(self.config_file_path).name}"
-        else:
-            title = "StreamDock Configuration Editor - Unsaved"
+        name = Path(self.config_file_path).name if self.config_file_path else "Unsaved"
+        title = f"{WINDOW_TITLE} - {name}"
         
         if self.modified:
             title += " *"
         
         self.setWindowTitle(title)
+        # GNOME does not decorate its own title bar, so the header carries the
+        # document line instead.
+        if self._chrome is not None:
+            self._chrome.set_document(name, self.modified)
     
     def closeEvent(self, event):
         """
@@ -587,7 +734,7 @@ class MainWindow(QMainWindow):
 
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()
-        self.statusBar().showMessage(f"Invalid: {issues[0]}", 10000)
+        self.show_status(f"Invalid: {issues[0]}", 10000)
         return False
 
     def on_apply_requested(self) -> None:
@@ -595,7 +742,7 @@ class MainWindow(QMainWindow):
         if not self.validate_current_config():
             return
 
-        self.statusBar().showMessage("Applying configuration to device...")
+        self.show_status("Applying configuration to device...")
         # Deep-copied at the boundary so the window stays editable while the
         # worker thread applies it.
         self.apply_config_requested.emit(
@@ -617,37 +764,37 @@ class MainWindow(QMainWindow):
         """Populate the device picker."""
         self.device_bar.set_devices(devices)
         if not devices:
-            self.statusBar().showMessage("No Stream Dock found", 5000)
+            self.show_status("No Stream Dock found", 5000)
 
     def on_connection_state_changed(self, state: str, detail: str) -> None:
         """Reflect the connection state in the bar and the status line."""
         self.device_bar.set_state(state, detail)
-        self.statusBar().showMessage(
+        self.show_status(
             f"{state.capitalize()}{f' — {detail}' if detail else ''}", 5000)
 
     def on_config_applied(self, config_path: str) -> None:
         """Record that the device now matches the open configuration."""
         self._applied_path = os.path.abspath(config_path) if config_path else None
         self.set_needs_apply(False)
-        self.statusBar().showMessage("Configuration applied to device", 5000)
+        self.show_status("Configuration applied to device", 5000)
 
     def on_device_error(self, title: str, message: str) -> None:
         """Report a device-side failure."""
         QMessageBox.critical(self, title, message)
-        self.statusBar().showMessage(f"{title}: {message}", 10000)
+        self.show_status(f"{title}: {message}", 10000)
 
     def on_layout_changed(self, layout_name: str) -> None:
         """Report the layout the device switched to."""
-        self.statusBar().showMessage(f"Device layout: {layout_name}", 5000)
+        self.show_status(f"Device layout: {layout_name}", 5000)
 
     def on_device_attached(self, label: str) -> None:
         """Report a device being plugged in."""
-        self.statusBar().showMessage(f"Device connected: {label}", 5000)
+        self.show_status(f"Device connected: {label}", 5000)
 
     def on_device_detached(self, label: str) -> None:
         """Report a device being unplugged."""
         self._applied_path = None
-        self.statusBar().showMessage(f"Device unplugged: {label}", 8000)
+        self.show_status(f"Device unplugged: {label}", 8000)
 
     def ask_about_unsaved_changes(self):
         """

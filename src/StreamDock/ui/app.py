@@ -18,9 +18,13 @@ from StreamDock.application.instance_lock import InstanceLock
 from StreamDock.ui.device_service import DeviceService
 from StreamDock.ui.main_window import MainWindow
 from StreamDock.ui.resources import load_app_icon
-from StreamDock.ui.settings_store import get_default_config_path
+from StreamDock.ui.settings_store import (
+    get_default_config_path,
+    get_design,
+    get_scheme,
+)
 from StreamDock.ui.single_instance import SingleInstanceGuard
-from StreamDock.ui.styles import get_stylesheet
+from StreamDock.ui.theme import apply_theme, theme_manager
 from StreamDock.ui.tray import TrayIcon
 
 logger = logging.getLogger(__name__)
@@ -30,7 +34,8 @@ class StreamDockGui:
     """Owns the GUI process: window, tray, and the device worker thread."""
 
     def __init__(self, config_path: Optional[str] = None,
-                 device_id: str = "", start_minimized: bool = False):
+                 device_id: str = "", start_minimized: bool = False,
+                 design: Optional[str] = None):
         """
         Args:
             config_path: Configuration to open. Falls back to the remembered
@@ -38,10 +43,14 @@ class StreamDockGui:
             device_id: Device to connect to, from device_key(). Empty means
                 the first discovered.
             start_minimized: Start hidden in the tray.
+            design: Force 'kde' or 'gnome' for this run only. None uses the
+                remembered preference, which itself defaults to following the
+                running desktop.
         """
         self._config_path = config_path or get_default_config_path()
         self._device_id = device_id
         self._start_minimized = start_minimized
+        self._design = design
 
         self._qapp: Optional[QApplication] = None
         self._window: Optional[MainWindow] = None
@@ -63,7 +72,8 @@ class StreamDockGui:
         self._qapp.setOrganizationName("StreamDock")
         self._qapp.setDesktopFileName("streamdock")
         self._qapp.setWindowIcon(load_app_icon())
-        self._qapp.setStyleSheet(get_stylesheet())
+        apply_theme(self._qapp, self._design or get_design(), get_scheme())
+        self._follow_desktop_scheme()
 
         self._guard = SingleInstanceGuard()
         if not self._guard.try_acquire():
@@ -96,6 +106,20 @@ class StreamDockGui:
 
     # ── assembly ──────────────────────────────────────────────────────────
 
+    def _follow_desktop_scheme(self) -> None:
+        """
+        Repaint when the desktop switches between light and dark.
+
+        Plasma and GNOME both flip at sunset if asked to, and Qt reports it
+        through the same signal on either.
+        """
+        hints = self._qapp.styleHints()
+        signal = getattr(hints, 'colorSchemeChanged', None)
+        if signal is None:  # pragma: no cover - Qt below 6.5
+            logger.debug("Qt does not report colour scheme changes")
+            return
+        signal.connect(lambda _scheme: theme_manager().refresh())
+
     def _build_window(self) -> None:
         self._window = MainWindow()
 
@@ -111,7 +135,7 @@ class StreamDockGui:
 
         if not self._config_path:
             self._window.config = ConfigDocument.new_empty()
-            self._window.statusBar().showMessage(
+            self._window.show_status(
                 "No configuration loaded — use File > Open, or create one", 10000)
 
     def _build_tray(self) -> None:
@@ -227,7 +251,7 @@ class StreamDockGui:
 
 
 def main(config_path: Optional[str] = None, device_id: str = "",
-         start_minimized: bool = False) -> int:
+         start_minimized: bool = False, design: Optional[str] = None) -> int:
     """
     Run the GUI.
 
@@ -235,8 +259,9 @@ def main(config_path: Optional[str] = None, device_id: str = "",
         config_path: Configuration to open
         device_id: Device to connect to, from device_key()
         start_minimized: Start hidden in the tray
+        design: Force 'kde' or 'gnome' for this run only
 
     Returns:
         Process exit code
     """
-    return StreamDockGui(config_path, device_id, start_minimized).run()
+    return StreamDockGui(config_path, device_id, start_minimized, design).run()
