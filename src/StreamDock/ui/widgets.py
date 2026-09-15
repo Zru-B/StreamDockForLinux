@@ -5,7 +5,7 @@ Custom widgets for StreamDock Configuration Editor
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from StreamDock.application.config_document import (
     DEFAULT_FONT_SIZE,
@@ -13,7 +13,7 @@ from StreamDock.application.config_document import (
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
 from StreamDock.ui.styles import get_colors
-from StreamDock.ui.theme import current_theme, theme_manager
+from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
 from PyQt6.QtCore import (
     QEasingCurve,
     QMimeData,
@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
     QColor,
     QDrag,
     QFont,
+    QIcon,
     QPainter,
     QPen,
     QPixmap,
@@ -146,32 +147,42 @@ class ElidedLabel(QLabel):
 
 
 def glyph_button(glyph: str, role: str, tooltip: str,
-                 size: int = 22) -> QPushButton:
+                 size: int = 22, icon: Tuple[str, ...] = ()) -> QPushButton:
     """
     Build a borderless icon button.
 
-    The colour comes from the role rather than from the caller, so the same
-    add or remove affordance stays recognisable across both designs and both
-    colour schemes.
+    The desktop's own icon is used when it has one for the job; the glyph is
+    what is drawn on a system without an icon theme. The colour of a glyph
+    comes from the role rather than from the caller, so the same add or
+    remove affordance stays recognisable across both designs and both colour
+    schemes.
 
     Args:
-        glyph: The character to show
+        glyph: The character to show when no icon can be found
         role: 'add', 'edit', 'remove' or 'neutral'
         tooltip: Hover text
         size: Width and height in pixels
+        icon: freedesktop icon names to try, most specific first
 
     Returns:
         The button
     """
-    button = QPushButton(glyph)
+    button = QPushButton()
     button.setFixedSize(size, size)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setToolTip(tooltip)
     button.setProperty("buttonType", "glyph")
     button.setProperty("glyphRole", role)
-    # Set here rather than in the sheet: the caller picks the size, and a
-    # glyph has to grow with its button to stay centred.
-    button.setStyleSheet(f"font-size: {size - 6}px;")
+
+    themed = themed_icon(*icon) if icon else QIcon()
+    if themed.isNull():
+        button.setText(glyph)
+        # Set here rather than in the sheet: the caller picks the size, and a
+        # glyph has to grow with its button to stay centred.
+        button.setStyleSheet(f"font-size: {size - 6}px;")
+    else:
+        button.setIcon(themed)
+        button.setIconSize(QSize(max(12, size - 8), max(12, size - 8)))
     return button
 
 
@@ -513,124 +524,200 @@ class KeySquare(QFrame):
         return self.key_definition is None
 
 
-class LayoutListWidget(QWidget):
-    """Widget for managing layouts list"""
-    
+class SidebarSection(QWidget):
+    """
+    One titled list in the sidebar: a heading with an add button, then the rows.
+
+    On Plasma this is drawn the way Dolphin draws its Places panel - a
+    heading ruled off from the rows beneath it, sitting straight on the
+    window - and on GNOME as a card. The stylesheet decides; the widget only
+    names its parts.
+    """
+
+    def __init__(self, title: str, add_tooltip: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sidePanel")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        self._layout = QVBoxLayout(self)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
+
+        self.title = QLabel(title)
+        self.title.setObjectName("sidebarHeading")
+        header.addWidget(self.title)
+        header.addStretch()
+
+        self.add_btn = glyph_button("+", "add", add_tooltip, size=24,
+                                    icon=('list-add', 'list-add-symbolic'))
+        header.addWidget(self.add_btn)
+        self._layout.addLayout(header)
+
+        # The hairline under the heading; the GNOME card has no use for it.
+        self.rule = QFrame()
+        self.rule.setObjectName("sidebarRule")
+        self.rule.setFixedHeight(1)
+        self._layout.addWidget(self.rule)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setObjectName("sidebarList")
+        self.list_widget.setFrameShape(QFrame.Shape.NoFrame)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
+        self._layout.addWidget(self.list_widget)
+
+        theme_manager().changed.connect(self._apply_metrics)
+        self._apply_metrics()
+
+    def _apply_metrics(self) -> None:
+        """Lay the section out for the active design."""
+        theme = current_theme()
+        metrics = theme.metrics
+        breeze = theme.flavor is Flavor.KDE
+
+        if breeze:
+            self._layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
+                                            metrics.card_padding, metrics.spacing_tight)
+            self._layout.setSpacing(metrics.spacing_tight)
+        else:
+            self._layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
+                                            metrics.card_padding, metrics.card_padding)
+            self._layout.setSpacing(metrics.spacing)
+        self.rule.setVisible(breeze)
+        self.list_widget.setIconSize(QSize(metrics.icon_size, metrics.icon_size))
+        for index in range(self.list_widget.count()):
+            self.list_widget.item(index).setSizeHint(QSize(0, metrics.list_row_height))
+
+    def _add_row(self, text: str, key: str, icon: QIcon = None,
+                 bold: bool = False, tooltip: str = "") -> QListWidgetItem:
+        """
+        Append one row.
+
+        Args:
+            text: What the row says
+            key: What the row stands for, returned by the selection methods
+            icon: The picture at its left, if any
+            bold: Whether to weight the text
+            tooltip: Hover text
+
+        Returns:
+            The item
+        """
+        item = QListWidgetItem(icon if icon is not None else QIcon(), text)
+        item.setData(Qt.ItemDataRole.UserRole, key)
+        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
+        if bold:
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+        if tooltip:
+            item.setToolTip(tooltip)
+        self.list_widget.addItem(item)
+        return item
+
+    def _add_placeholder(self, text: str) -> None:
+        """
+        Say that the list is empty, in the list.
+
+        Args:
+            text: The explanation
+        """
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
+        self.list_widget.addItem(item)
+
+    def select(self, key: str) -> None:
+        """
+        Highlight the row standing for this key, if there is one.
+
+        Args:
+            key: The row's key
+        """
+        for index in range(self.list_widget.count()):
+            if self.list_widget.item(index).data(Qt.ItemDataRole.UserRole) == key:
+                self.list_widget.setCurrentRow(index)
+                return
+
+    def _selected_key(self) -> Optional[str]:
+        current = self.list_widget.currentItem()
+        return current.data(Qt.ItemDataRole.UserRole) if current else None
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        raise NotImplementedError
+
+    def _show_context_menu(self, position) -> None:
+        raise NotImplementedError
+
+
+class LayoutListWidget(SidebarSection):
+    """The layouts a configuration holds, with the default marked."""
+
     layout_selected = pyqtSignal(str)  # Emits layout name
     add_layout_clicked = pyqtSignal()
     delete_layout_clicked = pyqtSignal(str)  # Emits layout name
     set_default_clicked = pyqtSignal(str)  # Emits layout name to set as default
     edit_layout_clicked = pyqtSignal(str)  # Emits layout name to edit
-    
+
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        """Setup the UI"""
-        # The card look lives in the stylesheet, which knows which design is
-        # running; a plain QWidget needs the attribute to honour it at all.
-        self.setObjectName("sidePanel")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        
-        metrics = current_theme().metrics
-        layout = QVBoxLayout(self)
-        layout.setSpacing(metrics.spacing)
-        layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
-                                  metrics.card_padding, metrics.card_padding)
-        
-        # Title bar with add button
-        title_layout = QHBoxLayout()
-        
-        title = QLabel("Layouts")
-        title.setProperty("headingLevel", "2")
-        title_layout.addWidget(title)
-        
-        title_layout.addStretch()
-        
-        self.add_btn = glyph_button("+", "add", "Add new layout", size=24)
+        super().__init__("Layouts", "Add new layout", parent)
         self.add_btn.clicked.connect(self.add_layout_clicked.emit)
-        title_layout.addWidget(self.add_btn)
-        
-        layout.addLayout(title_layout)
-        
-        # List widget with modern styling
-        self.list_widget = QListWidget()
-        self.list_widget.itemClicked.connect(self._on_item_clicked)
-        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self.list_widget)
-    
+
     def _show_context_menu(self, position):
         """Show context menu for layout items"""
         item = self.list_widget.itemAt(position)
         if not item:
             return
-        
+
         layout_name = item.data(Qt.ItemDataRole.UserRole)
         if not layout_name:
             return
-        
+
         menu = QMenu(self)
-        
-        # Edit Layout action
-        edit_action = QAction("Edit Layout", self)
+
+        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Layout", self)
         edit_action.triggered.connect(lambda: self.edit_layout_clicked.emit(layout_name))
         menu.addAction(edit_action)
-        
+
         menu.addSeparator()
-        
-        # Set as Default action
-        set_default_action = QAction("Set as Default", self)
+
+        set_default_action = QAction(themed_icon('starred-symbolic', 'rating', 'emblem-favorite'),
+                                     "Set as Default", self)
         set_default_action.triggered.connect(lambda: self.set_default_clicked.emit(layout_name))
         menu.addAction(set_default_action)
-        
-        # Delete action
-        delete_action = QAction("Delete", self)
+
+        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
         delete_action.triggered.connect(lambda: self.delete_layout_clicked.emit(layout_name))
         menu.addAction(delete_action)
-        
+
         menu.exec(self.list_widget.mapToGlobal(position))
-    
+
     def set_layouts(self, layout_names: list, default_layout: str = None):
         """Set the list of layouts"""
+        selected = self._selected_key()
         self.list_widget.clear()
+
+        layout_icon = themed_icon('view-grid', 'view-grid-symbolic')
+        default_icon = themed_icon('starred-symbolic', 'rating', 'emblem-favorite')
         for name in layout_names:
-            # Create list item
-            item = QListWidgetItem(self.list_widget)
-            
-            # Create custom widget for layout name
-            widget = QWidget()
-            widget_layout = QHBoxLayout(widget)
-            widget_layout.setContentsMargins(8, 0, 8, 0)
-            widget_layout.setSpacing(8)
-            
-            # Layout name label
-            label_text = f"{name} (Default)" if name == default_layout else name
-            label = QLabel(label_text)
-            if name == default_layout:
-                font = label.font()
-                font.setBold(True)
-                label.setFont(font)
-            widget_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignVCenter)
-            
-            widget_layout.addStretch()
-            
-            # Set the widget for the item with proper height
-            widget.setMinimumHeight(40)
-            item.setSizeHint(QSize(widget.sizeHint().width(), 40))
-            self.list_widget.setItemWidget(item, widget)
-            
-            # Store layout name in item data for selection
-            item.setData(Qt.ItemDataRole.UserRole, name)
-    
+            is_default = name == default_layout
+            self._add_row(name, name,
+                          icon=default_icon if is_default and not default_icon.isNull() else layout_icon,
+                          bold=is_default,
+                          tooltip="Default layout" if is_default else "")
+
+        if selected is not None:
+            self.select(selected)
+
     def get_selected_layout(self) -> str:
         """Get currently selected layout name"""
-        current_item = self.list_widget.currentItem()
-        if current_item:
-            return current_item.data(Qt.ItemDataRole.UserRole)
-        return None
-    
+        return self._selected_key()
+
     def _on_item_clicked(self, item: QListWidgetItem):
         """Handle item click"""
         layout_name = item.data(Qt.ItemDataRole.UserRole)
@@ -945,119 +1032,64 @@ class ActionListContainer(QWidget):
                          self.width() - margins.right(), int(y))
 
 
-class WindowRulesWidget(QWidget):
-    """Widget for managing window rules"""
-    
+class WindowRulesWidget(SidebarSection):
+    """The window rules a configuration holds."""
+
     rule_selected = pyqtSignal(str)  # Emits rule name
     add_rule_clicked = pyqtSignal()
     delete_rule_clicked = pyqtSignal(str)  # Emits rule name
     edit_rule_clicked = pyqtSignal(str)  # Emits rule name to edit
-    
+
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        """Setup the UI"""
-        # The card look lives in the stylesheet, which knows which design is
-        # running; a plain QWidget needs the attribute to honour it at all.
-        self.setObjectName("sidePanel")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        
-        metrics = current_theme().metrics
-        layout = QVBoxLayout(self)
-        layout.setSpacing(metrics.spacing)
-        layout.setContentsMargins(metrics.card_padding, metrics.card_padding,
-                                  metrics.card_padding, metrics.card_padding)
-        
-        # Title bar with add button
-        title_layout = QHBoxLayout()
-        
-        title = QLabel("Window Rules")
-        title.setProperty("headingLevel", "2")
-        title_layout.addWidget(title)
-        
-        title_layout.addStretch()
-        
-        self.add_btn = glyph_button("+", "add", "Add new window rule", size=24)
+        super().__init__("Window Rules", "Add new window rule", parent)
         self.add_btn.clicked.connect(self.add_rule_clicked.emit)
-        title_layout.addWidget(self.add_btn)
-        
-        layout.addLayout(title_layout)
-        
-        # List widget with modern styling
-        self.list_widget = QListWidget()
-        self.list_widget.itemClicked.connect(self._on_item_clicked)
-        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self.list_widget)
-    
+
     def _show_context_menu(self, position):
         """Show context menu for window rule items"""
         item = self.list_widget.itemAt(position)
         if not item:
             return
-        
+
         rule_name = item.data(Qt.ItemDataRole.UserRole)
         if not rule_name:
             return
-        
+
         menu = QMenu(self)
-        
-        # Edit Rule action
-        edit_action = QAction("Edit Rule", self)
+
+        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Rule", self)
         edit_action.triggered.connect(lambda: self.edit_rule_clicked.emit(rule_name))
         menu.addAction(edit_action)
-        
+
         menu.addSeparator()
-        
-        # Delete action
-        delete_action = QAction("Delete", self)
+
+        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
         delete_action.triggered.connect(lambda: self.delete_rule_clicked.emit(rule_name))
         menu.addAction(delete_action)
-        
+
         menu.exec(self.list_widget.mapToGlobal(position))
-    
+
     def set_rules(self, rules: dict):
         """Set the list of window rules"""
+        selected = self._selected_key()
         self.list_widget.clear()
         if not rules:
-            item = QListWidgetItem("No rules defined")
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.list_widget.addItem(item)
+            self._add_placeholder("No rules defined")
             return
-        
+
+        icon = themed_icon('preferences-system-windows', 'window', 'window-symbolic')
         for rule_name, rule in rules.items():
-            # Create list item
-            item = QListWidgetItem(self.list_widget)
-            
-            # Create custom widget for rule name
-            widget = QWidget()
-            widget_layout = QHBoxLayout(widget)
-            widget_layout.setContentsMargins(8, 0, 8, 0)
-            widget_layout.setSpacing(8)
-            
-            # Rule display label
-            label = QLabel(rule_name)
-            widget_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignVCenter)
-            
-            widget_layout.addStretch()
-            
-            # Set the widget for the item with proper height
-            widget.setMinimumHeight(40)
-            item.setSizeHint(QSize(widget.sizeHint().width(), 40))
-            self.list_widget.setItemWidget(item, widget)
-            
-            # Store rule name in item data for selection
-            item.setData(Qt.ItemDataRole.UserRole, rule_name)
-    
+            target = getattr(rule, 'layout', '') or ''
+            pattern = getattr(rule, 'window_name', '') or ''
+            tooltip = f"{pattern} → {target}" if pattern and target else ""
+            self._add_row(rule_name, rule_name, icon=icon, tooltip=tooltip)
+
+        if selected is not None:
+            self.select(selected)
+
     def get_selected_rule(self) -> str:
         """Get currently selected rule name"""
-        current_item = self.list_widget.currentItem()
-        if current_item:
-            return current_item.data(Qt.ItemDataRole.UserRole)
-        return None
-    
+        return self._selected_key()
+
     def _on_item_clicked(self, item: QListWidgetItem):
         """Handle item click"""
         rule_name = item.data(Qt.ItemDataRole.UserRole)
@@ -1077,6 +1109,11 @@ class ToggleSwitch(QAbstractButton):
     TRACK_HEIGHT = 18
     KNOB_MARGIN = 2
     TEXT_SPACING = 10
+
+    # Breeze's switch is a little larger, and outlined rather than filled
+    # while off.
+    BREEZE_TRACK_WIDTH = 36
+    BREEZE_TRACK_HEIGHT = 20
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
@@ -1119,12 +1156,24 @@ class ToggleSwitch(QAbstractButton):
         super().nextCheckState()
         self._slide_knob()
 
+    def _track_size(self) -> tuple:
+        """
+        The track's width and height for the active design.
+
+        Returns:
+            (width, height) in pixels
+        """
+        if current_theme().flavor is Flavor.KDE:
+            return self.BREEZE_TRACK_WIDTH, self.BREEZE_TRACK_HEIGHT
+        return self.TRACK_WIDTH, self.TRACK_HEIGHT
+
     def sizeHint(self) -> QSize:
         metrics = self.fontMetrics()
-        width = self.TRACK_WIDTH
+        track_width, track_height = self._track_size()
+        width = track_width
         if self.text():
             width += self.TEXT_SPACING + metrics.horizontalAdvance(self.text())
-        return QSize(width, max(self.TRACK_HEIGHT, metrics.height()))
+        return QSize(width, max(track_height, metrics.height()))
 
     def minimumSizeHint(self) -> QSize:
         return self.sizeHint()
@@ -1142,9 +1191,43 @@ class ToggleSwitch(QAbstractButton):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
 
-        top = (self.height() - self.TRACK_HEIGHT) / 2
+        track_width, track_height = self._track_size()
+        top = (self.height() - track_height) / 2
+        if current_theme().flavor is Flavor.KDE:
+            self._paint_breeze_track(painter, top, track_width, track_height)
+        else:
+            self._paint_adwaita_track(painter, top, track_width, track_height)
+
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QColor(COLORS['border_focus']))
+            painter.drawRoundedRect(
+                QRectF(-1.0, top - 1.0, track_width + 2.0, track_height + 2.0),
+                (track_height + 2) / 2, (track_height + 2) / 2)
+
+        if self.text():
+            painter.setPen(QColor(COLORS['text_primary'] if self.isEnabled()
+                                  else COLORS['text_secondary']))
+            painter.drawText(
+                QRectF(track_width + self.TEXT_SPACING, 0,
+                       self.width() - track_width - self.TEXT_SPACING,
+                       self.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                self.text())
+
+    def _paint_adwaita_track(self, painter: QPainter, top: float,
+                             track_width: int, track_height: int) -> None:
+        """
+        The GNOME switch: a filled pill whose colour follows the knob.
+
+        Args:
+            painter: Where to draw
+            top: Vertical offset of the track
+            track_width: Track width
+            track_height: Track height
+        """
+        painter.setPen(Qt.PenStyle.NoPen)
         # Off, the track has to stand out from a card that may be the same
         # colour as any raised control, so it starts from the border shade.
         track_color = _mix(COLORS['border_strong'],
@@ -1153,33 +1236,47 @@ class ToggleSwitch(QAbstractButton):
                            self._knob)
         painter.setBrush(track_color)
         painter.drawRoundedRect(
-            QRectF(0, top, self.TRACK_WIDTH, self.TRACK_HEIGHT),
-            self.TRACK_HEIGHT / 2, self.TRACK_HEIGHT / 2)
+            QRectF(0, top, track_width, track_height),
+            track_height / 2, track_height / 2)
 
-        diameter = self.TRACK_HEIGHT - 2 * self.KNOB_MARGIN
-        travel = self.TRACK_WIDTH - diameter - 2 * self.KNOB_MARGIN
+        diameter = track_height - 2 * self.KNOB_MARGIN
+        travel = track_width - diameter - 2 * self.KNOB_MARGIN
         painter.setBrush(_mix(COLORS['text_secondary'], 'white', self._knob))
         painter.drawEllipse(
             QRectF(self.KNOB_MARGIN + travel * self._knob,
                    top + self.KNOB_MARGIN, diameter, diameter))
 
-        if self.hasFocus():
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QColor(COLORS['border_focus']))
-            painter.drawRoundedRect(
-                QRectF(-1.0, top - 1.0,
-                       self.TRACK_WIDTH + 2.0, self.TRACK_HEIGHT + 2.0),
-                (self.TRACK_HEIGHT + 2) / 2, (self.TRACK_HEIGHT + 2) / 2)
+    def _paint_breeze_track(self, painter: QPainter, top: float,
+                            track_width: int, track_height: int) -> None:
+        """
+        The Plasma switch: an outlined pill that fills with the accent.
 
-        if self.text():
-            painter.setPen(QColor(COLORS['text_primary'] if self.isEnabled()
-                                  else COLORS['text_secondary']))
-            painter.drawText(
-                QRectF(self.TRACK_WIDTH + self.TEXT_SPACING, 0,
-                       self.width() - self.TRACK_WIDTH - self.TEXT_SPACING,
-                       self.height()),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                self.text())
+        Off, it is an outline on the view colour with a button-coloured knob;
+        on, the track is the accent and the knob is white. Hovering colours
+        the outline with the accent, the way every Breeze control answers
+        the pointer.
+
+        Args:
+            painter: Where to draw
+            top: Vertical offset of the track
+            track_width: Track width
+            track_height: Track height
+        """
+        accent = COLORS['primary']
+        outline = COLORS['border_focus'] if self._hovered else COLORS['border_strong']
+        painter.setPen(QPen(_mix(outline, accent, self._knob), 1))
+        painter.setBrush(_mix(COLORS['bg_input'], accent, self._knob))
+        painter.drawRoundedRect(
+            QRectF(0.5, top + 0.5, track_width - 1, track_height - 1),
+            (track_height - 1) / 2, (track_height - 1) / 2)
+
+        diameter = track_height - 2 * self.KNOB_MARGIN - 1
+        travel = track_width - diameter - 2 * self.KNOB_MARGIN - 1
+        painter.setPen(QPen(_mix(outline, accent, self._knob), 1))
+        painter.setBrush(_mix(COLORS['bg_tertiary'], COLORS['on_primary'], self._knob))
+        painter.drawEllipse(
+            QRectF(self.KNOB_MARGIN + 0.5 + travel * self._knob,
+                   top + self.KNOB_MARGIN + 0.5, diameter, diameter))
 
 
 class SegmentedControl(QWidget):

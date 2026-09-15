@@ -1,9 +1,9 @@
 """
 Small persistent preferences, kept in QSettings.
 
-Two things live here: which configuration file the application opens on
-startup, and how the user wants it to look when the session's own answer is
-not the one they want.
+Three things live here: which configuration file the application opens on
+startup, how the user wants it to look when the session's own answer is not
+the one they want, and whether they asked for the menu bar back.
 """
 
 import logging
@@ -19,6 +19,7 @@ APPLICATION = "StreamDock"
 DEFAULT_CONFIG_KEY = "config/default_path"
 DESIGN_KEY = "appearance/design"
 SCHEME_KEY = "appearance/scheme"
+MENUBAR_KEY = "chrome/menubar_visible"
 
 AUTO = "auto"
 DESIGNS = ("auto", "kde", "gnome")
@@ -115,3 +116,26 @@ def _one_of(value: Optional[str], allowed: tuple) -> str:
         The value, or the default
     """
     return value if value in allowed else allowed[0]
+
+
+def get_menubar_visible() -> bool:
+    """
+    Whether the Plasma design should show its menu bar.
+
+    Hidden by default, as in every Plasma 6 application; Ctrl+M brings it
+    back and the choice is kept here.
+
+    Returns:
+        True when the menu bar should be showing
+    """
+    return bool(_settings().value(MENUBAR_KEY, False, type=bool))
+
+
+def set_menubar_visible(visible: bool) -> None:
+    """
+    Remember whether the menu bar should be showing.
+
+    Args:
+        visible: True to show it
+    """
+    _settings().setValue(MENUBAR_KEY, bool(visible))

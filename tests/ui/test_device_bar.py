@@ -5,8 +5,10 @@ Unit tests for DeviceBar.
 from unittest.mock import Mock
 
 import pytest
+from PyQt6.QtGui import QIcon
 
-from StreamDock.ui.device_bar import DeviceBar
+from StreamDock.ui import device_bar as device_bar_module
+from StreamDock.ui.device_bar import REFRESH_GLYPH, DeviceBar
 from StreamDock.ui.device_service import (
     STATE_CONNECTED,
     STATE_DISCONNECTED,
@@ -163,3 +165,29 @@ class TestSignals:
     def test_refresh_emits(self, bar, qtbot):
         with qtbot.waitSignal(bar.refresh_requested):
             bar.refresh_button.click()
+
+
+class TestDressing:
+    """The row wears the desktop's icons, and manages without them."""
+
+    def test_the_text_buttons_share_a_width(self, bar):
+        assert bar.connect_button.width() == bar.apply_button.width()
+
+    def test_connecting_does_not_change_the_button_width(self, bar):
+        bar.set_devices([make_device('/dev/hidraw0')])
+        before = bar.connect_button.width()
+
+        bar.set_state(STATE_CONNECTED, 'StreamDock')
+
+        assert bar.connect_button.width() == before
+
+    def test_without_an_icon_theme_the_refresh_button_shows_a_glyph(
+            self, qtbot, monkeypatch):
+        monkeypatch.setattr(device_bar_module, 'themed_icon',
+                            lambda *names, fallback=None: QIcon())
+
+        widget = DeviceBar()
+        qtbot.addWidget(widget)
+
+        assert widget.refresh_button.text() == REFRESH_GLYPH
+        assert widget.refresh_button.icon().isNull()

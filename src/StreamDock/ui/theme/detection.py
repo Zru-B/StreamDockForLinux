@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,16 @@ GNOME_ACCENTS = {
     'slate': '#6F8396',
 }
 
+# What Plasma paints frames with when the user has not said otherwise: the
+# outline is the window colour pulled this far towards the text colour.
+DEFAULT_FRAME_CONTRAST = 0.2
+
+# Plasma's interface font, used when kdeglobals does not name one. Qt's own
+# fallback is a 9pt "Sans Serif", which is what makes an unthemed Qt window
+# look subtly wrong beside every KDE application around it.
+KDE_DEFAULT_FONT_FAMILY = "Noto Sans"
+KDE_DEFAULT_FONT_SIZE = 10
+
 _GSETTINGS_TIMEOUT = 1.5
 
 
@@ -88,6 +98,22 @@ def detect_flavor() -> Flavor:
     return DEFAULT_FLAVOR
 
 
+def is_plasma_session() -> bool:
+    """
+    Whether the session is actually Plasma, rather than merely not GNOME.
+
+    :func:`detect_flavor` answers "which design", and an unrecognised
+    session gets Breeze; this answers whether KDE's own services - its
+    portal, its dialogs - can be expected to be running.
+
+    Returns:
+        True on a Plasma session
+    """
+    if os.environ.get('KDE_FULL_SESSION'):
+        return True
+    return any(name in ('kde', 'plasma', 'plasma5', 'plasma6') for name in _session_names())
+
+
 def _session_names() -> list:
     """
     Every name the session calls itself, lowercased and in priority order.
@@ -110,7 +136,7 @@ def _session_names() -> list:
     return names
 
 
-# ── the desktop's own colours ────────────────────────────────────────────────
+# ── the desktop's own settings ───────────────────────────────────────────────
 
 
 def read_kde_colors() -> Dict[str, str]:
@@ -125,18 +151,8 @@ def read_kde_colors() -> Dict[str, str]:
         Role names mapped to ``#rrggbb``, empty when the file is missing or
         unreadable. Roles are only present when the file defines them.
     """
-    path = _kdeglobals_path()
-    if path is None:
-        return {}
-
-    parser = configparser.RawConfigParser(strict=False)
-    # kdeglobals keys are case sensitive; the default lowercases them.
-    parser.optionxform = str
-    try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
-            parser.read_file(handle)
-    except (OSError, configparser.Error) as e:
-        logger.debug("Could not read %s: %s", path, e)
+    parser = _parse_kde_config(_kdeglobals_path())
+    if parser is None:
         return {}
 
     colors: Dict[str, str] = {}
@@ -151,6 +167,9 @@ def read_kde_colors() -> Dict[str, str]:
             ('button_bg', 'Colors:Button', 'BackgroundNormal'),
             ('button_fg', 'Colors:Button', 'ForegroundNormal'),
             ('header_bg', 'Colors:Header', 'BackgroundNormal'),
+            # kdeglobals writes "[Colors:Header][Inactive]"; configparser
+            # keeps everything between the outer brackets as the name.
+            ('header_bg_inactive', 'Colors:Header][Inactive', 'BackgroundNormal'),
             ('tooltip_bg', 'Colors:Tooltip', 'BackgroundNormal'),
             ('tooltip_fg', 'Colors:Tooltip', 'ForegroundNormal'),
             ('selection_bg', 'Colors:Selection', 'BackgroundNormal'),
@@ -170,6 +189,74 @@ def read_kde_colors() -> Dict[str, str]:
     return colors
 
 
+def read_kde_setting(section: str, key: str) -> str:
+    """
+    One plain value from the user's KDE configuration.
+
+    ``kdeglobals`` holds what the user changed; ``kdedefaults/kdeglobals``
+    holds what the global theme set, which is where the icon theme and the
+    widget style usually live on a stock Plasma session.
+
+    Args:
+        section: INI section, e.g. ``General``
+        key: Key within it
+
+    Returns:
+        The raw value, or '' when neither file defines it
+    """
+    for path in (_kdeglobals_path(), _kdedefaults_path()):
+        parser = _parse_kde_config(path)
+        if parser is None:
+            continue
+        try:
+            value = parser.get(section, key)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            continue
+        if value and value.strip():
+            return value.strip()
+    return ''
+
+
+def read_kde_font(key: str = 'font') -> str:
+    """
+    A font the user set in System Settings, in Qt's own serialised form.
+
+    Args:
+        key: ``font``, ``menuFont``, ``toolBarFont`` or ``smallestReadableFont``
+
+    Returns:
+        A string ``QFont.fromString`` accepts, or '' when unset
+    """
+    return read_kde_setting('General', key)
+
+
+def read_kde_icon_theme() -> str:
+    """
+    The icon theme the session uses.
+
+    Returns:
+        Its name, or '' when the configuration does not say
+    """
+    return read_kde_setting('Icons', 'Theme')
+
+
+def read_kde_frame_contrast() -> float:
+    """
+    How far Plasma pulls a frame's outline from its background.
+
+    Returns:
+        A ratio between 0 and 1, Breeze's own default when unset or unreadable
+    """
+    raw = read_kde_setting('KDE', 'frameContrast')
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_FRAME_CONTRAST
+    if not 0.0 <= value <= 1.0:
+        return DEFAULT_FRAME_CONTRAST
+    return value
+
+
 def _kdeglobals_path() -> Optional[Path]:
     """
     Locate the user's ``kdeglobals``.
@@ -177,9 +264,48 @@ def _kdeglobals_path() -> Optional[Path]:
     Returns:
         The path, or None when there is none to read
     """
-    base = os.environ.get('XDG_CONFIG_HOME') or os.path.join(Path.home(), '.config')
-    path = Path(base) / 'kdeglobals'
+    path = Path(_config_home()) / 'kdeglobals'
     return path if path.is_file() else None
+
+
+def _kdedefaults_path() -> Optional[Path]:
+    """
+    Locate the defaults the current global theme wrote.
+
+    Returns:
+        The path, or None when there is none to read
+    """
+    path = Path(_config_home()) / 'kdedefaults' / 'kdeglobals'
+    return path if path.is_file() else None
+
+
+def _config_home() -> str:
+    return os.environ.get('XDG_CONFIG_HOME') or os.path.join(Path.home(), '.config')
+
+
+def _parse_kde_config(path: Optional[Path]) -> Optional[configparser.RawConfigParser]:
+    """
+    Parse one KDE INI file.
+
+    Args:
+        path: The file, or None when there is none
+
+    Returns:
+        The parser, or None when the file is missing or unreadable
+    """
+    if path is None:
+        return None
+
+    parser = configparser.RawConfigParser(strict=False)
+    # kdeglobals keys are case sensitive; the default lowercases them.
+    parser.optionxform = str
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            parser.read_file(handle)
+    except (OSError, configparser.Error) as e:
+        logger.debug("Could not read %s: %s", path, e)
+        return None
+    return parser
 
 
 def _color_from(parser: configparser.RawConfigParser, section: str,
@@ -211,6 +337,25 @@ def _color_from(parser: configparser.RawConfigParser, section: str,
     except ValueError:
         logger.debug("Ignoring unreadable colour %s/%s=%r", section, key, raw)
         return None
+
+
+def icon_theme_directories() -> List[str]:
+    """
+    Where icon themes live on a freedesktop system.
+
+    Qt normally finds these itself through the platform theme; a PyQt wheel
+    running under a platform it has no theme plugin for does not, and then
+    every ``QIcon.fromTheme`` comes back empty.
+
+    Returns:
+        Directories, the user's own first
+    """
+    data_home = os.environ.get('XDG_DATA_HOME') or os.path.join(Path.home(), '.local', 'share')
+    data_dirs = os.environ.get('XDG_DATA_DIRS') or '/usr/local/share:/usr/share'
+    candidates = [os.path.join(data_home, 'icons')]
+    candidates += [os.path.join(base, 'icons') for base in data_dirs.split(':') if base]
+    candidates.append(os.path.join(Path.home(), '.icons'))
+    return [directory for directory in candidates if os.path.isdir(directory)]
 
 
 def read_gnome_setting(key: str, schema: str = 'org.gnome.desktop.interface') -> str:

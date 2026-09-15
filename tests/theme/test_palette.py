@@ -64,6 +64,48 @@ class TestEveryDesign:
         assert color.is_dark(built.bg_primary) == (scheme is Scheme.DARK)
 
 
+class TestBreezeToolsArea:
+    """The header strip Plasma paints its title bar and toolbar with."""
+
+    def test_the_dark_tools_area_is_lighter_than_the_window(self):
+        built = build_palette(Flavor.KDE, Scheme.DARK)
+
+        assert color.luminance(built.bg_header) > color.luminance(built.bg_primary)
+
+    def test_the_light_tools_area_is_darker_than_the_window(self):
+        built = build_palette(Flavor.KDE, Scheme.LIGHT)
+
+        assert color.luminance(built.bg_header) < color.luminance(built.bg_primary)
+
+    @pytest.mark.parametrize('scheme', list(Scheme))
+    def test_it_falls_back_to_the_window_colour_when_inactive(self, scheme):
+        built = build_palette(Flavor.KDE, scheme)
+
+        assert built.bg_header_inactive == built.bg_primary
+        assert built.bg_header != built.bg_header_inactive
+
+    def test_the_session_can_say_otherwise(self, monkeypatch):
+        monkeypatch.setattr(palette, 'read_kde_colors', lambda: {
+            'window_bg': '#202326', 'header_bg': '#303030',
+            'header_bg_inactive': '#101010'})
+
+        built = build_palette(Flavor.KDE, Scheme.DARK)
+
+        assert built.bg_header == '#303030'
+        assert built.bg_header_inactive == '#101010'
+
+    def test_frames_are_the_window_pulled_towards_the_text(self, monkeypatch):
+        """Breeze has no border role; the outline is a blend, at a contrast
+        the user can set."""
+        monkeypatch.setattr(palette, 'read_kde_colors',
+                            lambda: {'window_bg': '#000000', 'window_fg': '#FFFFFF'})
+        monkeypatch.setattr(palette, 'read_kde_frame_contrast', lambda: 0.5)
+
+        built = build_palette(Flavor.KDE, Scheme.DARK)
+
+        assert built.border == '#808080'
+
+
 class TestFollowingKde:
     """The Plasma palette is the user's own colour scheme."""
 

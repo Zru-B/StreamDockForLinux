@@ -8,7 +8,7 @@ rearranged while a configuration is open.
 """
 
 import pytest
-from PyQt6.QtWidgets import QMenuBar, QStatusBar
+from PyQt6.QtWidgets import QMenuBar, QStatusBar, QToolBar
 
 from StreamDock.ui import settings_store
 from StreamDock.ui.chrome import GnomeChrome, KdeChrome
@@ -71,14 +71,43 @@ class TestSwitchingDesign:
 
     def test_it_starts_on_the_plasma_arrangement(self, window):
         assert isinstance(window._chrome, KdeChrome)
+        assert window.findChild(QToolBar) is not None
         assert window.findChild(QMenuBar) is not None
+        assert window.menuBar().isHidden()
 
-    def test_choosing_gnome_replaces_the_menu_bar_with_a_header(self, window):
+    def test_the_plasma_toolbar_hosts_the_device_controls(self, window):
+        assert window.device_bar.parent() is window._chrome.toolbar
+        assert window.device_slot.indexOf(window.device_bar) < 0
+
+    def test_choosing_gnome_replaces_the_toolbar_with_a_header(self, window):
         window.on_design_chosen('gnome')
 
         assert isinstance(window._chrome, GnomeChrome)
         assert window.findChild(QMenuBar) is None
+        assert window.findChild(QToolBar) is None
         assert window.menuWidget().objectName() == "headerBar"
+
+    def test_choosing_gnome_moves_the_device_controls_above_the_grid(self, window):
+        window.on_design_chosen('gnome')
+
+        assert window.device_slot.indexOf(window.device_bar) >= 0
+        assert not window.device_bar.isHidden()
+
+    def test_going_back_returns_the_device_controls_to_the_toolbar(self, window):
+        window.on_design_chosen('gnome')
+
+        window.on_design_chosen('kde')
+
+        assert window.device_bar.parent() is window._chrome.toolbar
+        assert window.device_slot.indexOf(window.device_bar) < 0
+
+    def test_the_device_controls_keep_working_across_the_switch(self, window):
+        window.on_design_chosen('gnome')
+        window.on_design_chosen('kde')
+
+        window.on_connection_state_changed("connected", "Dock")
+
+        assert window.device_bar.status_dot.property('state') == "connected"
 
     def test_choosing_gnome_takes_the_status_bar_away(self, window):
         window.on_design_chosen('gnome')

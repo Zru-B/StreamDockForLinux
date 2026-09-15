@@ -21,9 +21,12 @@ REQUIRED_SELECTORS = (
     '#actionRow', '#segmentedControl', '#sidePanel', '#keyGrid',
     '#headerBar', '#dialogHeader', '#toast', '#toastText',
     '#brightnessValue', '#actionGrip', '#actionIndex', '#actionsEmpty',
+    '#sidebar', '#sidebarHeading', '#sidebarRule', '#sidebarList',
+    '#settingsPanel', '#gridCaption', '#statusDocument',
+    'QToolBar', 'QToolButton', 'QStatusBar',
     'buttonType="primary"', 'buttonType="danger"', 'buttonType="glyph"',
     'glyphRole="add"', 'barButton="primary"', 'segment="true"',
-    'headingLevel="1"', 'headingLevel="2"',
+    'headingLevel="1"', 'headingLevel="2"', 'textRole="caption"',
 )
 
 EVERY_DESIGN = [(flavor, scheme) for flavor in Flavor for scheme in Scheme]
@@ -74,8 +77,41 @@ class TestDesignTells:
     def test_they_are_not_the_same_sheet(self):
         assert sheet_for(Flavor.KDE) != sheet_for(Flavor.GNOME)
 
-    def test_breeze_underlines_the_current_tab(self):
-        assert 'border-bottom: 2px solid' in sheet_for(Flavor.KDE)
+    def test_breeze_joins_the_current_tab_to_its_frame(self):
+        """Plasma 6 raises the current tab into the pane, no accent rule."""
+        sheet = sheet_for(Flavor.KDE)
+
+        assert 'margin-bottom: -1px' in sheet
+        assert 'border-bottom: 2px solid' not in sheet
+
+    def test_breeze_has_a_tools_area_that_dims_with_the_window(self):
+        sheet = sheet_for(Flavor.KDE)
+
+        assert 'QToolBar[windowActive="false"]' in sheet
+        assert 'QMenuBar[windowActive="false"]' in sheet
+        assert 'QToolBar[windowActive="false"]' not in sheet_for(Flavor.GNOME)
+
+    def test_breeze_never_fills_a_button_with_the_accent(self):
+        """Pressed and default buttons get a wash of the accent, not a block."""
+        built = build_palette(Flavor.KDE, Scheme.DARK)
+        sheet = sheet_for(Flavor.KDE)
+        buttons = sheet[sheet.index('/* ── buttons'):sheet.index('/* ── text fields')]
+
+        assert f'background-color: {built.primary};' not in buttons
+        assert f'border-color: {built.border_focus};' in buttons
+
+    def test_breeze_marks_a_pending_apply_with_the_neutral_colour(self):
+        built = build_palette(Flavor.KDE, Scheme.DARK)
+        sheet = sheet_for(Flavor.KDE)
+
+        assert f'border-color: {built.warning};' in sheet
+        assert 'QPushButton[barButton="primary"]:enabled' in sheet
+
+    def test_adwaita_keeps_its_accent_filled_apply(self):
+        built = build_palette(Flavor.GNOME, Scheme.DARK)
+
+        assert (f'QPushButton[barButton="primary"] {{\n    background-color: {built.primary};'
+                in sheet_for(Flavor.GNOME))
 
     def test_adwaita_rounds_further_than_breeze(self):
         assert (build_metrics(Flavor.GNOME).radius_card

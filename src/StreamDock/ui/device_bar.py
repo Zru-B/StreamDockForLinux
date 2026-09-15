@@ -1,19 +1,24 @@
 """
 Device selection and connection controls.
 
-Sits above the key grid in the main window. Not a QToolBar: the stylesheet
-has no QToolBar rules, so one would render unstyled whichever design is on.
+On Plasma the row is hosted in the window's toolbar, the way Dolphin keeps
+its location bar there, so its buttons dress as tool buttons: flat, with an
+outline on hover and the desktop's icons. On GNOME it sits on a card above
+the key grid. Not a QToolBar of its own: the stylesheet decides how it looks
+in either home.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QWidget,
 )
 
@@ -26,22 +31,35 @@ from StreamDock.ui.device_service import (
     STATE_ERROR,
 )
 from StreamDock.ui.resources import load_app_icon
-from StreamDock.ui.theme import current_theme, theme_manager
+from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
 
 logger = logging.getLogger(__name__)
 
-# Every control in the row shares a height, so the strip reads as one strip.
-# The height itself belongs to the design: Breeze is tighter than Adwaita.
-BUTTON_WIDTH = 96  # fits 'Disconnect'; every text button shares it
+# Every text button in the row shares a width, so Connect turning into
+# Disconnect does not shove Apply sideways. This is the floor; the label
+# and its icon can ask for more.
+BUTTON_WIDTH = 96
 
 # U+21BB renders in the default UI fonts; U+27F3 falls back to a tofu box.
-REFRESH_GLYPH = "\u21bb"
+REFRESH_GLYPH = "↻"
+
+CONNECT_TEXT = "Connect"
+DISCONNECT_TEXT = "Disconnect"
+APPLY_TEXT = "Apply"
 
 STATE_TEXT = {
     STATE_DISCONNECTED: "Disconnected",
     STATE_CONNECTING: "Connecting...",
     STATE_CONNECTED: "Connected",
     STATE_ERROR: "Error",
+}
+
+# The desktop icon for each button, tried in order.
+ICONS: Dict[str, Tuple[str, ...]] = {
+    'refresh': ('view-refresh', 'view-refresh-symbolic'),
+    'connect': ('network-connect', 'network-wired-symbolic'),
+    'disconnect': ('network-disconnect', 'network-offline-symbolic'),
+    'apply': ('dialog-ok-apply', 'object-select-symbolic'),
 }
 
 
@@ -58,6 +76,7 @@ class DeviceBar(QWidget):
         self._connected = False
         self._busy = False
         self._sized: List[QWidget] = []
+        self._text_buttons: List[QPushButton] = []
         # Apply stays disabled while the device already matches the open
         # configuration; there is nothing to send.
         self._needs_apply = False
@@ -67,54 +86,50 @@ class DeviceBar(QWidget):
 
     def _setup_ui(self) -> None:
         self.setObjectName("deviceBar")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # In a toolbar the row takes whatever width is left, so its stretch
+        # pushes Connect and Apply to the far end.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        metrics = current_theme().metrics
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(metrics.card_padding, metrics.spacing_tight,
-                                  metrics.card_padding, metrics.spacing_tight)
-        layout.setSpacing(metrics.spacing)
-
-        icon_label = QLabel()
-        icon_label.setPixmap(load_app_icon().pixmap(QSize(18, 18)))
-        layout.addWidget(icon_label)
+        self._layout = QHBoxLayout(self)
 
         self.device_combo = QComboBox()
         self.device_combo.setObjectName("deviceCombo")
         self._sized.append(self.device_combo)
         self.device_combo.setMinimumWidth(200)
         self.device_combo.setMaximumWidth(280)
-        self.device_combo.setIconSize(QSize(14, 14))
+        self.device_combo.setIconSize(QSize(16, 16))
         # Long device names elide rather than stretching the row.
         self.device_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.device_combo.setToolTip("Stream Dock devices currently attached")
-        layout.addWidget(self.device_combo)
+        self._layout.addWidget(self.device_combo)
 
-        self.refresh_button = self._make_button(REFRESH_GLYPH,
-                                               "Look for attached devices again")
+        self.refresh_button = self._make_button("", "Look for attached devices again")
         self.refresh_button.clicked.connect(self.refresh_requested)
-        layout.addWidget(self.refresh_button)
+        self._layout.addWidget(self.refresh_button)
 
-        layout.addSpacing(4)
+        self._layout.addSpacing(4)
 
         self.status_dot = QLabel("●")
         self.status_dot.setObjectName("connectionDot")
-        layout.addWidget(self.status_dot)
+        self._layout.addWidget(self.status_dot)
 
         self.status_label = QLabel()
         self.status_label.setObjectName("connectionStatus")
         self.status_label.setMinimumWidth(96)
-        layout.addWidget(self.status_label)
+        self._layout.addWidget(self.status_label)
 
-        layout.addStretch()
+        self._layout.addStretch()
 
-        self.connect_button = self._make_button("Connect", "Open or release the device")
+        self.connect_button = self._make_button(CONNECT_TEXT, "Open or release the device")
         self.connect_button.clicked.connect(self._on_connect_clicked)
-        layout.addWidget(self.connect_button)
+        self._layout.addWidget(self.connect_button)
 
-        self.apply_button = self._make_button("Apply", primary=True)
+        self.apply_button = self._make_button(APPLY_TEXT, primary=True)
         self.apply_button.clicked.connect(self.apply_requested)
-        layout.addWidget(self.apply_button)
+        self._layout.addWidget(self.apply_button)
 
         self._apply_metrics()
 
@@ -127,31 +142,89 @@ class DeviceBar(QWidget):
         single strip rather than a jumble of sizes.
 
         Args:
-            text: Button label
+            text: Button label, '' for an icon-only button
             tooltip: Hover text
-            primary: Use the accent colour
+            primary: The action that leads - Apply
 
         Returns:
             The button
         """
         button = QPushButton(text)
-        # Fixed, not minimum: Connect/Disconnect must not resize as its label
-        # changes, or the row jumps every time you connect.
-        button.setFixedWidth(BUTTON_WIDTH)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sized.append(button)
+        if text:
+            self._text_buttons.append(button)
         button.setProperty("barButton", "primary" if primary else "normal")
         if tooltip:
             button.setToolTip(tooltip)
         return button
 
     def _apply_metrics(self) -> None:
-        """Put every control in the row on the current design's control height."""
-        height = current_theme().metrics.control_height
+        """Put every control in the row on the current design's geometry."""
+        theme = current_theme()
+        metrics = theme.metrics
+        breeze = theme.flavor is Flavor.KDE
+
+        # Inside a toolbar the strip is already padded; on a card it is not.
+        if breeze:
+            self._layout.setContentsMargins(2, 0, 2, 0)
+            height = metrics.control_height - 4
+        else:
+            self._layout.setContentsMargins(metrics.card_padding, metrics.spacing_tight,
+                                            metrics.card_padding, metrics.spacing_tight)
+            height = metrics.control_height
+        self._layout.setSpacing(metrics.spacing)
+
         for widget in self._sized:
             widget.setFixedHeight(height)
+
+        self._decorate(breeze, metrics.icon_size_small)
+
+        # Fixed, not minimum: Connect/Disconnect must not resize as its label
+        # changes, or the row jumps every time you connect.
+        width = self._text_button_width(breeze, metrics.icon_size_small)
+        for button in self._text_buttons:
+            button.setFixedWidth(width)
         # The refresh button carries a single glyph, so it stays square.
         self.refresh_button.setFixedWidth(height)
+
+    def _decorate(self, breeze: bool, icon_size: int) -> None:
+        """
+        Give the buttons the desktop's icons, or a glyph where there is none.
+
+        Args:
+            breeze: Whether the Plasma design is on, which puts icons on
+                text buttons as well
+            icon_size: Icon size in pixels
+        """
+        size = QSize(icon_size, icon_size)
+
+        refresh = themed_icon(*ICONS['refresh'])
+        self.refresh_button.setIcon(refresh)
+        self.refresh_button.setIconSize(size)
+        self.refresh_button.setText("" if not refresh.isNull() else REFRESH_GLYPH)
+
+        for button, key in ((self.apply_button, 'apply'),
+                            (self.connect_button, 'disconnect' if self._connected else 'connect')):
+            button.setIcon(themed_icon(*ICONS[key]) if breeze else QIcon())
+            button.setIconSize(size)
+
+    def _text_button_width(self, breeze: bool, icon_size: int) -> int:
+        """
+        The width the widest label needs, icon included.
+
+        Args:
+            breeze: Whether text buttons carry an icon
+            icon_size: Icon size in pixels
+
+        Returns:
+            A width in pixels, never under BUTTON_WIDTH
+        """
+        metrics = self.connect_button.fontMetrics()
+        text = max(metrics.horizontalAdvance(label)
+                   for label in (CONNECT_TEXT, DISCONNECT_TEXT, APPLY_TEXT))
+        icon = icon_size + 6 if breeze and not self.connect_button.icon().isNull() else 0
+        return max(BUTTON_WIDTH, text + icon + 24)
 
     # ── device list ───────────────────────────────────────────────────────
 
@@ -222,7 +295,10 @@ class DeviceBar(QWidget):
         self.status_label.setText(text)
         self.status_label.setToolTip(f"{text} — {detail}" if detail else text)
 
-        self.connect_button.setText("Disconnect" if self._connected else "Connect")
+        self.connect_button.setText(DISCONNECT_TEXT if self._connected else CONNECT_TEXT)
+        if not self.connect_button.icon().isNull():
+            self.connect_button.setIcon(
+                themed_icon(*ICONS['disconnect' if self._connected else 'connect']))
         self._update_buttons()
 
     def set_needs_apply(self, needs_apply: bool) -> None:

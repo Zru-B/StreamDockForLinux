@@ -11,7 +11,14 @@ from dataclasses import asdict, dataclass
 from typing import Dict
 
 from StreamDock.ui.theme import color as c
-from StreamDock.ui.theme.detection import Flavor, Scheme, read_gnome_accent, read_kde_colors
+from StreamDock.ui.theme.detection import (
+    DEFAULT_FRAME_CONTRAST,
+    Flavor,
+    Scheme,
+    read_gnome_accent,
+    read_kde_colors,
+    read_kde_frame_contrast,
+)
 
 
 @dataclass(frozen=True)
@@ -55,7 +62,8 @@ class Palette:  # pylint: disable=too-many-instance-attributes
     bg_selection: str
     bg_tooltip: str
     bg_menu: str
-    bg_header: str      # the menu bar or header bar strip
+    bg_header: str           # the tools area: menu bar, toolbar, header bar
+    bg_header_inactive: str  # the same strip when the window is not focused
 
     # Text
     text_primary: str
@@ -104,13 +112,14 @@ def build_palette(flavor: Flavor, scheme: Scheme,
 
 # ── KDE: Breeze ──────────────────────────────────────────────────────────────
 
-# Stock Breeze, used when kdeglobals cannot be read. These are the colours
-# Plasma 6 ships, so a session without a readable configuration still looks
-# like the desktop around it.
+# Stock Breeze, used when kdeglobals cannot be read. These are the values in
+# the colour schemes Plasma 6 ships, so a session without a readable
+# configuration still looks like the desktop around it.
 _BREEZE_DARK = {
     'window_bg': '#202326', 'window_alt_bg': '#292C30', 'window_fg': '#FCFCFC',
     'window_fg_inactive': '#A1A9B1', 'view_bg': '#141618', 'view_alt_bg': '#1D1F22',
-    'view_fg': '#FCFCFC', 'button_bg': '#292C30', 'header_bg': '#292C30',
+    'view_fg': '#FCFCFC', 'button_bg': '#292C30',
+    'header_bg': '#292C30', 'header_bg_inactive': '#202326',
     'tooltip_bg': '#292C30', 'tooltip_fg': '#FCFCFC', 'selection_bg': '#3DAEE9',
     'selection_fg': '#FCFCFC', 'focus': '#3DAEE9', 'hover': '#3DAEE9',
     'negative': '#DA4453', 'positive': '#27AE60', 'neutral': '#F67400',
@@ -119,13 +128,20 @@ _BREEZE_DARK = {
 
 _BREEZE_LIGHT = {
     'window_bg': '#EFF0F1', 'window_alt_bg': '#E3E5E7', 'window_fg': '#232629',
-    'window_fg_inactive': '#7F8C8D', 'view_bg': '#FCFCFC', 'view_alt_bg': '#F2F3F4',
-    'view_fg': '#232629', 'button_bg': '#FCFCFC', 'header_bg': '#EFF0F1',
+    'window_fg_inactive': '#707D8A', 'view_bg': '#FFFFFF', 'view_alt_bg': '#F7F7F7',
+    'view_fg': '#232629', 'button_bg': '#FCFCFC',
+    # The tools area is a shade darker than the window in Breeze Light; it
+    # falls back to the window colour when the window loses focus.
+    'header_bg': '#DEE0E2', 'header_bg_inactive': '#EFF0F1',
     'tooltip_bg': '#F7F7F7', 'tooltip_fg': '#232629', 'selection_bg': '#3DAEE9',
-    'selection_fg': '#FCFCFC', 'focus': '#3DAEE9', 'hover': '#3DAEE9',
+    'selection_fg': '#FFFFFF', 'focus': '#3DAEE9', 'hover': '#3DAEE9',
     'negative': '#DA4453', 'positive': '#27AE60', 'neutral': '#F67400',
     'link': '#2980B9', 'visited': '#9B59B6',
 }
+
+# How far a pressed control is pulled towards the accent. Breeze fills a
+# pressed or checked button with a translucent wash of the highlight colour.
+PRESSED_ACCENT_MIX = 0.33
 
 
 def _breeze_palette(scheme: Scheme, follow_desktop: bool) -> Palette:
@@ -141,6 +157,7 @@ def _breeze_palette(scheme: Scheme, follow_desktop: bool) -> Palette:
     """
     stock = _BREEZE_DARK if scheme is Scheme.DARK else _BREEZE_LIGHT
     roles = dict(stock)
+    frame_contrast = DEFAULT_FRAME_CONTRAST
 
     if follow_desktop:
         live = read_kde_colors()
@@ -148,14 +165,21 @@ def _breeze_palette(scheme: Scheme, follow_desktop: bool) -> Palette:
         # a user forcing the light design on a dark desktop wants light.
         if live.get('window_bg') and c.is_dark(live['window_bg']) == (scheme is Scheme.DARK):
             roles.update({key: value for key, value in live.items() if value})
+            frame_contrast = read_kde_frame_contrast()
 
     window = roles['window_bg']
-    dark = c.is_dark(window)
+    text = roles['window_fg']
+    view = roles['view_bg']
+    button = roles.get('button_bg', roles.get('window_alt_bg', c.shade(window, 0.05)))
     accent = roles.get('accent') or roles['selection_bg']
+    dark = c.is_dark(window)
 
-    # Breeze draws frames by shifting the window colour rather than by naming
-    # a border role, so the separator is derived the same way.
-    border = c.shade(window, 0.14 if dark else 0.16)
+    # Breeze draws every outline by pulling the surface towards the text
+    # colour rather than naming a border role, so the lines are derived the
+    # same way here. The stronger shade is for grooves and switch tracks,
+    # which have to read against the outline itself.
+    border = c.mix(window, text, frame_contrast)
+    border_strong = c.mix(window, text, min(1.0, frame_contrast + 0.15))
 
     return Palette(
         primary=accent,
@@ -176,28 +200,33 @@ def _breeze_palette(scheme: Scheme, follow_desktop: bool) -> Palette:
 
         bg_primary=window,
         bg_secondary=roles.get('window_alt_bg', c.shade(window, 0.05)),
-        bg_tertiary=roles.get('button_bg', c.shade(window, 0.05)),
-        bg_input=roles['view_bg'],
-        bg_hover=c.shade(window, 0.10),
-        bg_pressed=c.shade(window, 0.16),
-        bg_alternate=roles.get('view_alt_bg', c.shade(roles['view_bg'], 0.04)),
+        bg_tertiary=button,
+        bg_input=view,
+        # Item views tint a hovered row with the accent; menus and menu bars
+        # fill it outright.
+        bg_hover=c.mix(view, accent, 0.18),
+        bg_pressed=c.mix(button, accent, PRESSED_ACCENT_MIX),
+        bg_alternate=roles.get('view_alt_bg', c.shade(view, 0.04)),
         bg_light=roles.get('window_alt_bg', c.shade(window, 0.05)),
-        bg_card=roles.get('window_alt_bg', c.shade(window, 0.05)),
+        # A framed area that is neither window nor view: Breeze blends the
+        # two for group boxes and the like.
+        bg_card=c.mix(window, view, 0.3),
         bg_selection=roles['selection_bg'],
-        bg_tooltip=roles.get('tooltip_bg', roles['window_alt_bg']),
-        bg_menu=roles.get('window_alt_bg', c.shade(window, 0.05)),
+        bg_tooltip=roles.get('tooltip_bg', roles.get('window_alt_bg', window)),
+        bg_menu=window,
         bg_header=roles.get('header_bg', window),
+        bg_header_inactive=roles.get('header_bg_inactive', window),
 
-        text_primary=roles['window_fg'],
+        text_primary=text,
         text_secondary=roles['window_fg_inactive'],
-        text_light=roles['window_fg'],
+        text_light=text,
         text_dark='#232629',
-        text_tooltip=roles.get('tooltip_fg', roles['window_fg']),
+        text_tooltip=roles.get('tooltip_fg', text),
         text_selection=roles.get('selection_fg', c.readable_on(roles['selection_bg'])),
-        text_disabled=c.mix(roles['window_fg'], window, 0.55),
+        text_disabled=c.mix(text, window, 0.55),
 
         border=border,
-        border_strong=c.shade(window, 0.26 if dark else 0.28),
+        border_strong=border_strong,
         border_focus=roles.get('focus', accent),
         separator=border,
     )
@@ -290,6 +319,7 @@ def _adwaita_palette(scheme: Scheme, follow_desktop: bool) -> Palette:
         bg_tooltip='#383838' if dark else '#303030',
         bg_menu=roles['popover_bg'],
         bg_header=roles['headerbar_bg'],
+        bg_header_inactive=window,
 
         text_primary=roles['window_fg'],
         text_secondary=c.mix(roles['window_fg'], window, 0.40),

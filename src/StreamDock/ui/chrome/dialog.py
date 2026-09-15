@@ -2,15 +2,16 @@
 Dialogs that wear the active design.
 
 The two desktops disagree about where a dialog's decisions live. Breeze puts
-them in a row along the bottom, affirmative last. Adwaita puts them in the
-header: cancel at the start, the action that leads at the end, and nothing
-along the bottom at all. Subclasses build their content and say what the
-decisions are; where those land is settled here.
+them in a row along the bottom, the action that leads first and Cancel last,
+each with the icon KDE gives that button. Adwaita puts them in the header:
+cancel at the start, the action that leads at the end, and nothing along the
+bottom at all. Subclasses build their content and say what the decisions
+are; where those land is settled here.
 """
 
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from StreamDock.ui.theme import Flavor, current_theme
+from StreamDock.ui.theme import Flavor, button_icon, current_theme
 
 CANCEL_TEXT = "Cancel"
 
@@ -30,8 +31,9 @@ def make_button(text: str, role: str = "") -> QPushButton:
     """
     Build a dialog button at the size the active design uses.
 
-    The look comes from the stylesheet; this only fixes the geometry so a row
-    of them lines up rather than each swelling to fill the layout.
+    The look comes from the stylesheet; this fixes the geometry so a row of
+    them lines up rather than each swelling to fill the layout, and on
+    Plasma adds the icon KDE puts on a button with this label.
 
     Args:
         text: Button label
@@ -41,13 +43,20 @@ def make_button(text: str, role: str = "") -> QPushButton:
     Returns:
         The button
     """
-    metrics = current_theme().metrics
+    theme = current_theme()
+    metrics = theme.metrics
     button = QPushButton(text)
     button.setMinimumWidth(metrics.button_min_width)
     button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     if role:
         button.setProperty("buttonType", role)
+
+    if theme.flavor is Flavor.KDE:
+        icon = button_icon(text)
+        if not icon.isNull():
+            button.setIcon(icon)
+            button.setIconSize(QSize(metrics.icon_size_small, metrics.icon_size_small))
     return button
 
 
@@ -124,7 +133,10 @@ class ThemedDialog(QDialog):
 
     def _button_row(self) -> QHBoxLayout:
         """
-        Breeze: one right-aligned row along the bottom, affirmative last.
+        Breeze: one right-aligned row along the bottom, the action first.
+
+        KDE orders a dialog's buttons OK-then-Cancel, so the one that leads
+        sits where the eye lands first and Cancel closes the row.
 
         Returns:
             The row
@@ -135,9 +147,9 @@ class ThemedDialog(QDialog):
                                metrics.window_margin, metrics.window_margin)
         row.setSpacing(metrics.spacing_tight)
         row.addStretch()
+        row.addWidget(self.affirmative_button)
         if self.cancel_button is not None:
             row.addWidget(self.cancel_button)
-        row.addWidget(self.affirmative_button)
         return row
 
     def _header_bar(self) -> QWidget:

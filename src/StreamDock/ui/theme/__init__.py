@@ -7,11 +7,12 @@ is Adwaita, with GNOME's own accent. Which one is chosen follows the running
 session unless the user overrides it.
 
 Import from here rather than from the modules underneath: the split between
-detection, palette, metrics and stylesheet is an implementation detail.
+detection, palette, metrics, icons and stylesheet is an implementation detail.
 """
 
 from StreamDock.ui.theme.assets import glyph_path as assets_glyph
 from StreamDock.ui.theme.detection import Flavor, Scheme, detect_flavor, detect_scheme
+from StreamDock.ui.theme.icons import button_icon, themed_icon
 from StreamDock.ui.theme.manager import (
     AUTO,
     Theme,
@@ -40,11 +41,13 @@ __all__ = [
     'build_metrics',
     'build_palette',
     'build_stylesheet',
+    'button_icon',
     'current_theme',
     'detect_flavor',
     'detect_scheme',
     'get_colors',
     'get_stylesheet',
     'theme_manager',
+    'themed_icon',
     'qt_palette',
 ]

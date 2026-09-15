@@ -56,3 +56,21 @@ class TestScheme:
 
         assert settings_store.get_design() == 'gnome'
         assert settings_store.get_scheme() == 'light'
+
+
+class TestMenuBar:
+    """Whether the Plasma design shows its menu bar."""
+
+    def test_it_is_hidden_until_asked_for(self):
+        assert settings_store.get_menubar_visible() is False
+
+    def test_asking_for_it_is_remembered(self):
+        settings_store.set_menubar_visible(True)
+
+        assert settings_store.get_menubar_visible() is True
+
+    def test_hiding_it_again_is_remembered_too(self):
+        settings_store.set_menubar_visible(True)
+        settings_store.set_menubar_visible(False)
+
+        assert settings_store.get_menubar_visible() is False

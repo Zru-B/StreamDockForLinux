@@ -12,8 +12,8 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Iterator, Mapping, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
@@ -22,7 +22,16 @@ from PyQt6.QtWidgets import (
     QStyleFactory,
 )
 
-from StreamDock.ui.theme.detection import Flavor, Scheme, detect_flavor, detect_scheme
+from StreamDock.ui.theme import icons
+from StreamDock.ui.theme.detection import (
+    KDE_DEFAULT_FONT_FAMILY,
+    KDE_DEFAULT_FONT_SIZE,
+    Flavor,
+    Scheme,
+    detect_flavor,
+    detect_scheme,
+    read_kde_font,
+)
 from StreamDock.ui.theme.metrics import Metrics, build_metrics
 from StreamDock.ui.theme.palette import Palette, build_palette
 from StreamDock.ui.theme.stylesheet import build_stylesheet
@@ -39,6 +48,16 @@ BASE_STYLE = "Fusion"
 _BUTTON_LAYOUT = {
     Flavor.KDE: QDialogButtonBox.ButtonLayout.KdeLayout,
     Flavor.GNOME: QDialogButtonBox.ButtonLayout.GnomeLayout,
+}
+
+# Plasma's icon sizes, by where the icon goes.
+_KDE_ICON_METRICS = {
+    QStyle.PixelMetric.PM_ToolBarIconSize: 22,
+    QStyle.PixelMetric.PM_SmallIconSize: 16,
+    QStyle.PixelMetric.PM_ButtonIconSize: 16,
+    QStyle.PixelMetric.PM_ListViewIconSize: 22,
+    QStyle.PixelMetric.PM_MessageBoxIconSize: 48,
+    QStyle.PixelMetric.PM_LargeIconSize: 32,
 }
 
 
@@ -67,24 +86,71 @@ class Theme:  # pylint: disable=too-many-instance-attributes
         """Whether the GNOME design is in use."""
         return self.flavor is Flavor.GNOME
 
+    @property
+    def is_kde(self) -> bool:
+        """Whether the Plasma design is in use."""
+        return self.flavor is Flavor.KDE
+
 
 class _DesignStyle(QProxyStyle):
     """
-    A base style that orders dialog buttons the way the design does.
+    A base style that answers Qt's questions the way the design would.
 
-    Qt asks the style where OK and Cancel go, so the built-in dialogs -
-    message boxes, file pickers - follow the chosen design without every
-    caller arranging them by hand.
+    Qt asks the style where OK and Cancel go, whether dialog buttons carry
+    icons, how a form lines up its labels, and which picture a message box
+    shows. Answering here means the built-in dialogs - message boxes, file
+    pickers, input prompts - follow the design without every caller
+    arranging them by hand.
     """
 
-    def __init__(self, base: QStyle, button_layout: QDialogButtonBox.ButtonLayout):
+    def __init__(self, base: QStyle, flavor: Flavor):
         super().__init__(base)
-        self._button_layout = int(button_layout.value)
+        self._flavor = flavor
+        self._button_layout = int(_BUTTON_LAYOUT[flavor].value)
+
+    @property
+    def flavor(self) -> Flavor:
+        """The design this style answers for."""
+        return self._flavor
 
     def styleHint(self, hint, option=None, widget=None, returnData=None) -> int:
         if hint == QStyle.StyleHint.SH_DialogButtonLayout:
             return self._button_layout
+
+        if self._flavor is Flavor.KDE:
+            # Plasma puts an icon on every standard dialog button, lines a
+            # form's labels up on the right of a centred column, and shows
+            # text beside the icons in a toolbar.
+            if hint == QStyle.StyleHint.SH_DialogButtonBox_ButtonsHaveIcons:
+                return 1
+            if hint == QStyle.StyleHint.SH_FormLayoutLabelAlignment:
+                return int((Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter).value)
+            if hint == QStyle.StyleHint.SH_FormLayoutFormAlignment:
+                return int((Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop).value)
+            if hint == QStyle.StyleHint.SH_ToolButtonStyle:
+                return int(Qt.ToolButtonStyle.ToolButtonTextBesideIcon.value)
+            if hint == QStyle.StyleHint.SH_ItemView_ShowDecorationSelected:
+                return 1
+            if hint == QStyle.StyleHint.SH_Menu_SupportsSections:
+                return 1
+        elif hint == QStyle.StyleHint.SH_DialogButtonBox_ButtonsHaveIcons:
+            return 0
+
         return super().styleHint(hint, option, widget, returnData)
+
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        if self._flavor is Flavor.KDE:
+            size = _KDE_ICON_METRICS.get(metric)
+            if size is not None:
+                return size
+        return super().pixelMetric(metric, option, widget)
+
+    def standardIcon(self, standard_icon, option=None, widget=None) -> QIcon:
+        if self._flavor is Flavor.KDE:
+            themed = icons.standard_icon(standard_icon)
+            if not themed.isNull():
+                return themed
+        return super().standardIcon(standard_icon, option, widget)
 
 
 class ThemeManager(QObject):
@@ -142,6 +208,10 @@ class ThemeManager(QObject):
         if scheme is not None:
             self._scheme_pref = scheme
 
+        application = QApplication.instance()
+        if application is not None:
+            self._prepare_fonts(application, self._resolve_flavor())
+
         rebuilt = self._resolve()
         if self._theme is not None and (
                 rebuilt.flavor == self._theme.flavor
@@ -150,7 +220,6 @@ class ThemeManager(QObject):
             return False
 
         self._theme = rebuilt
-        application = QApplication.instance()
         if application is not None:
             self._paint(application)
         self.changed.emit()
@@ -168,6 +237,7 @@ class ThemeManager(QObject):
         """
         # Rebuilt here rather than reused: only now is there an application
         # font to scale the type against.
+        self._prepare_fonts(application, self._resolve_flavor())
         self._theme = self._resolve()
         self._paint(application)
         self.changed.emit()
@@ -185,6 +255,9 @@ class ThemeManager(QObject):
         return self.set_preferences()
 
     # ── internals ─────────────────────────────────────────────────────────
+
+    def _resolve_flavor(self) -> Flavor:
+        return _as_flavor(self._flavor_pref) or detect_flavor()
 
     def _resolve(self) -> Theme:
         """
@@ -209,6 +282,18 @@ class ThemeManager(QObject):
         return Theme(flavor=flavor, scheme=scheme, palette=palette, metrics=metrics,
                      stylesheet=build_stylesheet(palette, metrics, flavor))
 
+    def _prepare_fonts(self, application: QApplication, flavor: Flavor) -> None:
+        """
+        Give the application the desktop's interface font before measuring.
+
+        Args:
+            application: The QApplication to set the font on
+            flavor: The design about to be resolved
+        """
+        font = desktop_font(flavor, application.font())
+        if font is not None and font != application.font():
+            application.setFont(font)
+
     def _paint(self, application: QApplication) -> None:
         """
         Push the theme onto the application.
@@ -217,6 +302,12 @@ class ThemeManager(QObject):
             application: The QApplication to paint
         """
         theme = self._theme
+        if theme.flavor is Flavor.KDE:
+            icons.ensure_icon_theme(theme.scheme)
+        # Plasma menus show icons; Adwaita's popovers are text only.
+        application.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus,
+                                 theme.flavor is Flavor.GNOME)
+
         self._style = _make_style(theme.flavor)
         if self._style is not None:
             application.setStyle(self._style)
@@ -224,6 +315,40 @@ class ThemeManager(QObject):
         application.setStyleSheet(theme.stylesheet)
         logger.info("Using the %s design, %s scheme",
                     theme.flavor.value, theme.scheme.value)
+
+
+def desktop_font(flavor: Flavor, current: QFont) -> Optional[QFont]:
+    """
+    The interface font the desktop would give this window.
+
+    On Plasma that is whatever System Settings says, and failing that the
+    font Plasma ships with. Qt only knows the first when its KDE platform
+    plugin is loaded, which a PyQt wheel cannot do, so a window would
+    otherwise fall back to Qt's own 9pt sans and sit a size smaller than
+    everything around it.
+
+    Args:
+        flavor: The design in use
+        current: What the application has now
+
+    Returns:
+        The font to use, or None to leave things as they are
+    """
+    if flavor is not Flavor.KDE:
+        return None
+
+    configured = read_kde_font()
+    if configured:
+        font = QFont()
+        if font.fromString(configured) and font.family():
+            return font
+
+    # Only step in for Qt's fallback: a font the platform did set is theirs.
+    if current.family().lower() not in ('sans serif', 'sans-serif', 'sans', ''):
+        return None
+    if KDE_DEFAULT_FONT_FAMILY not in QFontDatabase.families():
+        return None
+    return QFont(KDE_DEFAULT_FONT_FAMILY, KDE_DEFAULT_FONT_SIZE)
 
 
 def qt_palette(palette: Palette) -> QPalette:
@@ -288,7 +413,7 @@ def _make_style(flavor: Flavor) -> Optional[QStyle]:
     if base is None:
         logger.warning("Qt style %r is unavailable; keeping the default", name)
         return None
-    return _DesignStyle(base, _BUTTON_LAYOUT[flavor])
+    return _DesignStyle(base, flavor)
 
 
 def _as_flavor(preference: str) -> Optional[Flavor]:

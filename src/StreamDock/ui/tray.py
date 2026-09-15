@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 from StreamDock.ui.device_service import STATE_CONNECTED
 from StreamDock.ui.resources import load_app_icon
+from StreamDock.ui.theme import themed_icon
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +35,23 @@ class TrayIcon(QSystemTrayIcon):
     def _build_menu(self) -> None:
         menu = QMenu()
 
-        self.show_action = QAction("Show StreamDock", self)
+        self.show_action = QAction(load_app_icon(), "Show StreamDock", self)
         self.show_action.triggered.connect(self.show_requested)
         menu.addAction(self.show_action)
 
         menu.addSeparator()
 
-        self.connect_action = QAction("Connect", self)
+        self.connect_action = QAction(themed_icon('network-connect'), "Connect", self)
         self.connect_action.triggered.connect(self.connect_requested)
         menu.addAction(self.connect_action)
 
-        self.disconnect_action = QAction("Disconnect", self)
+        self.disconnect_action = QAction(themed_icon('network-disconnect'), "Disconnect", self)
         self.disconnect_action.triggered.connect(self.disconnect_requested)
         menu.addAction(self.disconnect_action)
 
         menu.addSeparator()
 
-        self.quit_action = QAction("Quit", self)
+        self.quit_action = QAction(themed_icon('application-exit'), "Quit", self)
         self.quit_action.triggered.connect(self.quit_requested)
         menu.addAction(self.quit_action)
 

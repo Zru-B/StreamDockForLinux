@@ -7,6 +7,7 @@ the receiver lives on another thread, so nothing here blocks the UI.
 """
 
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -25,9 +26,44 @@ from StreamDock.ui.settings_store import (
 )
 from StreamDock.ui.single_instance import SingleInstanceGuard
 from StreamDock.ui.theme import apply_theme, theme_manager
+from StreamDock.ui.theme.detection import is_plasma_session
 from StreamDock.ui.tray import TrayIcon
 
 logger = logging.getLogger(__name__)
+
+APP_DISPLAY_NAME = "StreamDock"
+
+# Set to 0 to keep Qt's own file dialogs on Plasma instead of the desktop's.
+PORTAL_DIALOGS_ENV = "STREAMDOCK_PORTAL_DIALOGS"
+PLATFORM_THEME_ENV = "QT_QPA_PLATFORMTHEME"
+PORTAL_THEME = "xdgdesktopportal"
+
+
+def prefer_desktop_file_dialogs() -> bool:
+    """
+    Route file dialogs through the desktop portal on Plasma.
+
+    A PyQt wheel carries no KDE platform plugin, so Qt would open its own
+    generic file picker in the middle of a Breeze session. The portal theme
+    Qt does ship asks the desktop for the dialog instead, which on Plasma is
+    the real KDE one - Places sidebar, previews and all - and falls back to
+    Qt's when no portal answers. Everything else about the theme still comes
+    from the session.
+
+    Must run before the QApplication exists; Qt reads the variable once.
+
+    Returns:
+        True when the portal theme was selected
+    """
+    if os.environ.get(PORTAL_DIALOGS_ENV, "1") in ("0", "false", "no", "off"):
+        return False
+    if os.environ.get(PLATFORM_THEME_ENV):
+        return False
+    if not is_plasma_session():
+        return False
+    os.environ[PLATFORM_THEME_ENV] = PORTAL_THEME
+    logger.debug("Using the desktop portal for file dialogs")
+    return True
 
 
 class StreamDockGui:
@@ -67,8 +103,11 @@ class StreamDockGui:
         Returns:
             Process exit code
         """
+        prefer_desktop_file_dialogs()
         self._qapp = QApplication(sys.argv)
         self._qapp.setApplicationName("StreamDock")
+        # Appended to every window title by the platform: "config.yml — StreamDock".
+        self._qapp.setApplicationDisplayName(APP_DISPLAY_NAME)
         self._qapp.setOrganizationName("StreamDock")
         self._qapp.setDesktopFileName("streamdock")
         self._qapp.setWindowIcon(load_app_icon())

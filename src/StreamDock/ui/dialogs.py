@@ -22,7 +22,7 @@ from StreamDock.ui.widgets import (
     glyph_button,
 )
 from StreamDock.ui.styles import get_colors
-from StreamDock.ui.theme import current_theme
+from StreamDock.ui.theme import Flavor, current_theme
 from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -149,20 +149,16 @@ class KeyEditorDialog(ThemedDialog):
         """Setup the UI"""
         layout = self.content_layout
         
-        # Key name
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Key Name:"))
+        # Key name and display type, in a form so their labels line up
+        # with the rows underneath
+        header_form = QFormLayout()
         self.name_edit = QLineEdit(self.key_def.name)
-        name_layout.addWidget(self.name_edit)
-        layout.addLayout(name_layout)
+        header_form.addRow("Key Name:", self.name_edit)
         
         # Display type: two choices, so one pill rather than a box of radios
-        display_layout = QHBoxLayout()
-        display_layout.addWidget(QLabel("Display Type:"))
         self.display_type = SegmentedControl([DISPLAY_ICON, DISPLAY_TEXT])
-        display_layout.addWidget(self.display_type)
-        display_layout.addStretch()
-        layout.addLayout(display_layout)
+        header_form.addRow("Display Type:", self.display_type)
+        layout.addLayout(header_form)
         
         # Icon settings (in a container for show/hide)
         self.icon_widget = QWidget()
@@ -181,9 +177,9 @@ class KeyEditorDialog(ThemedDialog):
         self.icon_preview.setFixedSize(112, 112)
         self.icon_preview.setStyleSheet(f"""
             QLabel {{
-                border: 2px solid {COLORS['border']};
-                background-color: {COLORS['bg_secondary']};
-                border-radius: 6px;
+                border: {current_theme().metrics.border_width}px solid {COLORS['border']};
+                background-color: {COLORS['bg_input']};
+                border-radius: {current_theme().metrics.radius}px;
             }}
         """)
         self.icon_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -402,14 +398,16 @@ class ActionEditorWidget(QWidget):
         self.scroll.setFrameShape(QScrollArea.Shape.StyledPanel)
         # The container has to carry the colour too: a bare QScrollArea rule
         # leaves the viewport on the default palette, which is white.
+        surface = (COLORS['bg_input'] if current_theme().flavor is Flavor.KDE
+                   else COLORS['bg_secondary'])
         self.scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 1px solid {COLORS['border']};
                 border-radius: {current_theme().metrics.radius}px;
-                background-color: {COLORS['bg_secondary']};
+                background-color: {surface};
             }}
             QWidget#actionsContainer {{
-                background-color: {COLORS['bg_secondary']};
+                background-color: {surface};
             }}
         """)
         
@@ -1077,7 +1075,8 @@ class ManageKeysDialog(ThemedDialog):
         
         title_layout.addStretch()
         
-        self.add_btn = glyph_button("+", "add", "Add new key", size=24)
+        self.add_btn = glyph_button("+", "add", "Add new key", size=24,
+                                    icon=('list-add', 'list-add-symbolic'))
         self.add_btn.clicked.connect(self.add_new_key)
         title_layout.addWidget(self.add_btn)
         
@@ -1122,17 +1121,20 @@ class ManageKeysDialog(ThemedDialog):
             
             widget_layout.addStretch()
             
-            edit_btn = glyph_button("✎", "edit", "Edit key", size=20)
+            edit_btn = glyph_button("✎", "edit", "Edit key", size=22,
+                                    icon=('document-edit', 'edit-entry'))
             edit_btn.clicked.connect(lambda checked, n=key_name: self.edit_key_by_name(n))
             widget_layout.addWidget(edit_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
-            delete_btn = glyph_button("✕", "remove", "Delete key", size=20)
+            delete_btn = glyph_button("✕", "remove", "Delete key", size=22,
+                                      icon=('edit-delete', 'edit-delete-symbolic'))
             delete_btn.clicked.connect(lambda checked, n=key_name: self.delete_key_by_name(n))
             widget_layout.addWidget(delete_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
             # Set the widget for the item with proper height
-            widget.setMinimumHeight(40)
-            item.setSizeHint(QSize(widget.sizeHint().width(), 40))
+            row_height = current_theme().metrics.list_row_height
+            widget.setMinimumHeight(row_height)
+            item.setSizeHint(QSize(widget.sizeHint().width(), row_height))
             self.keys_list.setItemWidget(item, widget)
             
             # Store key name in item data
@@ -1313,7 +1315,7 @@ class WindowRuleDialog(ThemedDialog):
             "• title - Match against window title text\n"
             "• raw - Match against raw window information"
         )
-        help_label.setStyleSheet("color: gray; font-size: 9pt;")
+        help_label.setProperty("textRole", "caption")
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         
@@ -1422,7 +1424,7 @@ class LayoutEditorDialog(ThemedDialog):
             "When 'Clear all icons' is enabled, all keys will be cleared\n"
             "before this layout is applied, ensuring a clean slate."
         )
-        help_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        help_label.setProperty("textRole", "caption")
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         
@@ -1468,48 +1470,40 @@ class AdvancedSettingsDialog(ThemedDialog):
     
     def setup_ui(self):
         """Setup the UI"""
+        metrics = current_theme().metrics
         layout = self.content_layout
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(metrics.spacing)
         
         # Title
         title = QLabel("Advanced Device Settings")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {COLORS['text_primary']};")
+        title.setProperty("headingLevel", "1")
         layout.addWidget(title)
         
         # Subtitle
         subtitle = QLabel("Configure advanced device behavior and timings")
-        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        subtitle.setProperty("textRole", "caption")
         layout.addWidget(subtitle)
         
-        # Spacing
-        layout.addSpacing(8)
+        layout.addSpacing(metrics.spacing)
         
-        # Settings form - using simple VBox instead of QGroupBox
+        # One framed section per topic
         settings_container = QWidget()
-        settings_container.setObjectName("settingsCard")
-        # Scoped by name: a bare QWidget rule would draw the same border
-        # around every label inside the card as well.
-        settings_container.setStyleSheet(f"""
-            QWidget#settingsCard {{
-                background-color: {COLORS['bg_secondary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 8px;
-            }}
-        """)
+        settings_container.setObjectName("card")
+        settings_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         settings_layout = QVBoxLayout(settings_container)
-        settings_layout.setContentsMargins(20, 20, 20, 20)
-        settings_layout.setSpacing(16)
+        settings_layout.setContentsMargins(
+            metrics.card_padding + 4, metrics.card_padding + 4,
+            metrics.card_padding + 4, metrics.card_padding + 4)
+        settings_layout.setSpacing(metrics.spacing)
         
         # Section title
         section_title = QLabel("Double-Press Detection")
-        section_title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_primary']};")
+        section_title.setProperty("headingLevel", "2")
         settings_layout.addWidget(section_title)
         
         # Time window setting
         time_layout = QHBoxLayout()
         time_label = QLabel("Time Window:")
-        time_label.setStyleSheet(f"color: {COLORS['text_primary']}; font-size: 13px;")
         time_label.setMinimumWidth(100)
         time_layout.addWidget(time_label)
         
@@ -1537,7 +1531,7 @@ class AdvancedSettingsDialog(ThemedDialog):
             "Lower values require faster double-presses. Higher values are more forgiving "
             "but may delay single-press actions. Default: 0.3 seconds (300ms)."
         )
-        help_text.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        help_text.setProperty("textRole", "caption")
         help_text.setWordWrap(True)
         settings_layout.addWidget(help_text)
         

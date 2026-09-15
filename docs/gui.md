@@ -71,23 +71,44 @@ in the working directory, then next to `main.py`, and otherwise starts empty.
 ## Appearance
 
 The window follows the desktop it is running on. On Plasma, LXQt and other Qt
-sessions it wears **Breeze**: a menu bar along the top, a status bar along the
-bottom, tight corners, and — this is the part worth knowing — the colour scheme
-you actually chose in *System Settings > Colours*. The accent, the window and
-view backgrounds, and the positive, negative and neutral colours are read from
-`kdeglobals`, so a custom scheme or a custom accent comes through without the
-application knowing anything about it.
+sessions it wears **Breeze**, arranged the way Plasma 6 applications such as
+Dolphin and Kate are:
+
+- A **toolbar** along the top holds New, Open and Save, the device picker,
+  Connect and Apply, and a **menu button** (☰) at its far end with every
+  command. The strip shares the title bar's header colour and dims with it
+  when the window loses focus.
+- The traditional **menu bar** is there but hidden. Press **Ctrl+M** to show
+  it; the choice is remembered.
+- A **sidebar** on the left lists the layouts (the default one starred) and
+  the window rules, ruled off from a framed **view** holding the key grid.
+  The heading over the view names the layout showing and counts its keys.
+- Device settings are a form under the view, and messages land in a **status
+  bar** that also shows the path of the open configuration.
+- **Apply** turns orange while there are changes the device has not seen -
+  the neutral highlight Plasma gives an Apply button with work waiting.
+- Dialogs order their buttons the KDE way, action first and Cancel last, each
+  with the icon KDE gives it; message boxes and the Open and Save dialogs
+  are the desktop's own.
+
+And - this is the part worth knowing - it uses the colour scheme you actually
+chose in *System Settings > Colours*. The accent, the window, view and header
+backgrounds, the frame contrast, and the positive, negative and neutral
+colours are read from `kdeglobals`, so a custom scheme or a custom accent
+comes through without the application knowing anything about it. The icons
+come from your icon theme, and the interface font from your font settings.
 
 On GNOME, Cinnamon, XFCE and other GTK sessions it wears **Adwaita** instead,
 and that is a different arrangement rather than a repaint:
 
 | | Plasma (Breeze) | GNOME (Adwaita) |
 |---|---|---|
-| Commands | Menu bar: File, Keys, Settings | Header bar with Open and Save, everything else under ☰ |
+| Commands | Toolbar with New, Open, Save and Apply; everything under ☰; menu bar on Ctrl+M | Header bar with Open and Save, everything else under ☰ |
+| Device controls | In the toolbar, after the file actions | A card above the key grid |
 | Messages | Status bar along the bottom | A toast that floats over the content and fades |
-| Dialogs | Cancel and the action at the bottom right | Cancel at the header's left, the action at its right |
-| Document name | In the window title | Under the title in the header bar |
-| Shape | 3px corners, outlined controls | 8–12px corners, filled controls |
+| Dialogs | The action first and Cancel last, along the bottom right, with icons | Cancel at the header's left, the action at its right |
+| Document name | In the window title, with the path in the status bar | Under the title in the header bar |
+| Shape | 3px corners, outlined controls, a framed view beside a sidebar | 8–12px corners, filled controls, cards |
 
 Light and dark follow the session too, through the cross-desktop portal that
 both Plasma and GNOME publish. Turn on your desktop's night mode and the window
@@ -96,7 +117,8 @@ changing your accent, is picked up the next time the application starts.
 
 ### Choosing for yourself
 
-*Settings > Appearance* overrides both, and the choice is remembered:
+*Settings > Appearance* (or ☰ > Appearance) overrides both, and the choice is
+remembered:
 
 - **Design** — *Follow the desktop*, *Plasma (Breeze)*, or *GNOME (Adwaita)*.
 - **Colours** — *Follow the desktop*, *Light*, or *Dark*.
@@ -106,15 +128,19 @@ design that is not the session's own uses that design's stock colours rather
 than the desktop's, since Breeze blue on a GNOME layout belongs to neither.
 
 `--design gnome` forces the design for one run without changing what is
-remembered. `STREAMDOCK_QT_STYLE=Breeze` swaps the Qt widget style underneath
-the theme, for anything the stylesheet does not paint.
+remembered. Two environment variables reach underneath the theme:
+
+| Variable | Effect |
+|---|---|
+| `STREAMDOCK_QT_STYLE=Breeze` | Swap the Qt widget style beneath the theme, for anything the stylesheet does not paint. Only styles the running Python's Qt can load are available; a PyQt wheel ships Fusion and Windows. |
+| `STREAMDOCK_PORTAL_DIALOGS=0` | Keep Qt's own Open and Save dialogs on Plasma instead of asking the desktop for its file chooser through the portal. |
 
 ## The system tray
 
 Closing the window hides it in the tray, and the device keeps switching
 layouts as you change windows. Click the tray icon to bring the window back.
 
-Use **Quit** — in the tray menu or *File > Exit* — to actually stop: it blanks
+Use **Quit** — in the tray menu, under ☰, or *File > Quit* — to actually stop: it blanks
 the device screen, releases it, and exits. This is the only path that prompts
 about unsaved changes.
 

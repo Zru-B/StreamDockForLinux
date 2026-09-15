@@ -3,10 +3,19 @@ Resolving and switching the active theme.
 """
 
 import pytest
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QDialogButtonBox, QStyle, QStyleFactory
 
 import StreamDock.ui.theme.manager as manager_module
 from StreamDock.ui.theme.detection import Flavor, Scheme
-from StreamDock.ui.theme.manager import ThemeManager, get_colors, theme_manager
+from StreamDock.ui.theme.manager import (
+    ThemeManager,
+    _DesignStyle,
+    desktop_font,
+    get_colors,
+    theme_manager,
+)
 
 
 @pytest.fixture
@@ -102,3 +111,79 @@ class TestLiveColors:
 
         assert 'primary' in colors
         assert len(colors) == len(manager_module.current_theme().colors)
+
+
+class TestDesignStyle:
+    """The base style answers Qt's questions the way the design would."""
+
+    @pytest.fixture
+    def style_for(self, qapp):
+        return lambda flavor: _DesignStyle(QStyleFactory.create('Fusion'), flavor)
+
+    def test_plasma_orders_buttons_ok_then_cancel(self, style_for):
+        hint = style_for(Flavor.KDE).styleHint(QStyle.StyleHint.SH_DialogButtonLayout)
+
+        assert hint == int(QDialogButtonBox.ButtonLayout.KdeLayout.value)
+
+    def test_gnome_orders_buttons_cancel_then_ok(self, style_for):
+        hint = style_for(Flavor.GNOME).styleHint(QStyle.StyleHint.SH_DialogButtonLayout)
+
+        assert hint == int(QDialogButtonBox.ButtonLayout.GnomeLayout.value)
+
+    def test_plasma_puts_icons_on_dialog_buttons_and_gnome_does_not(self, style_for):
+        hint = QStyle.StyleHint.SH_DialogButtonBox_ButtonsHaveIcons
+
+        assert style_for(Flavor.KDE).styleHint(hint) == 1
+        assert style_for(Flavor.GNOME).styleHint(hint) == 0
+
+    def test_plasma_lines_form_labels_up_on_the_right(self, style_for):
+        hint = style_for(Flavor.KDE).styleHint(QStyle.StyleHint.SH_FormLayoutLabelAlignment)
+
+        assert hint & int(Qt.AlignmentFlag.AlignRight.value)
+
+    def test_plasma_uses_22px_toolbar_icons(self, style_for):
+        assert style_for(Flavor.KDE).pixelMetric(QStyle.PixelMetric.PM_ToolBarIconSize) == 22
+
+    def test_gnome_keeps_the_base_styles_metrics(self, style_for):
+        base = QStyleFactory.create('Fusion')
+        metric = QStyle.PixelMetric.PM_ToolBarIconSize
+
+        assert style_for(Flavor.GNOME).pixelMetric(metric) == base.pixelMetric(metric)
+
+
+class TestDesktopFont:
+    """What Plasma would have handed a window that Qt could not ask it for."""
+
+    def test_gnome_is_left_to_its_platform(self, qapp):
+        assert desktop_font(Flavor.GNOME, QFont('Sans Serif', 9)) is None
+
+    def test_a_font_from_kdeglobals_wins(self, qapp, monkeypatch):
+        monkeypatch.setattr(manager_module, 'read_kde_font',
+                            lambda key='font': 'DejaVu Sans,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1')
+
+        font = desktop_font(Flavor.KDE, QFont('Sans Serif', 9))
+
+        assert font.family() == 'DejaVu Sans'
+        assert font.pointSize() == 11
+
+    def test_a_font_the_platform_set_is_kept(self, qapp, monkeypatch):
+        monkeypatch.setattr(manager_module, 'read_kde_font', lambda key='font': '')
+
+        assert desktop_font(Flavor.KDE, QFont('Cantarell', 11)) is None
+
+    def test_qts_fallback_is_replaced_by_plasmas_default(self, qapp, monkeypatch):
+        monkeypatch.setattr(manager_module, 'read_kde_font', lambda key='font': '')
+        monkeypatch.setattr(manager_module.QFontDatabase, 'families',
+                            staticmethod(lambda *args: ['Noto Sans', 'DejaVu Sans']))
+
+        font = desktop_font(Flavor.KDE, QFont('Sans Serif', 9))
+
+        assert font.family() == 'Noto Sans'
+        assert font.pointSize() == 10
+
+    def test_nothing_is_forced_when_the_default_is_not_installed(self, qapp, monkeypatch):
+        monkeypatch.setattr(manager_module, 'read_kde_font', lambda key='font': '')
+        monkeypatch.setattr(manager_module.QFontDatabase, 'families',
+                            staticmethod(lambda *args: ['DejaVu Sans']))
+
+        assert desktop_font(Flavor.KDE, QFont('Sans Serif', 9)) is None

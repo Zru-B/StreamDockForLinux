@@ -206,3 +206,82 @@ class TestSchemeDetection:
         monkeypatch.setattr(detection, 'read_gnome_setting', lambda key, **kwargs: '')
 
         assert detection.detect_scheme(Flavor.GNOME) is Scheme.DARK
+
+
+@pytest.fixture
+def kde_config(tmp_path, monkeypatch):
+    """A scratch XDG_CONFIG_HOME with a kdeglobals and the theme's defaults."""
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
+    (tmp_path / 'kdedefaults').mkdir()
+
+    def write(kdeglobals: str = '', kdedefaults: str = ''):
+        if kdeglobals:
+            (tmp_path / 'kdeglobals').write_text(kdeglobals, encoding='utf-8')
+        if kdedefaults:
+            (tmp_path / 'kdedefaults' / 'kdeglobals').write_text(kdedefaults, encoding='utf-8')
+    return write
+
+
+class TestKdeSettings:
+    """The odds and ends read from kdeglobals beyond the colours."""
+
+    def test_the_users_file_beats_the_themes_defaults(self, kde_config):
+        kde_config(kdeglobals='[Icons]\nTheme=Papirus\n',
+                   kdedefaults='[Icons]\nTheme=breeze-dark\n')
+
+        assert detection.read_kde_icon_theme() == 'Papirus'
+
+    def test_the_themes_defaults_fill_in_what_the_user_left(self, kde_config):
+        kde_config(kdeglobals='[General]\nColorSchemeHash=abc\n',
+                   kdedefaults='[Icons]\nTheme=breeze-dark\n')
+
+        assert detection.read_kde_icon_theme() == 'breeze-dark'
+
+    def test_nothing_configured_reads_as_empty(self, kde_config):
+        assert detection.read_kde_icon_theme() == ''
+        assert detection.read_kde_font() == ''
+
+    def test_the_interface_font_comes_back_verbatim(self, kde_config):
+        kde_config(kdeglobals='[General]\nfont=Noto Sans,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1\n')
+
+        assert detection.read_kde_font().startswith('Noto Sans,11')
+
+    def test_the_inactive_header_colour_is_read(self, kde_config):
+        kde_config(kdeglobals='[Colors:Header]\nBackgroundNormal=41,44,48\n\n'
+                              '[Colors:Header][Inactive]\nBackgroundNormal=32,35,38\n')
+
+        colors = detection.read_kde_colors()
+
+        assert colors['header_bg'] == '#292C30'
+        assert colors['header_bg_inactive'] == '#202326'
+
+    @pytest.mark.parametrize('raw, expected', [
+        ('0.3', 0.3), ('', 0.2), ('banana', 0.2), ('7', 0.2),
+    ])
+    def test_the_frame_contrast_is_sane(self, kde_config, raw, expected):
+        kde_config(kdeglobals=f'[KDE]\nframeContrast={raw}\n')
+
+        assert detection.read_kde_frame_contrast() == pytest.approx(expected)
+
+
+class TestPlasmaSession:
+    """is_plasma_session() - Plasma itself, not merely a Qt desktop."""
+
+    def test_plasma_reports_itself(self, bare_session):
+        bare_session.setenv('XDG_CURRENT_DESKTOP', 'KDE')
+
+        assert detection.is_plasma_session() is True
+
+    def test_the_legacy_marker_counts(self, bare_session):
+        bare_session.setenv('KDE_FULL_SESSION', 'true')
+
+        assert detection.is_plasma_session() is True
+
+    def test_another_qt_desktop_does_not(self, bare_session):
+        bare_session.setenv('XDG_CURRENT_DESKTOP', 'LXQt')
+
+        assert detection.detect_flavor() is Flavor.KDE
+        assert detection.is_plasma_session() is False
+
+    def test_a_bare_session_does_not(self, bare_session):
+        assert detection.is_plasma_session() is False
