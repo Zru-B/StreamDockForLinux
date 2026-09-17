@@ -30,10 +30,12 @@ class Layout:
         self.clear_keys = clear_keys or []
         self.clear_all = clear_all
 
-        # Total operations (keys + clears) must be at least 1 and at most 15
+        # A layout may legitimately be empty: every slot set to null is
+        # documented as "explicitly empty key", and the configuration
+        # validator accepts it. Only the device's 15-key ceiling is enforced.
         total_operations = len(keys) + len(self.clear_keys)
-        if total_operations < 1 or total_operations > 15:
-            raise ValueError("Layout must contain between 1 and 15 total operations (keys + clears)")
+        if total_operations > 15:
+            raise ValueError("Layout must contain at most 15 total operations (keys + clears)")
 
     def apply(self):
         """

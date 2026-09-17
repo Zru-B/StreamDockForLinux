@@ -1,0 +1,1548 @@
+#!/usr/bin/env python3
+"""
+Main window for StreamDock Configuration Editor
+"""
+
+import copy
+import os
+from pathlib import Path
+
+from StreamDock.ui.dialogs import (
+    AdvancedSettingsDialog,
+    KeyEditorDialog,
+    LayoutEditorDialog,
+    ManageKeysDialog,
+    WindowRuleDialog,
+)
+from StreamDock.application.config_document import (
+    DEFAULT_BRIGHTNESS,
+    MIN_BRIGHTNESS,
+    ConfigDocument,
+    KeyDefinition,
+    Layout,
+    WindowRule,
+)
+from StreamDock.ui.chrome import SEPARATOR, ChromeModel, MenuSpec, make_chrome
+from StreamDock.ui.device_bar import DeviceBar
+from StreamDock.ui.settings_store import (
+    get_default_config_path,
+    get_design,
+    get_scheme,
+    set_default_config_path,
+    set_design,
+    set_scheme,
+)
+from StreamDock.ui.widgets import (
+    KeySquare,
+    LayoutListWidget,
+    ToggleSwitch,
+    WindowRulesWidget,
+)
+from StreamDock.ui.theme import (
+    Flavor,
+    apply_theme,
+    current_theme,
+    theme_manager,
+    themed_icon,
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
+)
+
+APP_NAME = "StreamDock"
+WINDOW_TITLE = "StreamDock Configuration Editor"
+# What the title bar calls a document that has never been saved. KDE's
+# editors say "Untitled"; so do GNOME's.
+UNTITLED = "Untitled"
+
+# Appearance menu entries, as (label, stored value) pairs.
+DESIGN_CHOICES = (("Follow the &desktop", "auto"),
+                  ("&Plasma (Breeze)", "kde"),
+                  ("&GNOME (Adwaita)", "gnome"))
+
+SCHEME_CHOICES = (("Follow the d&esktop", "auto"),
+                  ("&Light", "light"),
+                  ("&Dark", "dark"))
+
+NO_LAYOUT_TITLE = "No layout selected"
+NO_LAYOUT_CAPTION = "Choose a layout on the left, or add one"
+
+
+class KeySelectionDialog(QMessageBox):
+    """Dialog for selecting an existing key or creating a new one"""
+
+    def __init__(self, available_keys: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select or Create Key")
+        self.setText("Choose an option:")
+        self.available_keys = available_keys
+        self.selected_key = None
+        self.create_new = False
+
+        self.select_btn = self.addButton("Select Existing", QMessageBox.ButtonRole.ActionRole)
+        self.create_btn = self.addButton("Create New", QMessageBox.ButtonRole.ActionRole)
+        self.cancel_btn = self.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+
+        self.buttonClicked.connect(self.on_button_clicked)
+
+    def on_button_clicked(self, button):
+        """Handle button clicks"""
+        if button == self.select_btn:
+            self.select_existing_key()
+        elif button == self.create_btn:
+            self.create_new = True
+            self.accept()
+
+    def select_existing_key(self):
+        """Show dialog to select an existing key"""
+        if not self.available_keys:
+            QMessageBox.warning(self, "No Keys", "No existing keys available. Create a new one.")
+            return
+
+        key_name, ok = QInputDialog.getItem(
+            self,
+            "Select Key",
+            "Choose a key:",
+            self.available_keys,
+            0,
+            False
+        )
+
+        if ok and key_name:
+            self.selected_key = key_name
+            self.accept()
+
+
+class KeyActionDialog(QMessageBox):
+    """Dialog for actions on an existing key square"""
+
+    EDIT = 1
+    REPLACE = 2
+    CREATE_NEW = 3
+    REMOVE = 4
+    CANCEL = 5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Key Actions")
+        self.setText("What would you like to do?")
+        self.action = self.CANCEL
+
+        self.edit_btn = self.addButton("Edit Key", QMessageBox.ButtonRole.ActionRole)
+        self.replace_btn = self.addButton("Replace with Existing", QMessageBox.ButtonRole.ActionRole)
+        self.create_btn = self.addButton("Create & Replace", QMessageBox.ButtonRole.ActionRole)
+        self.remove_btn = self.addButton("Remove from Layout", QMessageBox.ButtonRole.ActionRole)
+        self.cancel_btn = self.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+
+        self.buttonClicked.connect(self.on_button_clicked)
+
+    def on_button_clicked(self, button):
+        """Handle button clicks"""
+        if button == self.edit_btn:
+            self.action = self.EDIT
+        elif button == self.replace_btn:
+            self.action = self.REPLACE
+        elif button == self.create_btn:
+            self.action = self.CREATE_NEW
+        elif button == self.remove_btn:
+            self.action = self.REMOVE
+        else:
+            self.action = self.CANCEL
+
+
+class MainWindow(QMainWindow):
+    """Main window for the configuration editor"""
+
+    # Device commands, connected to the worker thread by the application so
+    # Qt delivers them queued.
+    connect_requested = pyqtSignal(str, str)     # device_key, config_path
+    disconnect_requested = pyqtSignal()
+    apply_config_requested = pyqtSignal(dict, str)  # document, config_path
+    refresh_devices_requested = pyqtSignal()
+    watch_devices_requested = pyqtSignal()
+
+    quit_requested = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.config = ConfigDocument.new_empty()
+        self.current_layout = None
+        self.config_file_path = None
+        self.key_squares = []
+        self.modified = False  # Track if config has unsaved changes
+        # Set by the application: without a tray, closing must really quit or
+        # the window becomes unreachable.
+        self.tray_available = False
+        self._quitting = False
+        # The device already has this configuration, so Apply has nothing to
+        # do until something changes or a different file is opened.
+        self._applied_path = None
+        self._needs_apply = False
+
+        self._chrome = None
+
+        self.setMinimumSize(1200, 800)
+
+        # The application normally themes itself before building the window.
+        # Opened on its own - a test, or an embedder - it still has to arrive
+        # dressed, so paint whatever has not been painted yet.
+        application = QApplication.instance()
+        if application is not None and not application.styleSheet():
+            apply_theme(application, get_design(), get_scheme())
+
+        self.setup_ui()
+        self.setup_actions()
+        self.install_chrome()
+        self.show_status("Ready")
+
+        theme_manager().changed.connect(self.on_theme_changed)
+
+    def setup_ui(self):
+        """
+        Build the window: a sidebar of layouts and rules, and the key view.
+
+        The same widgets serve both designs. On Plasma the sidebar is a
+        column ruled off from a framed view, the way Dolphin arranges its
+        Places panel beside the files; on GNOME each part is a card. The
+        stylesheet and the margins applied in _apply_layout_metrics() make
+        the difference.
+        """
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        self.main_layout = QHBoxLayout(central_widget)
+
+        # Sidebar - layouts above, window rules below
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebar")
+        # A plain QWidget ignores a stylesheet background without this.
+        self.sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+
+        self.layout_list = LayoutListWidget()
+        self.layout_list.layout_selected.connect(self.on_layout_selected)
+        self.layout_list.add_layout_clicked.connect(self.add_layout)
+        self.layout_list.delete_layout_clicked.connect(self.delete_layout)
+        self.layout_list.set_default_clicked.connect(self.set_default_layout)
+        self.layout_list.edit_layout_clicked.connect(self.edit_layout)
+        self.sidebar_layout.addWidget(self.layout_list, stretch=1)
+
+        self.window_rules_widget = WindowRulesWidget()
+        self.window_rules_widget.add_rule_clicked.connect(self.add_window_rule)
+        self.window_rules_widget.delete_rule_clicked.connect(self.delete_window_rule)
+        self.window_rules_widget.edit_rule_clicked.connect(self.edit_window_rule)
+        self.sidebar_layout.addWidget(self.window_rules_widget, stretch=1)
+
+        self.main_layout.addWidget(self.sidebar)
+
+        # Content column - device controls, the key view, device settings
+        content = QWidget()
+        self.content_layout = QVBoxLayout(content)
+
+        # Device selection, connection state and Apply. Where it goes is the
+        # chrome's decision: the Plasma toolbar takes it, GNOME leaves it
+        # here, above the grid.
+        self.device_bar = DeviceBar()
+        self.device_slot = QVBoxLayout()
+        self.device_slot.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.addLayout(self.device_slot)
+
+        # Heading over the view: which layout is showing, and how full it is
+        heading_row = QHBoxLayout()
+        heading_row.setContentsMargins(0, 0, 0, 0)
+        self.grid_title = QLabel(NO_LAYOUT_TITLE)
+        self.grid_title.setObjectName("gridTitle")
+        self.grid_title.setProperty("headingLevel", "2")
+        heading_row.addWidget(self.grid_title)
+        heading_row.addStretch()
+        self.grid_caption = QLabel(NO_LAYOUT_CAPTION)
+        self.grid_caption.setObjectName("gridCaption")
+        heading_row.addWidget(self.grid_caption)
+        self.content_layout.addLayout(heading_row)
+
+        # Key grid, drawn as one view
+        grid_container = QWidget()
+        grid_container.setObjectName("keyGrid")
+        grid_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.grid_container_layout = QVBoxLayout(grid_container)
+
+        # Key grid (3 rows x 5 columns)
+        grid_widget = QWidget()
+        self.grid_layout = QGridLayout(grid_widget)
+
+        # Create 15 key squares (3x5)
+        position = 1
+        for row in range(3):
+            for col in range(5):
+                key_square = KeySquare(position)
+                key_square.clicked.connect(self.on_key_square_clicked)
+                key_square.key_moved.connect(self.on_key_moved)
+                self.grid_layout.addWidget(key_square, row, col)
+                self.key_squares.append(key_square)
+                position += 1
+
+        self.grid_container_layout.addWidget(grid_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.content_layout.addWidget(grid_container, stretch=1)
+
+        # Device settings, as a form
+        self.settings_panel = QWidget()
+        self.settings_panel.setObjectName("settingsPanel")
+        self.settings_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.settings_layout = QVBoxLayout(self.settings_panel)
+
+        self.settings_heading = QLabel("Device")
+        self.settings_heading.setObjectName("settingsHeading")
+        self.settings_heading.setProperty("headingLevel", "2")
+        self.settings_layout.addWidget(self.settings_heading)
+
+        self.settings_form = QFormLayout()
+        self.settings_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(MIN_BRIGHTNESS, 100)
+        self.brightness_slider.setValue(DEFAULT_BRIGHTNESS)
+        self.brightness_slider.setPageStep(5)
+        # A form layout stretches its fields; a percentage does not need the
+        # full width of the window.
+        self.brightness_slider.setFixedWidth(200)
+        self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
+
+        self.brightness_value = QLabel()
+        self.brightness_value.setObjectName("brightnessValue")
+        self.brightness_value.setFixedWidth(40)
+        self.brightness_value.setAlignment(Qt.AlignmentFlag.AlignRight
+                                           | Qt.AlignmentFlag.AlignVCenter)
+        self.show_brightness(self.brightness_slider.value())
+
+        brightness_row = QWidget()
+        brightness_row_layout = QHBoxLayout(brightness_row)
+        brightness_row_layout.setContentsMargins(0, 0, 0, 0)
+        brightness_row_layout.setSpacing(10)
+        brightness_row_layout.addWidget(self.brightness_slider)
+        brightness_row_layout.addWidget(self.brightness_value)
+        self.settings_form.addRow("Brightness:", brightness_row)
+
+        self.lock_monitor_toggle = ToggleSwitch("Turn off when the computer locks")
+        self.lock_monitor_toggle.setChecked(True)
+        self.lock_monitor_toggle.toggled.connect(self.on_settings_changed)
+        self.settings_form.addRow("Screen:", self.lock_monitor_toggle)
+
+        self.settings_layout.addLayout(self.settings_form)
+        self.content_layout.addWidget(self.settings_panel)
+
+        self.main_layout.addWidget(content, stretch=1)
+        self._apply_layout_metrics()
+
+    def _apply_layout_metrics(self):
+        """
+        Space the window the way the active design does.
+
+        Plasma runs the sidebar and the view edge to edge and pads only the
+        content; GNOME floats every part as a card with room around it.
+        """
+        theme = current_theme()
+        metrics = theme.metrics
+        margin = metrics.window_margin
+
+        if theme.flavor is Flavor.KDE:
+            self.main_layout.setContentsMargins(0, 0, 0, 0)
+            self.main_layout.setSpacing(0)
+            self.sidebar.setFixedWidth(metrics.sidebar_width)
+            self.sidebar.setMaximumWidth(metrics.sidebar_width)
+            self.sidebar_layout.setContentsMargins(0, metrics.spacing_tight, 0, 0)
+            self.sidebar_layout.setSpacing(metrics.spacing)
+            self.content_layout.setContentsMargins(margin, margin, margin, margin)
+            self.content_layout.setSpacing(metrics.spacing)
+            self.settings_layout.setContentsMargins(0, metrics.spacing, 0, 0)
+            self.settings_layout.setSpacing(metrics.spacing)
+        else:
+            self.main_layout.setContentsMargins(margin, margin, margin, margin)
+            self.main_layout.setSpacing(margin)
+            self.sidebar.setMinimumWidth(0)
+            self.sidebar.setMaximumWidth(metrics.sidebar_width)
+            self.sidebar_layout.setContentsMargins(0, 0, 0, 0)
+            self.sidebar_layout.setSpacing(margin)
+            self.content_layout.setContentsMargins(0, 0, 0, 0)
+            self.content_layout.setSpacing(margin)
+            self.settings_layout.setContentsMargins(
+                metrics.card_padding, metrics.card_padding,
+                metrics.card_padding, metrics.card_padding)
+            self.settings_layout.setSpacing(metrics.spacing)
+
+        self.device_slot.setSpacing(0)
+        self.grid_container_layout.setContentsMargins(margin, margin, margin, margin)
+        self.grid_layout.setSpacing(metrics.spacing)
+        self.settings_form.setSpacing(metrics.spacing)
+
+    # ── commands and chrome ───────────────────────────────────────────────
+
+    def setup_actions(self):
+        """
+        Create every command the window offers and group them.
+
+        Where the groups end up is the chrome's business: a toolbar with a
+        menu button on Plasma, a header bar and one primary menu on GNOME.
+        """
+        self.new_action = self._command(
+            "&New Configuration", self.new_config, QKeySequence.StandardKey.New,
+            "Start a new configuration", icon=('document-new',))
+        # What the toolbar button says; the menu keeps the full name.
+        self.new_action.setIconText("New")
+        self.open_action = self._command(
+            "&Open...", self.open_config, QKeySequence.StandardKey.Open,
+            "Open a configuration file", icon=('document-open',))
+        self.save_action = self._command(
+            "&Save", self.save_config, QKeySequence.StandardKey.Save,
+            "Save the open configuration", icon=('document-save',))
+        self.save_as_action = self._command(
+            "Save &As...", self.save_config_as, QKeySequence.StandardKey.SaveAs,
+            icon=('document-save-as',))
+        self.quit_action = self._command(
+            "&Quit", self.request_quit, QKeySequence("Ctrl+Q"),
+            icon=('application-exit',))
+        # Named as Quit so the chrome can file it last, whichever menu it is
+        # grouped in.
+        self.quit_action.setMenuRole(QAction.MenuRole.QuitRole)
+        self.manage_keys_action = self._command(
+            "Manage All &Keys...", self.manage_all_keys,
+            icon=('input-keyboard', 'preferences-desktop-keyboard'))
+        self.advanced_settings_action = self._command(
+            "&Advanced Settings...", self.show_advanced_settings,
+            icon=('configure', 'preferences-system'))
+
+        appearance = MenuSpec("&Appearance", [
+            MenuSpec("&Design", self._appearance_group(
+                DESIGN_CHOICES, get_design(), self.on_design_chosen)),
+            MenuSpec("&Colours", self._appearance_group(
+                SCHEME_CHOICES, get_scheme(), self.on_scheme_chosen)),
+        ])
+
+        # The device controls travel as an action so the Plasma toolbar can
+        # host them and hand them back when the design changes.
+        self.device_action = QWidgetAction(self)
+        self.device_action.setDefaultWidget(self.device_bar)
+
+        self.chrome_model = ChromeModel(
+            menus=[
+                MenuSpec("&File", [self.new_action, self.open_action,
+                                   self.save_action, self.save_as_action,
+                                   SEPARATOR, self.quit_action]),
+                MenuSpec("&Keys", [self.manage_keys_action]),
+                MenuSpec("&Settings", [self.advanced_settings_action,
+                                       SEPARATOR, appearance]),
+            ],
+            open_action=self.open_action,
+            save_action=self.save_action,
+            title=APP_NAME,
+            toolbar_actions=[self.new_action, self.open_action, self.save_action],
+            device_action=self.device_action,
+        )
+
+    def _command(self, text: str, handler, shortcut=None,
+                 tooltip: str = "", icon: tuple = ()) -> QAction:
+        """
+        Build one command.
+
+        Args:
+            text: Menu label, with its mnemonic
+            handler: What triggering it does
+            shortcut: A QKeySequence or standard key, if it has one
+            tooltip: Hover text, used when the action is promoted to a button
+            icon: freedesktop icon names to try, most specific first
+
+        Returns:
+            The action, owned by the window
+        """
+        action = QAction(text, self)
+        if shortcut is not None:
+            action.setShortcut(shortcut)
+        if tooltip:
+            action.setToolTip(tooltip)
+        if icon:
+            action.setIcon(themed_icon(*icon))
+        action.triggered.connect(handler)
+        # On the window itself: a shortcut only fires from a visible widget,
+        # and the menu bar that would otherwise carry it is hidden on Plasma.
+        self.addAction(action)
+        return action
+
+    def _appearance_group(self, choices, current: str, handler) -> list:
+        """
+        Build one exclusive set of appearance choices.
+
+        Args:
+            choices: (label, stored value) pairs
+            current: The value to start checked
+            handler: Called with the chosen value
+
+        Returns:
+            The actions, ready to go into a menu
+        """
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        actions = []
+
+        for label, value in choices:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.setData(value)
+            action.triggered.connect(
+                lambda _checked, chosen=value: handler(chosen))
+            group.addAction(action)
+            actions.append(action)
+
+        return actions
+
+    def install_chrome(self):
+        """Dress the window in the arrangement the active design calls for."""
+        if self._chrome is not None:
+            self._chrome.remove()
+
+        self._chrome = make_chrome(self, self.chrome_model)
+        self._chrome.install()
+        self._place_device_bar()
+        self.update_window_title()
+
+    def _place_device_bar(self):
+        """Put the device controls above the grid unless the chrome took them."""
+        if self._chrome is not None and self._chrome.hosts_device_bar():
+            return
+        if self.device_slot.indexOf(self.device_bar) < 0:
+            self.device_slot.addWidget(self.device_bar)
+        self.device_bar.show()
+
+    def show_status(self, message: str, timeout: int = 0):
+        """
+        Report something to the user, wherever this design puts messages.
+
+        Args:
+            message: The text to show
+            timeout: Milliseconds before it clears, 0 to leave it up
+        """
+        if self._chrome is not None:
+            self._chrome.show_status(message, timeout)
+
+    def current_status(self) -> str:
+        """
+        Whatever the window is currently reporting.
+
+        Returns:
+            The message, or '' when there is none
+        """
+        return self._chrome.current_status() if self._chrome is not None else ""
+
+    # ── appearance ────────────────────────────────────────────────────────
+
+    def on_design_chosen(self, design: str):
+        """
+        Switch between the Plasma and GNOME designs.
+
+        Args:
+            design: 'auto', 'kde' or 'gnome'
+        """
+        set_design(design)
+        theme_manager().set_preferences(flavor=design)
+
+    def on_scheme_chosen(self, scheme: str):
+        """
+        Switch between light and dark.
+
+        Args:
+            scheme: 'auto', 'light' or 'dark'
+        """
+        set_scheme(scheme)
+        theme_manager().set_preferences(scheme=scheme)
+
+    def on_theme_changed(self):
+        """
+        Rebuild what a stylesheet cannot reach.
+
+        Colours repaint themselves the moment the application stylesheet
+        changes. The arrangement does not: a switch between the designs moves
+        the menus, the messages, the device controls and every margin.
+        """
+        self._apply_layout_metrics()
+        self.install_chrome()
+        self.show_status("Appearance updated", 4000)
+
+    def new_config(self):
+        """Create a new configuration"""
+        reply = QMessageBox.question(
+            self,
+            "New Configuration",
+            "Create a new configuration? Unsaved changes will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.config = ConfigDocument.new_empty()
+            self.config_file_path = None  # No file path for new config
+            self.current_layout = None
+            self.modified = False  # Start as unmodified
+            self.update_layout_list()
+            self.update_window_rules_list()
+            self.clear_key_grid()
+            self.update_window_title()
+
+    def open_config(self):
+        """Open a configuration file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Configuration",
+            str(Path.home()),
+            "YAML Files (*.yml *.yaml);;All Files (*)"
+        )
+
+        if file_path:
+            self.load_config(file_path)
+            self.offer_as_default_config(file_path)
+
+    def offer_as_default_config(self, file_path: str) -> None:
+        """
+        Ask whether a newly opened file should become the startup default.
+
+        Args:
+            file_path: The configuration just opened
+        """
+        if os.path.abspath(file_path) == (get_default_config_path() or ""):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Default configuration",
+            f"Open {Path(file_path).name} automatically from now on?\n\n"
+            "Choosing No keeps your current default.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            set_default_config_path(file_path)
+            self.show_status(
+                f"{Path(file_path).name} is now the default configuration", 5000)
+
+    def load_config(self, file_path: str, set_as_current_file: bool = True):
+        """Load configuration from file
+
+        Args:
+            file_path: Path to the config file
+            set_as_current_file: If True, set this as the current file path for saving
+        """
+        try:
+            # Parsed before anything is swapped in: a failure part way through
+            # would otherwise leave the new document beside the old grid and
+            # layout list.
+            document = ConfigDocument.load(file_path)
+
+            self.config = document
+            self.set_needs_apply(
+                os.path.abspath(file_path) != (self._applied_path or ""))
+
+            if set_as_current_file:
+                self.config_file_path = file_path
+                self.modified = False
+                self.update_window_title()
+            else:
+                # Loading as template - no file path set
+                self.config_file_path = None
+                self.modified = False
+                self.update_window_title()
+
+            # Block signals to prevent mark_modified from being called during load
+            self.brightness_slider.blockSignals(True)
+            self.lock_monitor_toggle.blockSignals(True)
+
+            # The validator accepts a float brightness, the slider does not.
+            # A file dimmer than the slider allows lands on its minimum.
+            self.brightness_slider.setValue(int(self.config.settings.brightness))
+            self.lock_monitor_toggle.setChecked(bool(self.config.settings.lock_monitor))
+
+            self.brightness_slider.blockSignals(False)
+            self.lock_monitor_toggle.blockSignals(False)
+            self.show_brightness(self.brightness_slider.value())
+
+            self.update_layout_list()
+            self.update_window_rules_list()
+
+            # Select default layout
+            default_layout = self.config.get_default_layout()
+            if default_layout:
+                self.current_layout = default_layout
+                self.display_layout(default_layout)
+            else:
+                self.current_layout = None
+                self.clear_key_grid()
+
+            # Ensure modified flag is correct after loading
+            if set_as_current_file:
+                self.modified = False
+                self.update_window_title()
+            else:
+                self.modified = False
+                self.update_window_title()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
+
+    def save_config(self) -> bool:
+        """Save configuration to current file. Returns True if saved successfully."""
+        if not self.config_file_path:
+            return self.save_config_as()
+        else:
+            return self.save_config_to_file(self.config_file_path)
+
+    def save_config_as(self) -> bool:
+        """Save configuration to a new file. Returns True if saved successfully."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Configuration As",
+            str(Path.home() / "config.yml"),
+            "YAML Files (*.yml *.yaml);;All Files (*)"
+        )
+
+        if file_path:
+            return self.save_config_to_file(file_path)
+        return False  # User cancelled
+
+    def save_config_to_file(self, file_path: str) -> bool:
+        """Save configuration to specified file. Returns True if saved successfully."""
+        if not self.validate_current_config(allow_override=True):
+            return False
+
+        try:
+            self.config.save(file_path)
+            self.config_file_path = file_path
+            self.modified = False  # Clear modified flag after save
+            self.update_window_title()
+            self.show_status(f"Saved {Path(file_path).name}", 5000)
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
+            return False
+
+    def mark_modified(self):
+        """Mark the configuration as modified"""
+        self.modified = True
+        self.set_needs_apply(True)
+        self.update_window_title()
+
+    def set_needs_apply(self, needs_apply: bool) -> None:
+        """
+        Record whether the device is out of date with the open configuration.
+
+        Args:
+            needs_apply: True when the device would change if Apply were used
+        """
+        self._needs_apply = needs_apply
+        self.device_bar.set_needs_apply(needs_apply)
+
+    def update_window_title(self):
+        """
+        Put the document in the title bar the way the desktop's editors do.
+
+        "config.yml — StreamDock", with Qt's modified marker after the name
+        while there are unsaved edits.
+        """
+        name = Path(self.config_file_path).name if self.config_file_path else UNTITLED
+        self.setWindowTitle(f"{name}[*] — {APP_NAME}")
+        self.setWindowModified(self.modified)
+        # GNOME does not decorate its own title bar, so the header carries the
+        # document line instead; Plasma repeats the path in the status bar.
+        if self._chrome is not None:
+            self._chrome.set_document(name, self.modified, self.config_file_path or "")
+
+    def closeEvent(self, event):
+        """
+        Hide to the tray instead of quitting.
+
+        Prompting about unsaved changes on every minimise would be
+        intolerable, so that prompt belongs to request_quit() only.
+        """
+        if not self._quitting and self.tray_available:
+            event.ignore()
+            self.hide()
+            return
+
+        if self.modified:
+            reply = self.ask_about_unsaved_changes()
+
+            if reply == QMessageBox.StandardButton.Save:
+                # Try to save, only close if successful
+                if self.save_config():
+                    event.accept()
+                else:
+                    event.ignore()
+            elif reply == QMessageBox.StandardButton.Discard:
+                event.accept()
+            else:  # Cancel
+                event.ignore()
+        else:
+            event.accept()
+
+    # ── device integration ────────────────────────────────────────────────
+
+    def validate_current_config(self, allow_override: bool = False) -> bool:
+        """
+        Check the open configuration against the runtime's rules.
+
+        Args:
+            allow_override: Offer a "Save anyway" escape. Saving a
+                work-in-progress config whose icon does not exist yet is
+                legitimate; applying one is not.
+
+        Returns:
+            True if the caller should proceed.
+        """
+        issues = self.config.validate()
+        if not issues:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Configuration is invalid")
+        box.setText(issues[0])
+        box.setDetailedText("\n".join(issues))
+
+        if allow_override:
+            box.setStandardButtons(QMessageBox.StandardButton.Cancel)
+            override = box.addButton("Save anyway", QMessageBox.ButtonRole.DestructiveRole)
+            override.setIcon(themed_icon('document-save'))
+            box.exec()
+            return box.clickedButton() is override
+
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+        self.show_status(f"Invalid: {issues[0]}", 10000)
+        return False
+
+    def on_apply_requested(self) -> None:
+        """Send the open configuration to the connected device."""
+        if not self.validate_current_config():
+            return
+
+        self.show_status("Applying configuration to device...")
+        # Deep-copied at the boundary so the window stays editable while the
+        # worker thread applies it.
+        self.apply_config_requested.emit(
+            copy.deepcopy(self.config.to_dict()['streamdock']),
+            self.config.path or "")
+
+    def on_connect_requested(self, device_id: str) -> None:
+        """Connect, using the open configuration."""
+        if not self.config.path:
+            QMessageBox.warning(
+                self, "Save the configuration first",
+                "The device needs a configuration file. Save this one, or open "
+                "an existing configuration, then connect.")
+            return
+
+        self.connect_requested.emit(device_id, self.config.path)
+
+    def on_devices_discovered(self, devices) -> None:
+        """Populate the device picker."""
+        self.device_bar.set_devices(devices)
+        if not devices:
+            self.show_status("No Stream Dock found", 5000)
+
+    def on_connection_state_changed(self, state: str, detail: str) -> None:
+        """Reflect the connection state in the bar and the status line."""
+        self.device_bar.set_state(state, detail)
+        self.show_status(
+            f"{state.capitalize()}{f' — {detail}' if detail else ''}", 5000)
+
+    def on_config_applied(self, config_path: str) -> None:
+        """Record that the device now matches the open configuration."""
+        self._applied_path = os.path.abspath(config_path) if config_path else None
+        self.set_needs_apply(False)
+        self.show_status("Configuration applied to device", 5000)
+
+    def on_device_error(self, title: str, message: str) -> None:
+        """Report a device-side failure."""
+        QMessageBox.critical(self, title, message)
+        self.show_status(f"{title}: {message}", 10000)
+
+    def on_layout_changed(self, layout_name: str) -> None:
+        """Report the layout the device switched to."""
+        self.show_status(f"Device layout: {layout_name}", 5000)
+
+    def on_device_attached(self, label: str) -> None:
+        """Report a device being plugged in."""
+        self.show_status(f"Device connected: {label}", 5000)
+
+    def on_device_detached(self, label: str) -> None:
+        """Report a device being unplugged."""
+        self._applied_path = None
+        self.show_status(f"Device unplugged: {label}", 8000)
+
+    def ask_about_unsaved_changes(self):
+        """
+        Prompt before discarding unsaved edits.
+
+        A method rather than an inline call so tests can substitute an answer
+        without patching QMessageBox itself.
+
+        Returns:
+            The QMessageBox.StandardButton the user chose
+        """
+        return QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes. Do you want to save before closing?",
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save
+        )
+
+    def request_quit(self) -> None:
+        """
+        Quit for real: prompt about unsaved changes, then close.
+
+        Reached from File > Quit and the tray's Quit entry.
+        """
+        self._quitting = True
+        self.close()
+        if not self.isVisible():
+            self.quit_requested.emit()
+        else:
+            # closeEvent refused (the user cancelled the save prompt).
+            self._quitting = False
+
+    def show_brightness(self, percent: int):
+        """Keep the readout beside the slider in step with it"""
+        self.brightness_value.setText(f"{percent}%")
+
+    def on_brightness_changed(self, percent: int):
+        """Handle a move of the brightness slider"""
+        self.show_brightness(percent)
+        self.on_settings_changed()
+
+    def on_settings_changed(self):
+        """Handle settings changes"""
+        self.config.settings.brightness = self.brightness_slider.value()
+        self.config.settings.lock_monitor = self.lock_monitor_toggle.isChecked()
+        self.mark_modified()
+
+    def show_advanced_settings(self):
+        """Show the advanced settings dialog"""
+        dialog = AdvancedSettingsDialog(self.config, parent=self)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            settings = dialog.get_settings()
+            self.config.settings.double_press_interval = settings['double_press_interval']
+            self.mark_modified()
+
+    def update_layout_list(self):
+        """Update the layout list widget"""
+        layout_names = list(self.config.layouts.keys())
+        default_layout = self.config.get_default_layout()
+        default_name = default_layout.name if default_layout else None
+        self.layout_list.set_layouts(layout_names, default_name)
+        if self.current_layout is not None:
+            self.layout_list.select(self.current_layout.name)
+
+    def on_layout_selected(self, layout_name: str):
+        """Handle layout selection"""
+        if layout_name in self.config.layouts:
+            self.current_layout = self.config.layouts[layout_name]
+            self.display_layout(self.current_layout)
+
+    def display_layout(self, layout: Layout):
+        """Display a layout on the key grid"""
+        config_dir = self.config.config_dir
+
+        # Clear all squares first
+        for square in self.key_squares:
+            square.config_dir = config_dir
+            square.set_empty()
+
+        # Set keys according to layout
+        for position, key_name in layout.keys.items():
+            if key_name and 1 <= position <= 15:
+                square = self.key_squares[position - 1]
+                if key_name in self.config.keys:
+                    key_def = self.config.keys[key_name]
+                    square.set_key(key_name, key_def)
+
+        self.layout_list.select(layout.name)
+        self.update_grid_heading()
+
+    def clear_key_grid(self):
+        """Clear all key squares"""
+        for square in self.key_squares:
+            square.set_empty()
+        self.update_grid_heading()
+
+    def update_grid_heading(self):
+        """Say which layout the grid shows, and how much of it is assigned."""
+        if self.current_layout is None:
+            self.grid_title.setText(NO_LAYOUT_TITLE)
+            self.grid_caption.setText(NO_LAYOUT_CAPTION)
+            return
+
+        assigned = sum(1 for square in self.key_squares if not square.is_empty())
+        self.grid_title.setText(self.current_layout.name)
+        self.grid_caption.setText(
+            f"{assigned} of {len(self.key_squares)} keys assigned")
+
+    def add_layout(self):
+        """Add a new layout"""
+        existing_layouts = list(self.config.layouts.keys())
+        dialog = LayoutEditorDialog(existing_layouts=existing_layouts, parent=self)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            layout_data = dialog.get_layout_data()
+            name = layout_data['name']
+            clear_all = layout_data['clear_all']
+
+            if name in self.config.layouts:
+                QMessageBox.warning(self, "Error", "Layout name already exists!")
+                return
+
+            layout = Layout(name)
+            layout.clear_all = clear_all
+
+            # If this is the first layout, make it default
+            if not self.config.layouts:
+                layout.is_default = True
+
+            self.config.add_layout(name, layout)
+            self.mark_modified()
+            self.current_layout = layout
+            self.update_layout_list()
+            self.display_layout(layout)
+
+    def edit_layout(self, layout_name: str):
+        """Edit an existing layout"""
+        if layout_name not in self.config.layouts:
+            return
+
+        layout = self.config.layouts[layout_name]
+        existing_layouts = [name for name in self.config.layouts.keys() if name != layout_name]
+
+        dialog = LayoutEditorDialog(
+            layout_name=layout_name,
+            clear_all=layout.clear_all,
+            existing_layouts=existing_layouts,
+            parent=self
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            layout_data = dialog.get_layout_data()
+            new_name = layout_data['name']
+            clear_all = layout_data['clear_all']
+
+            # Update clear_all setting
+            layout.clear_all = clear_all
+
+            # If name changed, rename the layout and update all references
+            if new_name != layout_name:
+                # Update the layout object's name
+                layout.name = new_name
+
+                # Remove old entry and add new one
+                del self.config.layouts[layout_name]
+                self.config.layouts[new_name] = layout
+
+                # Update all references to this layout
+                self._update_layout_references(layout_name, new_name)
+
+                # Update current layout reference if it was the one being edited
+                if self.current_layout and self.current_layout.name == layout_name:
+                    self.current_layout.name = new_name
+
+            self.mark_modified()
+            self.update_layout_list()
+            self.update_window_rules_list()
+
+            # Refresh display if this is the current layout
+            if self.current_layout and self.current_layout.name == new_name:
+                self.display_layout(self.current_layout)
+
+    def _update_layout_references(self, old_name: str, new_name: str):
+        """Update all references to a layout when it's renamed"""
+        # Update CHANGE_LAYOUT actions in keys
+        for key_name, key_def in self.config.keys.items():
+            for action_list in [key_def.on_press_actions, key_def.on_release_actions, key_def.on_double_press_actions]:
+                for action in action_list:
+                    if "CHANGE_LAYOUT" in action:
+                        layout_value = action["CHANGE_LAYOUT"]
+                        # Check both string and dict formats
+                        if isinstance(layout_value, str) and layout_value == old_name:
+                            action["CHANGE_LAYOUT"] = new_name
+                        elif isinstance(layout_value, dict) and layout_value.get('layout') == old_name:
+                            layout_value['layout'] = new_name
+
+        # Update window rules
+        for rule_name, rule in self.config.window_rules.items():
+            if rule.layout == old_name:
+                rule.layout = new_name
+
+    def delete_layout(self, layout_name: str):
+        """Delete a layout"""
+        if layout_name not in self.config.layouts:
+            return
+
+        layout = self.config.layouts[layout_name]
+
+        # Check if it's the default layout
+        if layout.is_default and len(self.config.layouts) > 1:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete",
+                "Cannot delete the default layout. Set another layout as default first."
+            )
+            return
+
+        # Find keys with CHANGE_LAYOUT actions referencing this layout
+        keys_with_actions = []
+        for key_name, key_def in self.config.keys.items():
+            if self._key_has_layout_reference(key_def, layout_name):
+                keys_with_actions.append(key_name)
+
+        # Find window rules referencing this layout
+        rules_using_layout = []
+        for rule_name, rule in self.config.window_rules.items():
+            if rule.layout == layout_name:
+                rules_using_layout.append(rule_name)
+
+        # Build warning message
+        warning_parts = []
+        if keys_with_actions:
+            warning_parts.append(f"Keys with CHANGE_LAYOUT actions: {', '.join(keys_with_actions)}")
+        if rules_using_layout:
+            warning_parts.append(f"Window rules: {', '.join(rules_using_layout)}")
+
+        if warning_parts:
+            warning_msg = (
+                f"Layout '{layout_name}' is referenced by:\n\n" +
+                "\n".join(f"• {part}" for part in warning_parts) +
+                "\n\nDeleting this layout will remove all these references.\n\nContinue?"
+            )
+            reply = QMessageBox.question(
+                self,
+                "Delete Layout",
+                warning_msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+        else:
+            reply = QMessageBox.question(
+                self,
+                "Delete Layout",
+                f"Are you sure you want to delete layout '{layout_name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Remove CHANGE_LAYOUT actions from keys
+            for key_name in keys_with_actions:
+                key_def = self.config.keys[key_name]
+                key_def.on_press_actions = self._remove_layout_from_actions(
+                    key_def.on_press_actions, layout_name)
+                key_def.on_release_actions = self._remove_layout_from_actions(
+                    key_def.on_release_actions, layout_name)
+                key_def.on_double_press_actions = self._remove_layout_from_actions(
+                    key_def.on_double_press_actions, layout_name)
+
+            # Remove window rules
+            for rule_name in rules_using_layout:
+                del self.config.window_rules[rule_name]
+
+            # Remove the layout
+            self.config.remove_layout(layout_name)
+
+            # If we deleted the current layout, clear the display
+            if self.current_layout and self.current_layout.name == layout_name:
+                self.current_layout = None
+                self.clear_key_grid()
+
+            self.mark_modified()
+            self.update_layout_list()
+            self.update_window_rules_list()
+
+    def set_default_layout(self, layout_name: str):
+        """Set a layout as the default layout"""
+        if layout_name not in self.config.layouts:
+            return
+
+        # Unset all other layouts as default
+        for layout in self.config.layouts.values():
+            layout.is_default = False
+
+        # Set this layout as default
+        self.config.layouts[layout_name].is_default = True
+        self.mark_modified()
+
+        # Refresh the layout list to show the new default
+        self.update_layout_list()
+
+    def _key_has_layout_reference(self, key_def: KeyDefinition, layout_name: str) -> bool:
+        """Check if a key has CHANGE_LAYOUT actions referencing the layout"""
+        all_actions = (key_def.on_press_actions +
+                      key_def.on_release_actions +
+                      key_def.on_double_press_actions)
+
+        for action in all_actions:
+            if "CHANGE_LAYOUT" in action:
+                layout_value = action["CHANGE_LAYOUT"]
+                # Check both string and dict formats
+                if isinstance(layout_value, str) and layout_value == layout_name:
+                    return True
+                elif isinstance(layout_value, dict) and layout_value.get('layout') == layout_name:
+                    return True
+        return False
+
+    def _remove_layout_from_actions(self, actions: list, layout_name: str) -> list:
+        """Remove CHANGE_LAYOUT actions that reference the given layout"""
+        filtered_actions = []
+        for action in actions:
+            if "CHANGE_LAYOUT" in action:
+                layout_value = action["CHANGE_LAYOUT"]
+                # Check both string and dict formats
+                if isinstance(layout_value, str) and layout_value == layout_name:
+                    continue  # Skip this action
+                elif isinstance(layout_value, dict) and layout_value.get('layout') == layout_name:
+                    continue  # Skip this action
+            filtered_actions.append(action)
+        return filtered_actions
+
+    def on_key_square_clicked(self, position: int):
+        """Handle key square clicks"""
+        if not self.current_layout:
+            QMessageBox.warning(self, "No Layout", "Please select or create a layout first.")
+            return
+
+        square = self.key_squares[position - 1]
+
+        if square.is_empty():
+            # Empty square - select or create key
+            self.handle_empty_square_click(position, square)
+        else:
+            # Filled square - edit, replace, or remove
+            self.handle_filled_square_click(position, square)
+
+    def handle_empty_square_click(self, position: int, square: KeySquare):
+        """Handle click on empty square - show context menu"""
+        available_keys = list(self.config.keys.keys())
+
+        menu = QMenu(self)
+
+        # Create New Key action
+        create_action = QAction(themed_icon('list-add'), "Create New Key", self)
+        create_action.triggered.connect(lambda: self.create_and_assign_key(position, square))
+        menu.addAction(create_action)
+
+        # Add separator if there are existing keys
+        if available_keys:
+            menu.addSeparator()
+
+            # Add existing keys submenu
+            key_icon = themed_icon('input-keyboard')
+            for key_name in available_keys:
+                assign_action = QAction(key_icon, f"Assign: {key_name}", self)
+                assign_action.triggered.connect(
+                    lambda checked, k=key_name: self.assign_key_to_position(position, square, k)
+                )
+                menu.addAction(assign_action)
+
+        # Show menu at cursor position
+        menu.exec(QCursor.pos())
+
+    def handle_filled_square_click(self, position: int, square: KeySquare):
+        """Handle click on filled square - show context menu"""
+        menu = QMenu(self)
+
+        # Edit Key action
+        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Key", self)
+        edit_action.triggered.connect(lambda: self.edit_key(square.key_name))
+        menu.addAction(edit_action)
+
+        # Replace with Existing action
+        replace_action = QAction(themed_icon('document-replace', 'edit-copy'),
+                                 "Replace with Existing", self)
+        replace_action.triggered.connect(lambda: self.replace_key(position, square))
+        menu.addAction(replace_action)
+
+        # Create & Replace action
+        create_replace_action = QAction(themed_icon('list-add'), "Create && Replace", self)
+        create_replace_action.triggered.connect(lambda: self.create_and_assign_key(position, square))
+        menu.addAction(create_replace_action)
+
+        menu.addSeparator()
+
+        # Remove from Layout action
+        remove_action = QAction(themed_icon('list-remove', 'edit-delete'),
+                                "Remove from Layout", self)
+        remove_action.triggered.connect(lambda: self.remove_key_from_position(position, square))
+        menu.addAction(remove_action)
+
+        # Show menu at cursor position
+        menu.exec(QCursor.pos())
+
+    def create_and_assign_key(self, position: int, square: KeySquare):
+        """Create a new key and assign it to a position"""
+        existing_keys = list(self.config.keys.keys())
+        available_layouts = list(self.config.layouts.keys())
+        available_keys = list(self.config.keys.keys())
+        editor = KeyEditorDialog(existing_keys=existing_keys,
+                                available_layouts=available_layouts,
+                                available_keys=available_keys,
+                                config_dir=self.config.config_dir,
+                                parent=self)
+
+        if editor.exec() == editor.DialogCode.Accepted:
+            key_def = editor.get_key_definition()
+
+            # Check if key name already exists
+            if key_def.name in self.config.keys:
+                QMessageBox.warning(self, "Error", "Key name already exists!")
+                return
+
+            # Add key to config
+            self.config.add_key(key_def.name, key_def)
+
+            # Assign to layout
+            self.assign_key_to_position(position, square, key_def.name)
+
+    def assign_key_to_position(self, position: int, square: KeySquare, key_name: str):
+        """Assign an existing key to a position"""
+        if key_name not in self.config.keys:
+            return
+
+        key_def = self.config.keys[key_name]
+        self.current_layout.set_key_at_position(position, key_name)
+        square.set_key(key_name, key_def)
+        self.mark_modified()
+        self.update_grid_heading()
+
+    def edit_key(self, key_name: str):
+        """Edit an existing key definition"""
+        if key_name not in self.config.keys:
+            return
+
+        key_def = self.config.keys[key_name]
+        existing_keys = [k for k in self.config.keys.keys() if k != key_name]
+        available_layouts = list(self.config.layouts.keys())
+        available_keys = [k for k in self.config.keys.keys() if k != key_name]
+
+        editor = KeyEditorDialog(key_def, existing_keys, available_layouts, available_keys,
+                                 config_dir=self.config.config_dir, parent=self)
+
+        if editor.exec() == editor.DialogCode.Accepted:
+            new_key_def = editor.get_key_definition()
+
+            # Check if name changed and new name already exists
+            if new_key_def.name != key_name and new_key_def.name in self.config.keys:
+                QMessageBox.warning(self, "Error", "Key name already exists!")
+                return
+
+            # If name changed, update all layouts
+            if new_key_def.name != key_name:
+                self.rename_key_in_layouts(key_name, new_key_def.name)
+                self.config.remove_key(key_name)
+
+            # Update key definition
+            self.config.add_key(new_key_def.name, new_key_def)
+            self.mark_modified()
+
+            # Refresh display
+            self.display_layout(self.current_layout)
+
+    def rename_key_in_layouts(self, old_name: str, new_name: str):
+        """Rename a key in all layouts"""
+        for layout in self.config.layouts.values():
+            for position, key_name in list(layout.keys.items()):
+                if key_name == old_name:
+                    layout.keys[position] = new_name
+
+    def replace_key(self, position: int, square: KeySquare):
+        """Replace key at position with another existing key"""
+        available_keys = list(self.config.keys.keys())
+
+        if not available_keys:
+            QMessageBox.warning(self, "No Keys", "No keys available.")
+            return
+
+        key_name, ok = QInputDialog.getItem(
+            self,
+            "Replace Key",
+            "Select replacement key:",
+            available_keys,
+            0,
+            False
+        )
+
+        if ok and key_name:
+            self.assign_key_to_position(position, square, key_name)
+
+    def remove_key_from_position(self, position: int, square: KeySquare):
+        """Remove key from layout position (does not delete key definition)"""
+        self.current_layout.remove_key_at_position(position)
+        square.set_empty()
+        self.mark_modified()
+        self.update_grid_heading()
+
+    def on_key_moved(self, from_position: int, to_position: int):
+        """
+        Handle a key dragged onto another square
+
+        An empty target takes the key; an occupied one trades places with it.
+        Swapping is the only reordering that leaves every other key where the
+        user put it - on a physical deck, a key that shifts on its own is a
+        key pressed by mistake.
+
+        Args:
+            from_position: Square the drag started on
+            to_position: Square it was dropped on
+        """
+        if not self.current_layout or from_position == to_position:
+            return
+
+        moved = self.current_layout.keys.get(from_position)
+        if not moved or moved not in self.config.keys:
+            return
+
+        displaced = self.current_layout.keys.get(to_position)
+        self.current_layout.keys[to_position] = moved
+        if displaced:
+            self.current_layout.keys[from_position] = displaced
+        else:
+            self.current_layout.remove_key_at_position(from_position)
+
+        self.show_key_at(from_position)
+        self.show_key_at(to_position)
+        self.mark_modified()
+
+    def show_key_at(self, position: int):
+        """
+        Draw one square from whatever the current layout holds there
+
+        Args:
+            position: Key position, 1-15
+        """
+        square = self.key_squares[position - 1]
+        key_name = self.current_layout.keys.get(position) if self.current_layout else None
+        key_def = self.config.keys.get(key_name) if key_name else None
+        if key_def:
+            square.set_key(key_name, key_def)
+        else:
+            square.set_empty()
+
+    def manage_all_keys(self):
+        """Show dialog to manage all key definitions"""
+        dialog = ManageKeysDialog(self.config, self)
+        dialog.exec()
+
+        # If keys were modified, refresh the current layout display
+        if dialog.was_modified():
+            self.mark_modified()
+            if self.current_layout:
+                self.display_layout(self.current_layout)
+
+    def update_window_rules_list(self):
+        """Update the window rules list widget"""
+        self.window_rules_widget.set_rules(self.config.window_rules)
+
+    def add_window_rule(self):
+        """Add a new window rule"""
+        if not self.config.layouts:
+            QMessageBox.warning(self, "No Layouts", "Create at least one layout before adding window rules.")
+            return
+
+        available_layouts = list(self.config.layouts.keys())
+        existing_rules = list(self.config.window_rules.keys())
+        dialog = WindowRuleDialog(available_layouts, existing_rules=existing_rules, parent=self)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            rule_data = dialog.get_rule_data()
+
+            # Check if rule name already exists
+            if rule_data['name'] in self.config.window_rules:
+                QMessageBox.warning(self, "Error", "A rule with this name already exists!")
+                return
+
+            # Create the window rule
+            rule = WindowRule(rule_data['name'], {
+                'window_name': rule_data['window_name'],
+                'layout': rule_data['layout'],
+                'match_field': rule_data.get('match_field', 'class')
+            })
+
+            # Add to config
+            self.config.window_rules[rule_data['name']] = rule
+            self.mark_modified()
+            self.update_window_rules_list()
+
+    def edit_window_rule(self, rule_name: str):
+        """Edit an existing window rule"""
+        if rule_name not in self.config.window_rules:
+            return
+
+        rule = self.config.window_rules[rule_name]
+        available_layouts = list(self.config.layouts.keys())
+        existing_rules = [name for name in self.config.window_rules.keys() if name != rule_name]
+
+        if not available_layouts:
+            QMessageBox.warning(self, "No Layouts", "No layouts available.")
+            return
+
+        dialog = WindowRuleDialog(
+            available_layouts=available_layouts,
+            rule_name=rule_name,
+            window_rule=rule,
+            existing_rules=existing_rules,
+            parent=self
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            rule_data = dialog.get_rule_data()
+            new_name = rule_data['name']
+
+            # Update the window rule properties
+            rule.window_name = rule_data['window_name']
+            rule.layout = rule_data['layout']
+            rule.match_field = rule_data.get('match_field', 'class')
+
+            # If name changed, rename the rule in the config
+            if new_name != rule_name:
+                rule.name = new_name
+                del self.config.window_rules[rule_name]
+                self.config.window_rules[new_name] = rule
+
+            self.mark_modified()
+            self.update_window_rules_list()
+
+    def delete_window_rule(self, rule_name: str):
+        """Delete a window rule"""
+        if rule_name not in self.config.window_rules:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Window Rule",
+            f"Are you sure you want to delete the window rule '{rule_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            del self.config.window_rules[rule_name]
+            self.mark_modified()
+            self.update_window_rules_list()

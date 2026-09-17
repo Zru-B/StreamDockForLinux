@@ -77,3 +77,49 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
 
 **"Icon file not found"**
 - Paths are relative to the `config.yml` file location (or the working directory if running from source). Use absolute paths if unsure.
+
+
+## The application window
+
+### No tray icon appears
+
+GNOME removed built-in tray support; install the **AppIndicator and KStatusNotifierItem Support**
+extension. Without a tray, StreamDock deliberately quits when you close the
+window instead of hiding somewhere you cannot reach it.
+
+### "Another StreamDock process already controls the device"
+
+Only one process can hold the device: either another window is open or a
+`--headless` run is still going. Close the other one and try again.
+
+You can still edit and save configurations while this message is showing;
+only connecting is disabled.
+
+### The device is listed but connecting fails
+
+Most often another process already has it open — a `--headless` run or a
+second window. The application now says so explicitly rather than reporting a
+connection that is not really there.
+
+### Unplugging does not get noticed
+
+Hotplug uses udev via `pyudev`. If it is not installed the application falls
+back to polling every couple of seconds, which is slower but still works;
+`python src/main.py --check-deps` reports whether `pyudev` is present.
+
+### "Could not load the Qt platform plugin xcb"
+
+The Qt runtime libraries are missing. On Debian/Ubuntu:
+
+```bash
+sudo apt install libxcb-cursor0 libxcb-xinerama0
+```
+
+On Arch these come with the `qt6-base` package.
+
+### Apply says the configuration is invalid
+
+The same validation the controller applies at startup runs before anything
+reaches the device, so the message is the exact reason the device would have
+rejected it — most often an icon path that does not exist. Icon paths are
+resolved relative to the configuration file's own directory.

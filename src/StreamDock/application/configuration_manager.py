@@ -5,6 +5,7 @@ This module provides pure configuration parsing and validation logic,
 extracted from ConfigLoader to be infrastructure-independent.
 """
 
+import copy
 import logging
 import os
 from dataclasses import dataclass, field
@@ -53,6 +54,123 @@ class StreamDockConfig:
 
 VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions']
 
+ICON_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')
+
+# A key is 112x112 px, so anything outside this cannot render usefully.
+MIN_FONT_SIZE = 1
+MAX_FONT_SIZE = 200
+
+
+def read_streamdock_section(config_path: str) -> Dict[str, Any]:
+    """
+    Read a configuration file and return its 'streamdock' subtree.
+
+    Every failure here is reported as a ConfigValidationError, because these
+    are all things a hand-edited file does and the message is shown to the
+    user verbatim.
+
+    Args:
+        config_path: Path to the YAML file
+
+    Returns:
+        The 'streamdock' mapping
+
+    Raises:
+        ConfigValidationError: If the file cannot be parsed, is not UTF-8, or
+            does not have the expected shape
+    """
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigValidationError(f"Could not parse {config_path}: {e}") from e
+    except UnicodeDecodeError as e:
+        raise ConfigValidationError(
+            f"{config_path} is not valid UTF-8 text: {e}") from e
+
+    if not config:
+        raise ConfigValidationError("Configuration file is empty")
+
+    # Without this, 'streamdock' in config is a substring test on a string and
+    # an element test on a list, so both slip through to a TypeError below.
+    if not isinstance(config, dict):
+        raise ConfigValidationError(
+            "Configuration must be a mapping with a 'streamdock' root element, "
+            f"not {type(config).__name__}")
+
+    if 'streamdock' not in config:
+        raise ConfigValidationError("Configuration must contain 'streamdock' root element")
+
+    streamdock = config['streamdock']
+    if streamdock is None:
+        raise ConfigValidationError("'streamdock' section is empty")
+    if not isinstance(streamdock, dict):
+        raise ConfigValidationError(
+            f"'streamdock' must be a dictionary, not {type(streamdock).__name__}")
+
+    return streamdock
+
+
+def resolve_icon_path(icon_path: str, config_dir: str) -> str:
+    """
+    Resolve an icon path the way the runtime does.
+
+    Relative paths are resolved against the directory holding the config file,
+    never against the current working directory - configs must stay portable
+    and must mean the same thing to the editor preview and to the device.
+
+    Args:
+        icon_path: Raw path as written in the YAML
+        config_dir: Directory containing the config file
+
+    Returns:
+        Absolute path
+    """
+    expanded = os.path.expanduser(os.path.expandvars(icon_path.strip()))
+    if not os.path.isabs(expanded):
+        expanded = os.path.abspath(os.path.join(config_dir, expanded))
+    return expanded
+
+
+def relativize_icon_path(abs_path: str, config_dir: str) -> str:
+    """
+    Inverse of resolve_icon_path, used when the editor stores a chosen file.
+
+    Paths under the config directory are stored relative so the config stays
+    portable; anything else is stored absolute.
+
+    Args:
+        abs_path: Absolute path to an icon
+        config_dir: Directory containing the config file
+
+    Returns:
+        Path to write into the YAML
+    """
+    try:
+        relative = os.path.relpath(abs_path, config_dir)
+    except ValueError:
+        # Different drive/root - no relative path exists
+        return abs_path
+
+    return abs_path if relative.startswith(os.pardir) else relative
+
+
+def expand_icon_paths(streamdock: Dict[str, Any], config_dir: str) -> None:
+    """
+    Rewrite every key icon path in place to an absolute path.
+
+    Applied to a copy of the configuration on the way to StreamDockConfig, so
+    the runtime gets absolute paths while the on-disk YAML keeps whatever the
+    user wrote.
+
+    Args:
+        streamdock: The 'streamdock' subtree (modified in place)
+        config_dir: Directory containing the config file
+    """
+    for key_def in streamdock.get('keys', {}).values():
+        if isinstance(key_def, dict) and isinstance(key_def.get('icon'), str):
+            key_def['icon'] = resolve_icon_path(key_def['icon'], config_dir)
+
 
 class ConfigurationManager:
     """
@@ -86,6 +204,86 @@ class ConfigurationManager:
         self._config_path = config_path
         self._raw_config: Optional[Dict] = None
 
+    @property
+    def _config_dir(self) -> str:
+        """Directory that relative icon paths resolve against."""
+        return os.path.dirname(os.path.abspath(self._config_path))
+
+    @classmethod
+    def from_data(cls, streamdock: Dict[str, Any], config_path: str) -> "ConfigurationManager":
+        """
+        Build a manager around an in-memory configuration.
+
+        Lets the GUI validate and apply unsaved edits without writing a file
+        first. config_path is still required because relative icon paths are
+        resolved against its directory.
+
+        Args:
+            streamdock: The 'streamdock' subtree
+            config_path: Path the configuration belongs to (need not exist)
+
+        Returns:
+            A manager whose validate()/parse() operate on the given data
+        """
+        manager = cls(config_path)
+        manager._raw_config = streamdock
+        return manager
+
+    @classmethod
+    def parse_data(cls, streamdock: Dict[str, Any], config_path: str) -> StreamDockConfig:
+        """
+        Validate and parse an in-memory configuration.
+
+        Args:
+            streamdock: The 'streamdock' subtree
+            config_path: Path the configuration belongs to (need not exist)
+
+        Returns:
+            StreamDockConfig with validated data
+
+        Raises:
+            ConfigValidationError: If validation fails
+        """
+        manager = cls.from_data(streamdock, config_path)
+        manager._validate_config()
+        return manager._parse_config()
+
+    @classmethod
+    def validate_data(cls, streamdock: Dict[str, Any], config_path: str) -> None:
+        """
+        Validate an in-memory configuration.
+
+        Args:
+            streamdock: The 'streamdock' subtree
+            config_path: Path the configuration belongs to (need not exist)
+
+        Raises:
+            ConfigValidationError: If validation fails
+        """
+        cls.from_data(streamdock, config_path)._validate_config()
+
+    @classmethod
+    def collect_issues(cls, streamdock: Dict[str, Any], config_path: str) -> List[str]:
+        """
+        Validate without raising, for reporting in a UI.
+
+        Validation stops at the first problem, so at most one issue comes back.
+
+        Args:
+            streamdock: The 'streamdock' subtree
+            config_path: Path the configuration belongs to (need not exist)
+
+        Returns:
+            Problems found, empty when the configuration is valid
+        """
+        try:
+            cls.validate_data(streamdock, config_path)
+        except ConfigValidationError as e:
+            return [str(e)]
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            return [f"Unexpected error while validating: {e}"]
+        return []
+
     def load(self) -> StreamDockConfig:
         """
         Load and validate configuration file.
@@ -117,16 +315,7 @@ class ConfigurationManager:
         if not os.path.exists(self._config_path):
             raise FileNotFoundError(f"Configuration file not found: {self._config_path}")
 
-        with open(self._config_path, 'r') as f:
-            config = yaml.safe_load(f)
-
-        if not config:
-            raise ConfigValidationError("Configuration file is empty")
-
-        if 'streamdock' not in config:
-            raise ConfigValidationError("Configuration must contain 'streamdock' root element")
-
-        self._raw_config = config['streamdock']
+        self._raw_config = read_streamdock_section(self._config_path)
 
     def _validate_config(self) -> None:
         """
@@ -240,8 +429,28 @@ class ConfigurationManager:
                 if not key_def['text'].strip():
                     raise ConfigValidationError(f"Key '{key_name}' text field cannot be empty")
 
-            # Validate unsupported actions
+            # font_size reaches both the renderer and the editor's QFont, and
+            # neither survives a non-integer.
+            if 'font_size' in key_def:
+                font_size = key_def['font_size']
+                if isinstance(font_size, bool) or not isinstance(font_size, int):
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' font_size must be a whole number "
+                        f"between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}"
+                    )
+                if font_size < MIN_FONT_SIZE or font_size > MAX_FONT_SIZE:
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' font_size must be between "
+                        f"{MIN_FONT_SIZE} and {MAX_FONT_SIZE}"
+                    )
+
+            # Validate unsupported actions. YAML turns a bare `on:` into the
+            # boolean True, so field names are not necessarily strings.
             for key in key_def:
+                if not isinstance(key, str):
+                    raise ConfigValidationError(
+                        f"Key '{key_name}' has a non-text field name: {key!r}"
+                    )
                 if (key.startswith('on_') or key == 'actions') and key not in VALID_ACTIONS:
                     valid_actions_str = ", ".join(f"'{a}'" for a in VALID_ACTIONS)
                     raise ConfigValidationError(
@@ -260,11 +469,18 @@ class ConfigurationManager:
 
     def _validate_and_expand_icon_path(self, key_name: str, key_def: Dict) -> None:
         """
-        Validate icon path and expand it to absolute path.
+        Validate an icon path.
+
+        Deliberately does NOT write the resolved path back into key_def. The
+        editor validates the very dictionary it is about to save, so mutating
+        here would silently rewrite every relative icon path in the user's
+        YAML to an absolute one. Expansion happens in _parse_config() instead,
+        on a copy. Error messages still quote the resolved path, since that is
+        the path that was actually looked for.
 
         Args:
             key_name: Name of the key being validated
-            key_def: Key definition dictionary (modified in place)
+            key_def: Key definition dictionary (not modified)
 
         Raises:
             ConfigValidationError: If icon path is invalid
@@ -277,23 +493,14 @@ class ConfigurationManager:
         if not isinstance(icon_path, str):
             raise ConfigValidationError(f"Icon path for key '{key_name}' must be a string")
 
-        # Expand environment variables and user path (~)
-        icon_path = os.path.expanduser(os.path.expandvars(icon_path.strip()))
-
-        # If path is relative, make it relative to the config file directory
-        if not os.path.isabs(icon_path):
-            config_dir = os.path.dirname(os.path.abspath(self._config_path))
-            icon_path = os.path.abspath(os.path.join(config_dir, icon_path))
-
-        # Update the config with expanded path
-        key_def['icon'] = icon_path
+        icon_path = resolve_icon_path(icon_path, self._config_dir)
 
         # Validate file exists and is readable
         if not os.path.exists(icon_path):
             raise ConfigValidationError(f"Icon file not found for key '{key_name}': {icon_path}")
         if not os.path.isfile(icon_path):
             raise ConfigValidationError(f"Icon file for key '{key_name}' must be a file")
-        if not icon_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')):
+        if not icon_path.lower().endswith(ICON_EXTENSIONS):
             raise ConfigValidationError(f"Icon file for key '{key_name}' must be an image file")
         if not os.access(icon_path, os.R_OK):
             raise ConfigValidationError(f"Icon file for key '{key_name}' must be readable")
@@ -326,6 +533,13 @@ class ConfigurationManager:
                     )
 
                 action_type_str = list(action.keys())[0]
+
+                # `- on: x` and `- 1: x` both parse to a non-string name.
+                if not isinstance(action_type_str, str):
+                    raise ConfigValidationError(
+                        f"{context}[{i}]: action type must be text, "
+                        f"not {type(action_type_str).__name__}"
+                    )
 
                 # Validate action type exists
                 try:
@@ -410,6 +624,12 @@ class ConfigurationManager:
                 key_numbers.add(key_number)
 
                 # Check if referenced key exists (None is allowed for empty keys)
+                if key_name is not None and not isinstance(key_name, str):
+                    raise ConfigValidationError(
+                        f"Layout '{layout_name}': key name at position {key_number} "
+                        f"must be text or null, not {type(key_name).__name__}"
+                    )
+
                 if key_name is not None and key_name not in self._raw_config['keys']:
                     raise ConfigValidationError(
                         f"Layout '{layout_name}' references undefined key: '{key_name}'"
@@ -465,6 +685,12 @@ class ConfigurationManager:
 
             # Check if referenced layout exists
             layout_name = rule_def['layout']
+            if not isinstance(layout_name, str):
+                raise ConfigValidationError(
+                    f"Window rule '{rule_name}': 'layout' must be text, "
+                    f"not {type(layout_name).__name__}"
+                )
+
             if layout_name not in self._raw_config['layouts']:
                 raise ConfigValidationError(
                     f"Window rule '{rule_name}' references undefined layout: '{layout_name}'"
@@ -493,8 +719,13 @@ class ConfigurationManager:
         Returns:
             StreamDockConfig with validated data
         """
+        # Work on a copy: the runtime wants absolute icon paths, but the
+        # caller's dictionary may be the document the editor is about to save.
+        raw_config = copy.deepcopy(self._raw_config)
+        expand_icon_paths(raw_config, self._config_dir)
+
         # Extract settings
-        settings = self._raw_config.get('settings', {})
+        settings = raw_config.get('settings', {})
         brightness = int(settings.get('brightness', 50))
         lock_monitor_enabled = settings.get('lock_monitor', True)
         lock_verification_delay = float(settings.get('lock_verification_delay', 2.0))
@@ -502,7 +733,7 @@ class ConfigurationManager:
 
         # Find default layout
         default_layout_name = "default"
-        for layout_name, layout_def in self._raw_config['layouts'].items():
+        for layout_name, layout_def in raw_config['layouts'].items():
             if layout_def.get('Default', False):
                 default_layout_name = layout_name
                 break
@@ -513,8 +744,8 @@ class ConfigurationManager:
             lock_monitor_enabled=lock_monitor_enabled,
             lock_verification_delay=lock_verification_delay,
             double_press_interval=double_press_interval,
-            keys_config=self._raw_config.get('keys', {}),
-            layouts_config=self._raw_config.get('layouts', {}),
-            window_rules_config=self._raw_config.get('windows_rules', {}),
-            raw_config=self._raw_config
+            keys_config=raw_config.get('keys', {}),
+            layouts_config=raw_config.get('layouts', {}),
+            window_rules_config=raw_config.get('windows_rules', {}),
+            raw_config=raw_config
         )

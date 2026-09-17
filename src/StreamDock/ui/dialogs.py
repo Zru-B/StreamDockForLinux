@@ -4,16 +4,29 @@ Dialogs for StreamDock Configuration Editor
 Handles key editing, action editing, and layout management
 """
 
+import os
 from pathlib import Path
 
-from config_editor_models import KeyDefinition
-from config_editor_widgets import ActionListItem
-from modern_styles import get_colors
+from StreamDock.application.config_document import KeyDefinition
+from StreamDock.business_logic.action_type import ActionType
+from StreamDock.application.configuration_manager import (
+    relativize_icon_path,
+    resolve_icon_path,
+)
+from StreamDock.ui.chrome import ThemedDialog, make_button
+from StreamDock.ui.widgets import (
+    ActionListContainer,
+    ActionListItem,
+    SegmentedControl,
+    ToggleSwitch,
+    glyph_button,
+)
+from StreamDock.ui.styles import get_colors
+from StreamDock.ui.theme import Flavor, current_theme
 from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -21,7 +34,6 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -41,74 +53,90 @@ from PyQt6.QtWidgets import (
 
 COLORS = get_colors()
 
+# The two ways a key can be drawn, as the segmented control spells them.
+DISPLAY_ICON = "Icon"
+DISPLAY_TEXT = "Text"
 
-def create_styled_button(text: str, icon: str = None, primary: bool = False) -> QPushButton:
-    """Create a consistently styled button with optional icon
-    
+
+# Labels that Title Case gets wrong. Everything else is derived from
+# ActionType, so an action added to the runtime cannot go missing from the
+# editor - CHANGE_KEY_TEXT was absent from the hand-written list for exactly
+# that reason.
+_ACTION_TYPE_LABEL_OVERRIDES = {
+    "DBUS": "D-Bus",
+    "CHANGE_KEY_IMAGE": "Change Key Image",
+    "CHANGE_KEY_TEXT": "Change Key Text",
+}
+
+_ACTION_TYPE_DISPLAY = {
+    action.name: _ACTION_TYPE_LABEL_OVERRIDES.get(
+        action.name, action.name.replace("_", " ").title())
+    for action in ActionType
+}
+
+
+def _as_text(value) -> str:
+    """
+    Render an action payload as editable text.
+
+    Payloads are only loosely validated - `KEY_PRESS: ["ctrl","c"]` and
+    `TYPE_TEXT: 42` both pass - and a QLineEdit accepts nothing but a string.
+
+    Args:
+        value: Whatever the configuration held
+
+    Returns:
+        A string safe to put in a text field
+    """
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _as_int(value, default: int) -> int:
+    """
+    Coerce an action payload into a spin-box value.
+
+    Args:
+        value: Whatever the configuration held
+        default: Used when the value is missing or not a number
+
+    Returns:
+        An int
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def create_styled_button(text: str, primary: bool = False) -> QPushButton:
+    """Create a dialog button at the size the active design uses
+
     Args:
         text: Button text
-        icon: Unicode icon character (optional)
-        primary: If True, use primary (blue) styling
+        primary: If True, use the accent colour
+
+    Returns:
+        The button
     """
-    if icon:
-        button_text = f"{icon}  {text}"
-    else:
-        button_text = text
-    
-    btn = QPushButton(button_text)
-    btn.setMinimumHeight(32)
-    btn.setMinimumWidth(90)
-    
-    if primary:
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['primary']};
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['primary_hover']};
-            }}
-            QPushButton:pressed {{
-                background-color: {COLORS['primary']};
-            }}
-        """)
-    else:
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['bg_tertiary']};
-                color: {COLORS['text_primary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['bg_hover']};
-                border-color: {COLORS['primary']};
-            }}
-            QPushButton:pressed {{
-                background-color: {COLORS['bg_tertiary']};
-            }}
-        """)
-    
-    return btn
+    return make_button(text, "primary" if primary else "")
 
 
-class KeyEditorDialog(QDialog):
+class KeyEditorDialog(ThemedDialog):
     """Dialog for creating or editing a key"""
     
     def __init__(self, key_def: KeyDefinition = None, existing_keys: list = None, 
-                 available_layouts: list = None, available_keys: list = None, parent=None):
-        super().__init__(parent)
+                 available_layouts: list = None, available_keys: list = None,
+                 config_dir: str = None, parent=None):
+        super().__init__(parent=parent)
         self.key_def = key_def or KeyDefinition("NewKey")
         self.existing_keys = existing_keys or []
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
         self.selected_icon_path = None
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         
         self.setWindowTitle("Edit Key" if key_def else "Create New Key")
         self.setMinimumSize(600, 750)
@@ -119,29 +147,18 @@ class KeyEditorDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
-        # Key name
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Key Name:"))
+        # Key name and display type, in a form so their labels line up
+        # with the rows underneath
+        header_form = QFormLayout()
         self.name_edit = QLineEdit(self.key_def.name)
-        name_layout.addWidget(self.name_edit)
-        layout.addLayout(name_layout)
+        header_form.addRow("Key Name:", self.name_edit)
         
-        # Display type selection
-        display_group = QGroupBox("Display Type")
-        display_layout = QVBoxLayout()
-        
-        self.type_group = QButtonGroup(self)
-        self.icon_radio = QRadioButton("Icon")
-        self.text_radio = QRadioButton("Text")
-        self.type_group.addButton(self.icon_radio, 0)
-        self.type_group.addButton(self.text_radio, 1)
-        display_layout.addWidget(self.icon_radio)
-        display_layout.addWidget(self.text_radio)
-        
-        display_group.setLayout(display_layout)
-        layout.addWidget(display_group)
+        # Display type: two choices, so one pill rather than a box of radios
+        self.display_type = SegmentedControl([DISPLAY_ICON, DISPLAY_TEXT])
+        header_form.addRow("Display Type:", self.display_type)
+        layout.addLayout(header_form)
         
         # Icon settings (in a container for show/hide)
         self.icon_widget = QWidget()
@@ -150,7 +167,7 @@ class KeyEditorDialog(QDialog):
         icon_select_layout = QHBoxLayout()
         self.icon_path_label = QLabel("No icon selected")
         icon_select_layout.addWidget(self.icon_path_label)
-        self.icon_select_btn = QPushButton("Select Icon...")
+        self.icon_select_btn = create_styled_button("Select Icon...")
         self.icon_select_btn.clicked.connect(self.select_icon)
         icon_select_layout.addWidget(self.icon_select_btn)
         icon_layout.addLayout(icon_select_layout)
@@ -160,9 +177,9 @@ class KeyEditorDialog(QDialog):
         self.icon_preview.setFixedSize(112, 112)
         self.icon_preview.setStyleSheet(f"""
             QLabel {{
-                border: 2px solid {COLORS['border']};
-                background-color: {COLORS['bg_secondary']};
-                border-radius: 6px;
+                border: {current_theme().metrics.border_width}px solid {COLORS['border']};
+                background-color: {COLORS['bg_input']};
+                border-radius: {current_theme().metrics.radius}px;
             }}
         """)
         self.icon_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -180,7 +197,7 @@ class KeyEditorDialog(QDialog):
         text_color_layout = QHBoxLayout()
         self.text_color_edit = QLineEdit("white")
         text_color_layout.addWidget(self.text_color_edit)
-        self.text_color_btn = QPushButton("Choose...")
+        self.text_color_btn = create_styled_button("Choose...")
         self.text_color_btn.clicked.connect(self.choose_text_color)
         text_color_layout.addWidget(self.text_color_btn)
         text_layout.addRow("Text Color:", text_color_layout)
@@ -188,7 +205,7 @@ class KeyEditorDialog(QDialog):
         bg_color_layout = QHBoxLayout()
         self.bg_color_edit = QLineEdit("black")
         bg_color_layout.addWidget(self.bg_color_edit)
-        self.bg_color_btn = QPushButton("Choose...")
+        self.bg_color_btn = create_styled_button("Choose...")
         self.bg_color_btn.clicked.connect(self.choose_bg_color)
         bg_color_layout.addWidget(self.bg_color_btn)
         text_layout.addRow("Background Color:", bg_color_layout)
@@ -198,46 +215,36 @@ class KeyEditorDialog(QDialog):
         self.font_size_spin.setValue(20)
         text_layout.addRow("Font Size:", self.font_size_spin)
         
-        self.bold_check = QCheckBox()
-        self.bold_check.setChecked(True)
-        text_layout.addRow("Bold:", self.bold_check)
+        self.bold_toggle = ToggleSwitch()
+        self.bold_toggle.setChecked(True)
+        text_layout.addRow("Bold:", self.bold_toggle)
         
         layout.addWidget(self.text_widget)
         
         # Actions tabs
         self.tabs = QTabWidget()
         
-        self.press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.press_actions_widget, "On Press Actions")
         
-        self.release_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.release_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.release_actions_widget, "On Release Actions")
         
-        self.double_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys)
+        self.double_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
         self.tabs.addTab(self.double_press_actions_widget, "On Double Press Actions")
         
         layout.addWidget(self.tabs)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
+        self.add_actions("Save", self.accept)
         
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", "💾", primary=True)
-        save_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
-        
-        # Connect type radio buttons
-        self.icon_radio.toggled.connect(self.update_display_type)
+        self.display_type.selection_changed.connect(self.update_display_type)
     
     def update_display_type(self):
         """Update visible widgets based on display type"""
-        is_icon = self.icon_radio.isChecked()
+        is_icon = self.display_type.current() == DISPLAY_ICON
         self.icon_widget.setVisible(is_icon)
         self.text_widget.setVisible(not is_icon)
     
@@ -251,20 +258,20 @@ class KeyEditorDialog(QDialog):
         )
         
         if file_path:
-            self.selected_icon_path = file_path
+            # Store relative when the icon lives under the config directory,
+            # so the configuration stays portable.
+            self.selected_icon_path = relativize_icon_path(file_path, self.config_dir)
             self.icon_path_label.setText(Path(file_path).name)
-            self.load_icon_preview(file_path)
+            self.load_icon_preview(self.selected_icon_path)
     
     def load_icon_preview(self, icon_path: str):
         """Load and display icon preview"""
         if not icon_path:
             return
         
-        # Handle relative paths
-        icon_file = Path(icon_path)
-        if not icon_file.is_absolute():
-            # Try relative to src directory
-            icon_file = Path(__file__).parent / 'src' / icon_path
+        # Relative paths resolve against the config file's directory, the
+        # same rule the runtime applies.
+        icon_file = Path(resolve_icon_path(icon_path, self.config_dir))
         
         if not icon_file.exists():
             self.icon_preview.setText(f"Icon not found:\n{icon_path}")
@@ -313,22 +320,22 @@ class KeyEditorDialog(QDialog):
     def load_key_data(self):
         """Load existing key data into the dialog"""
         if self.key_def.is_icon_based():
-            self.icon_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_ICON)
             if self.key_def.icon:
                 self.icon_path_label.setText(self.key_def.icon)
                 self.selected_icon_path = self.key_def.icon
                 # Load and display the icon preview
                 self.load_icon_preview(self.key_def.icon)
         elif self.key_def.is_text_based():
-            self.text_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_TEXT)
             self.text_edit.setText(self.key_def.text or "")
             self.text_color_edit.setText(self.key_def.text_color)
             self.bg_color_edit.setText(self.key_def.background_color)
             self.font_size_spin.setValue(self.key_def.font_size)
-            self.bold_check.setChecked(self.key_def.bold)
+            self.bold_toggle.setChecked(self.key_def.bold)
         else:
             # Default to icon
-            self.icon_radio.setChecked(True)
+            self.display_type.set_current(DISPLAY_ICON)
         
         self.update_display_type()
         
@@ -341,7 +348,7 @@ class KeyEditorDialog(QDialog):
         """Get the key definition from the dialog"""
         key_def = KeyDefinition(self.name_edit.text())
         
-        if self.icon_radio.isChecked():
+        if self.display_type.current() == DISPLAY_ICON:
             key_def.icon = self.selected_icon_path or self.key_def.icon
             key_def.text = None
         else:
@@ -349,7 +356,7 @@ class KeyEditorDialog(QDialog):
             key_def.text_color = self.text_color_edit.text()
             key_def.background_color = self.bg_color_edit.text()
             key_def.font_size = self.font_size_spin.value()
-            key_def.bold = self.bold_check.isChecked()
+            key_def.bold = self.bold_toggle.isChecked()
             key_def.icon = None
         
         key_def.on_press_actions = self.press_actions_widget.get_actions()
@@ -362,40 +369,53 @@ class KeyEditorDialog(QDialog):
 class ActionEditorWidget(QWidget):
     """Widget for editing a list of actions"""
     
-    def __init__(self, available_layouts: list = None, available_keys: list = None, parent=None):
+    def __init__(self, available_layouts: list = None, available_keys: list = None,
+                 config_dir: str = None, parent=None):
         super().__init__(parent)
         self.actions = []
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         self.setup_ui()
     
     def setup_ui(self):
         """Setup the UI"""
+        metrics = current_theme().metrics
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(metrics.spacing_tight, metrics.spacing_tight,
+                                  metrics.spacing_tight, metrics.spacing_tight)
+        layout.setSpacing(metrics.spacing)
         
         # Scroll area for actions list
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setMinimumHeight(200)
-        self.scroll.setMaximumHeight(350)
+        self.scroll.setMinimumHeight(150)
+        self.scroll.setMaximumHeight(320)
         self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll.setFrameShape(QScrollArea.Shape.StyledPanel)
+        # The container has to carry the colour too: a bare QScrollArea rule
+        # leaves the viewport on the default palette, which is white.
+        surface = (COLORS['bg_input'] if current_theme().flavor is Flavor.KDE
+                   else COLORS['bg_secondary'])
         self.scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                background-color: {COLORS['bg_secondary']};
+                border-radius: {current_theme().metrics.radius}px;
+                background-color: {surface};
+            }}
+            QWidget#actionsContainer {{
+                background-color: {surface};
             }}
         """)
         
-        self.actions_container = QWidget()
+        self.actions_container = ActionListContainer()
+        self.actions_container.action_moved.connect(self.move_action)
         self.actions_layout = QVBoxLayout(self.actions_container)
-        self.actions_layout.setContentsMargins(4, 4, 4, 4)
-        self.actions_layout.setSpacing(4)
+        self.actions_layout.setContentsMargins(6, 6, 6, 6)
+        self.actions_layout.setSpacing(6)
         
         self.scroll.setWidget(self.actions_container)
         layout.addWidget(self.scroll)
@@ -403,10 +423,8 @@ class ActionEditorWidget(QWidget):
         # Add action button - smaller and centered, completely separate
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        add_btn = create_styled_button("Add Action", "➕", primary=True)
+        add_btn = create_styled_button("Add Action", primary=True)
         add_btn.setMinimumWidth(120)
-        add_btn.setMaximumWidth(150)
-        add_btn.setFixedHeight(32)
         add_btn.clicked.connect(self.add_action)
         btn_layout.addWidget(add_btn)
         btn_layout.addStretch()
@@ -428,26 +446,29 @@ class ActionEditorWidget(QWidget):
             item = self.actions_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-            elif item.spacerItem():
-                # Remove spacer item
-                pass
+        
+        if not self.actions:
+            empty = QLabel("No actions yet")
+            empty.setObjectName("actionsEmpty")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.actions_layout.addWidget(empty)
+            return
         
         # Add action widgets
         for i, action in enumerate(self.actions):
             action_widget = ActionListItem(i, action)
             action_widget.remove_clicked.connect(self.remove_action)
             action_widget.edit_clicked.connect(self.edit_action)
-            action_widget.move_up_clicked.connect(self.move_action_up)
-            action_widget.move_down_clicked.connect(self.move_action_down)
             self.actions_layout.addWidget(action_widget)
         
-        # Don't add stretch - let the scroll area handle spacing
-        # Force container to update its size
-        self.actions_container.updateGeometry()
+        # Rows keep their own height; the spare space goes here rather than
+        # being shared out among them.
+        self.actions_layout.addStretch()
     
     def add_action(self):
         """Add a new action"""
-        dialog = ActionDialog(None, self.available_layouts, self.available_keys)
+        dialog = ActionDialog(None, self.available_layouts, self.available_keys,
+                              config_dir=self.config_dir)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action = dialog.get_action()
             if action:
@@ -457,7 +478,8 @@ class ActionEditorWidget(QWidget):
     def edit_action(self, index: int):
         """Edit an existing action"""
         if 0 <= index < len(self.actions):
-            dialog = ActionDialog(self.actions[index], self.available_layouts, self.available_keys)
+            dialog = ActionDialog(self.actions[index], self.available_layouts,
+                                  self.available_keys, config_dir=self.config_dir)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 action = dialog.get_action()
                 if action:
@@ -470,46 +492,38 @@ class ActionEditorWidget(QWidget):
             self.actions.pop(index)
             self.rebuild_actions_list()
     
-    def move_action_up(self, index: int):
-        """Move action up in the list"""
-        if index > 0:
-            self.actions[index], self.actions[index - 1] = self.actions[index - 1], self.actions[index]
-            self.rebuild_actions_list()
-    
-    def move_action_down(self, index: int):
-        """Move action down in the list"""
-        if index < len(self.actions) - 1:
-            self.actions[index], self.actions[index + 1] = self.actions[index + 1], self.actions[index]
-            self.rebuild_actions_list()
+    def move_action(self, source: int, target: int):
+        """
+        Move an action to another position in the sequence
+
+        Args:
+            source: Index the action is at now
+            target: Index it should end up at
+        """
+        if not 0 <= source < len(self.actions):
+            return
+        action = self.actions.pop(source)
+        self.actions.insert(max(0, min(target, len(self.actions))), action)
+        self.rebuild_actions_list()
 
 
-class ActionDialog(QDialog):
+class ActionDialog(ThemedDialog):
     """Dialog for creating or editing a single action"""
     
     # Mapping from backend keys to user-friendly display names
-    ACTION_TYPE_DISPLAY = {
-        "EXECUTE_COMMAND": "Execute Command",
-        "LAUNCH_APPLICATION": "Launch Application",
-        "KEY_PRESS": "Key Press",
-        "TYPE_TEXT": "Type Text",
-        "WAIT": "Wait",
-        "CHANGE_KEY_IMAGE": "Change Key Image",
-        "CHANGE_KEY": "Change Key",
-        "CHANGE_LAYOUT": "Change Layout",
-        "DBUS": "D-Bus",
-        "DEVICE_BRIGHTNESS_UP": "Device Brightness Up",
-        "DEVICE_BRIGHTNESS_DOWN": "Device Brightness Down"
-    }
+    ACTION_TYPE_DISPLAY = _ACTION_TYPE_DISPLAY
     
     # Reverse mapping for quick lookup
     ACTION_TYPE_BACKEND = {v: k for k, v in ACTION_TYPE_DISPLAY.items()}
     
     def __init__(self, action_dict: dict = None, available_layouts: list = None, 
-                 available_keys: list = None, parent=None):
-        super().__init__(parent)
+                 available_keys: list = None, config_dir: str = None, parent=None):
+        super().__init__(parent=parent)
         self.action_dict = action_dict or {}
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
+        # Directory relative icon paths resolve against.
+        self.config_dir = config_dir or os.getcwd()
         
         self.setWindowTitle("Edit Action" if action_dict else "Add Action")
         self.setMinimumWidth(500)
@@ -524,7 +538,7 @@ class ActionDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Action type selection
         type_layout = QHBoxLayout()
@@ -542,19 +556,7 @@ class ActionDialog(QDialog):
         self.fields_layout = QVBoxLayout(self.fields_widget)
         layout.addWidget(self.fields_widget)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("OK", "✓", primary=True)
-        save_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("OK", self.accept)
     
     def update_action_fields(self):
         """Update fields based on selected action type"""
@@ -650,11 +652,48 @@ class ActionDialog(QDialog):
             img_layout = QHBoxLayout()
             self.image_path_edit = QLineEdit()
             img_layout.addWidget(self.image_path_edit)
-            browse_btn = QPushButton("Browse...")
+            browse_btn = create_styled_button("Browse...")
             browse_btn.clicked.connect(self.browse_image)
             img_layout.addWidget(browse_btn)
             self.fields_layout.addLayout(img_layout)
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            self.fields_layout.addWidget(QLabel("Text:"))
+            self.key_text_edit = QLineEdit()
+            self.fields_layout.addWidget(self.key_text_edit)
+
+            style_layout = QFormLayout()
+
+            self.key_text_color_edit = QLineEdit("white")
+            style_layout.addRow("Text color:", self.key_text_color_edit)
+
+            self.key_text_bg_edit = QLineEdit("black")
+            style_layout.addRow("Background:", self.key_text_bg_edit)
+
+            self.key_text_size_spin = QSpinBox()
+            self.key_text_size_spin.setRange(6, 96)
+            self.key_text_size_spin.setValue(20)
+            style_layout.addRow("Font size:", self.key_text_size_spin)
+
+            self.key_text_position_combo = QComboBox()
+            self.key_text_position_combo.addItems(["bottom", "center", "top"])
+            style_layout.addRow("Position:", self.key_text_position_combo)
+
+            self.fields_layout.addLayout(style_layout)
+
+            self.key_text_bold_check = QCheckBox("Bold")
+            self.key_text_bold_check.setChecked(True)
+            self.fields_layout.addWidget(self.key_text_bold_check)
+
+            self.fields_layout.addWidget(QLabel("Background image (optional):"))
+            icon_row = QHBoxLayout()
+            self.key_text_icon_edit = QLineEdit()
+            icon_row.addWidget(self.key_text_icon_edit)
+            icon_browse = create_styled_button("Browse...")
+            icon_browse.clicked.connect(self.browse_key_text_icon)
+            icon_row.addWidget(icon_browse)
+            self.fields_layout.addLayout(icon_row)
+
         elif action_type == "CHANGE_KEY":
             label = QLabel("Change to Key:")
             self.fields_layout.addWidget(label)
@@ -749,6 +788,15 @@ class ActionDialog(QDialog):
             label = QLabel("No additional parameters needed")
             self.fields_layout.addWidget(label)
     
+    def browse_key_text_icon(self):
+        """Pick a background image for a CHANGE_KEY_TEXT action."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Background Image", "",
+            "Images (*.png *.jpg *.jpeg *.gif *.svg *.bmp)")
+        if file_path:
+            self.key_text_icon_edit.setText(
+                relativize_icon_path(file_path, self.config_dir))
+
     def browse_image(self):
         """Browse for an image file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -773,6 +821,11 @@ class ActionDialog(QDialog):
         index = self.action_type_combo.findText(display_name)
         if index >= 0:
             self.action_type_combo.setCurrentIndex(index)
+
+        # setCurrentIndex only emits when the index actually changes, so an
+        # action whose type is already selected - the first one alphabetically
+        # - would never have its field widgets built.
+        self.update_action_fields()
         
         # Load specific fields based on type
         if action_type == "EXECUTE_COMMAND":
@@ -806,17 +859,31 @@ class ActionDialog(QDialog):
                     self.launch_force_check.setChecked(action_value['force_new'])
         
         elif action_type == "KEY_PRESS":
-            self.key_combo_edit.setText(action_value)
+            self.key_combo_edit.setText(_as_text(action_value))
         
         elif action_type == "TYPE_TEXT":
-            self.type_text_edit.setPlainText(action_value)
+            self.type_text_edit.setPlainText(_as_text(action_value))
         
         elif action_type == "WAIT":
-            self.wait_spin.setValue(int(action_value))
+            self.wait_spin.setValue(_as_int(action_value, 1))
         
         elif action_type == "CHANGE_KEY_IMAGE":
-            self.image_path_edit.setText(action_value)
+            self.image_path_edit.setText(_as_text(action_value))
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            # The runtime accepts a bare string or the full styled dict.
+            values = action_value if isinstance(action_value, dict) else {'text': action_value}
+            self.key_text_edit.setText(str(values.get('text', '')))
+            self.key_text_color_edit.setText(str(values.get('text_color', 'white')))
+            self.key_text_bg_edit.setText(str(values.get('background_color', 'black')))
+            self.key_text_size_spin.setValue(_as_int(values.get('font_size'), 20))
+            self.key_text_bold_check.setChecked(bool(values.get('bold', True)))
+            self.key_text_icon_edit.setText(str(values.get('icon', '')))
+            index = self.key_text_position_combo.findText(
+                str(values.get('text_position', 'bottom')))
+            if index >= 0:
+                self.key_text_position_combo.setCurrentIndex(index)
+
         elif action_type == "CHANGE_KEY":
             # Set the combo box to the key name
             index = self.change_key_combo.findText(action_value)
@@ -927,6 +994,24 @@ class ActionDialog(QDialog):
                 return None
             return {action_type: value}
         
+        elif action_type == "CHANGE_KEY_TEXT":
+            text = self.key_text_edit.text()
+            if not text:
+                return None
+
+            value = {
+                'text': text,
+                'text_color': self.key_text_color_edit.text().strip() or 'white',
+                'background_color': self.key_text_bg_edit.text().strip() or 'black',
+                'font_size': self.key_text_size_spin.value(),
+                'bold': self.key_text_bold_check.isChecked(),
+                'text_position': self.key_text_position_combo.currentText(),
+            }
+            icon = self.key_text_icon_edit.text().strip()
+            if icon:
+                value['icon'] = icon
+            return {action_type: value}
+
         elif action_type == "CHANGE_KEY":
             value = self.change_key_combo.currentText()
             if not value or value == "No keys available":
@@ -963,11 +1048,11 @@ class ActionDialog(QDialog):
         return None
 
 
-class ManageKeysDialog(QDialog):
+class ManageKeysDialog(ThemedDialog):
     """Dialog for managing all key definitions"""
     
     def __init__(self, config, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.config = config
         self.modified = False
         
@@ -979,34 +1064,19 @@ class ManageKeysDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Title bar with add button
         title_layout = QHBoxLayout()
         
         title = QLabel("All Key Definitions")
-        title.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        title.setProperty("headingLevel", "2")
         title_layout.addWidget(title)
         
         title_layout.addStretch()
         
-        # Green + icon
-        self.add_btn = QPushButton("+")
-        self.add_btn.setFixedSize(24, 24)
-        self.add_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {COLORS['success']};
-                font-size: 24px;
-                font-weight: bold;
-                border: none;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLORS['success_hover']};
-            }}
-        """)
-        self.add_btn.setToolTip("Add new key")
+        self.add_btn = glyph_button("+", "add", "Add new key", size=24,
+                                    icon=('list-add', 'list-add-symbolic'))
         self.add_btn.clicked.connect(self.add_new_key)
         title_layout.addWidget(self.add_btn)
         
@@ -1016,15 +1086,7 @@ class ManageKeysDialog(QDialog):
         self.keys_list = QListWidget()
         layout.addWidget(self.keys_list)
         
-        # Close button at bottom
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        self.close_btn = create_styled_button("Close", primary=True)
-        self.close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(self.close_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Close", self.accept, cancel=None)
     
     def refresh_keys_list(self):
         """Refresh the keys list display"""
@@ -1059,49 +1121,20 @@ class ManageKeysDialog(QDialog):
             
             widget_layout.addStretch()
             
-            # Cyan pencil edit icon
-            edit_btn = QPushButton("✎")
-            edit_btn.setFixedSize(20, 20)
-            edit_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {COLORS['info']};
-                    font-size: 18px;
-                    font-weight: bold;
-                    border: none;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    color: {COLORS['info_hover']};
-                }}
-            """)
-            edit_btn.setToolTip("Edit key")
+            edit_btn = glyph_button("✎", "edit", "Edit key", size=22,
+                                    icon=('document-edit', 'edit-entry'))
             edit_btn.clicked.connect(lambda checked, n=key_name: self.edit_key_by_name(n))
             widget_layout.addWidget(edit_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
-            # Red X delete icon
-            delete_btn = QPushButton("✕")
-            delete_btn.setFixedSize(20, 20)
-            delete_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {COLORS['danger']};
-                    font-size: 18px;
-                    font-weight: bold;
-                    border: none;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    color: {COLORS['danger_hover']};
-                }}
-            """)
-            delete_btn.setToolTip("Delete key")
+            delete_btn = glyph_button("✕", "remove", "Delete key", size=22,
+                                      icon=('edit-delete', 'edit-delete-symbolic'))
             delete_btn.clicked.connect(lambda checked, n=key_name: self.delete_key_by_name(n))
             widget_layout.addWidget(delete_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
             
             # Set the widget for the item with proper height
-            widget.setMinimumHeight(40)
-            item.setSizeHint(QSize(widget.sizeHint().width(), 40))
+            row_height = current_theme().metrics.list_row_height
+            widget.setMinimumHeight(row_height)
+            item.setSizeHint(QSize(widget.sizeHint().width(), row_height))
             self.keys_list.setItemWidget(item, widget)
             
             # Store key name in item data
@@ -1218,11 +1251,11 @@ class ManageKeysDialog(QDialog):
         return self.modified
 
 
-class WindowRuleDialog(QDialog):
+class WindowRuleDialog(ThemedDialog):
     """Dialog for adding/editing a window rule"""
     
     def __init__(self, available_layouts: list, rule_name: str = None, window_rule=None, existing_rules: list = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.available_layouts = available_layouts
         self.original_rule_name = rule_name
         self.window_rule = window_rule
@@ -1238,7 +1271,7 @@ class WindowRuleDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         
         # Form layout
         form = QFormLayout()
@@ -1282,24 +1315,11 @@ class WindowRuleDialog(QDialog):
             "• title - Match against window title text\n"
             "• raw - Match against raw window information"
         )
-        help_label.setStyleSheet("color: gray; font-size: 9pt;")
+        help_label.setProperty("textRole", "caption")
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", "💾", primary=True)
-        save_btn.clicked.connect(self.validate_and_accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.validate_and_accept)
     
     def _update_placeholder(self, match_field: str):
         """Update the placeholder text based on selected match field"""
@@ -1362,12 +1382,12 @@ class WindowRuleDialog(QDialog):
         }
 
 
-class LayoutEditorDialog(QDialog):
+class LayoutEditorDialog(ThemedDialog):
     """Dialog for creating or editing a layout"""
     
     def __init__(self, layout_name: str = None, clear_all: bool = False, 
                  existing_layouts: list = None, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.original_name = layout_name
         self.existing_layouts = existing_layouts or []
         
@@ -1378,7 +1398,7 @@ class LayoutEditorDialog(QDialog):
     
     def setup_ui(self, layout_name: str, clear_all: bool):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
         layout.setSpacing(16)
         
         # Layout name
@@ -1393,36 +1413,24 @@ class LayoutEditorDialog(QDialog):
         
         layout.addLayout(form_layout)
         
-        # Clear all icons checkbox
-        self.clear_all_check = QCheckBox("Clear all icons when switching to this layout")
-        self.clear_all_check.setChecked(clear_all)
-        layout.addWidget(self.clear_all_check)
+        # Clear all icons switch
+        self.clear_all_toggle = ToggleSwitch(
+            "Clear all icons when switching to this layout")
+        self.clear_all_toggle.setChecked(clear_all)
+        layout.addWidget(self.clear_all_toggle)
         
         # Help text
         help_label = QLabel(
             "When 'Clear all icons' is enabled, all keys will be cleared\n"
             "before this layout is applied, ensuring a clean slate."
         )
-        help_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        help_label.setProperty("textRole", "caption")
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         
         layout.addStretch()
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", "💾", primary=True)
-        save_btn.clicked.connect(self.validate_and_accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.validate_and_accept)
     
     def validate_and_accept(self):
         """Validate the form before accepting"""
@@ -1443,15 +1451,15 @@ class LayoutEditorDialog(QDialog):
         """Get the layout data from the form"""
         return {
             'name': self.name_input.text().strip(),
-            'clear_all': self.clear_all_check.isChecked()
+            'clear_all': self.clear_all_toggle.isChecked()
         }
 
 
-class AdvancedSettingsDialog(QDialog):
+class AdvancedSettingsDialog(ThemedDialog):
     """Dialog for advanced device settings"""
     
     def __init__(self, config, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         self.config = config
         
         self.setWindowTitle("Advanced Settings")
@@ -1462,45 +1470,40 @@ class AdvancedSettingsDialog(QDialog):
     
     def setup_ui(self):
         """Setup the UI"""
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        metrics = current_theme().metrics
+        layout = self.content_layout
+        layout.setSpacing(metrics.spacing)
         
         # Title
         title = QLabel("Advanced Device Settings")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {COLORS['text_primary']};")
+        title.setProperty("headingLevel", "1")
         layout.addWidget(title)
         
         # Subtitle
         subtitle = QLabel("Configure advanced device behavior and timings")
-        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        subtitle.setProperty("textRole", "caption")
         layout.addWidget(subtitle)
         
-        # Spacing
-        layout.addSpacing(8)
+        layout.addSpacing(metrics.spacing)
         
-        # Settings form - using simple VBox instead of QGroupBox
+        # One framed section per topic
         settings_container = QWidget()
-        settings_container.setStyleSheet(f"""
-            QWidget {{
-                background-color: {COLORS['bg_secondary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 8px;
-            }}
-        """)
+        settings_container.setObjectName("card")
+        settings_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         settings_layout = QVBoxLayout(settings_container)
-        settings_layout.setContentsMargins(20, 20, 20, 20)
-        settings_layout.setSpacing(16)
+        settings_layout.setContentsMargins(
+            metrics.card_padding + 4, metrics.card_padding + 4,
+            metrics.card_padding + 4, metrics.card_padding + 4)
+        settings_layout.setSpacing(metrics.spacing)
         
         # Section title
         section_title = QLabel("Double-Press Detection")
-        section_title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_primary']};")
+        section_title.setProperty("headingLevel", "2")
         settings_layout.addWidget(section_title)
         
         # Time window setting
         time_layout = QHBoxLayout()
         time_label = QLabel("Time Window:")
-        time_label.setStyleSheet(f"color: {COLORS['text_primary']}; font-size: 13px;")
         time_label.setMinimumWidth(100)
         time_layout.addWidget(time_label)
         
@@ -1508,16 +1511,14 @@ class AdvancedSettingsDialog(QDialog):
         self.interval_spin.setRange(0.1, 2.0)
         self.interval_spin.setSingleStep(0.05)
         self.interval_spin.setDecimals(2)
-        self.interval_spin.setValue(self.config.double_press_interval)
+        self.interval_spin.setValue(self.config.settings.double_press_interval)
         self.interval_spin.setSuffix(" sec")
         self.interval_spin.setMinimumWidth(120)
         self.interval_spin.setMaximumWidth(140)
-        self.interval_spin.setMinimumHeight(30)
         time_layout.addWidget(self.interval_spin)
         
         # Default button
-        default_btn = QPushButton("Reset to Default")
-        default_btn.setMinimumHeight(30)
+        default_btn = create_styled_button("Reset to Default")
         default_btn.clicked.connect(lambda: self.interval_spin.setValue(0.3))
         time_layout.addWidget(default_btn)
         time_layout.addStretch()
@@ -1530,27 +1531,14 @@ class AdvancedSettingsDialog(QDialog):
             "Lower values require faster double-presses. Higher values are more forgiving "
             "but may delay single-press actions. Default: 0.3 seconds (300ms)."
         )
-        help_text.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        help_text.setProperty("textRole", "caption")
         help_text.setWordWrap(True)
         settings_layout.addWidget(help_text)
         
         layout.addWidget(settings_container)
         layout.addStretch()
         
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        cancel_btn = create_styled_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        save_btn = create_styled_button("Save", "💾", primary=True)
-        save_btn.clicked.connect(self.accept)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
-        
-        layout.addLayout(btn_layout)
+        self.add_actions("Save", self.accept)
     
     def get_settings(self) -> dict:
         """Get the settings from the form"""

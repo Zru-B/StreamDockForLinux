@@ -10,6 +10,10 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 - 🪟 **Context-Aware** - Automatically switch layouts when you open Firefox, VSCode, or Spotify.
 - 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks.
 - 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME).
+- 🎭 **Desktop Native** - Wears Breeze on Plasma the way Plasma 6 applications
+  do - toolbar, menu button, sidebar and status bar, in your own colour
+  scheme, icons and font - and Adwaita on GNOME, header bar and all. It picks
+  the right one on its own.
 - 🎨 **Visuals** - Support for PNG, JPG, GIF, SVG, and dynamic text generation.
 - 🛠️ **Hackable** - Pure Python with a plugin-friendly architecture.
 
@@ -38,6 +42,10 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
     cd src
     python main.py
     ```
+    This opens the configuration window, which also drives the device: pick a
+    device, edit your layouts, and press **Apply to Device**. Closing the
+    window keeps it running in the system tray. Add `--headless` to run the
+    controller with no GUI.
 
 ---
 
@@ -48,6 +56,7 @@ The documentation is organized into the following sections:
 ### Getting Started
 *   [**Installation Guide**](docs/installation.md) - Detailed dependency lists and setup steps.
 *   [**Device Setup**](docs/device_setup.md) - **Important:** `udev` rules and hardware configuration.
+*   [**The Application**](docs/gui.md) - Device selection, applying configs, and the system tray.
 *   [**Troubleshooting**](docs/troubleshooting.md) - Fixes for common issues (Device not found, Permissions).
 *   **Dependency Check**: Run `python src/main.py --check-deps` to verify your environment readiness.
 
