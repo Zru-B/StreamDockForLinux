@@ -89,23 +89,17 @@ window instead of hiding somewhere you cannot reach it.
 
 ### "Another StreamDock process already controls the device"
 
-Only one process can hold the device. Either another window is open, a
-`--headless` run is still going, or a `streamdock.service` left over from an
-older version is running. Remove the old service with:
-
-```bash
-./scripts/uninstall.sh
-```
+Only one process can hold the device: either another window is open or a
+`--headless` run is still going. Close the other one and try again.
 
 You can still edit and save configurations while this message is showing;
 only connecting is disabled.
 
 ### The device is listed but connecting fails
 
-Most often another process already has it open — a `--headless` run, a second
-window, or a `streamdock.service` left over from an older version. The
-application now says so explicitly rather than reporting a connection that is
-not really there.
+Most often another process already has it open — a `--headless` run or a
+second window. The application now says so explicitly rather than reporting a
+connection that is not really there.
 
 ### Unplugging does not get noticed
 

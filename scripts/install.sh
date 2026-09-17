@@ -84,16 +84,6 @@ else
     echo "          Then log out and back in for it to take effect."
 fi
 
-# ── Migration note ──────────────────────────────────────────────────────────
-
-if [ -f "$HOME/.config/systemd/user/streamdock.service" ]; then
-    echo ""
-    echo "⚠  A streamdock.service from a previous version is still installed."
-    echo "   It would fight the application for the device. Remove it with:"
-    echo "     ./scripts/uninstall.sh"
-    echo "   then re-run this script."
-fi
-
 # ── Done ────────────────────────────────────────────────────────────────────
 
 echo ""

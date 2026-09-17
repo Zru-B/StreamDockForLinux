@@ -145,14 +145,6 @@ straight into the system tray:
 python src/main.py --minimized
 ```
 
-### Upgrading from the udev auto-start
-
-Earlier versions started a `streamdock.service` from a udev rule. That is gone:
-the application is now a GUI you launch, and two processes competing for the
-same device would deadlock over the HID handle. Run `./scripts/uninstall.sh`
-once to remove the leftover service and helper — `install.sh` warns you if it
-finds one still installed.
-
 ### Uninstall
 
 ```bash
