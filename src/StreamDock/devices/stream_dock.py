@@ -28,6 +28,10 @@ KEY_MAPPING = {
 # This can be overridden via configuration
 DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
 
+# Default hold time (in seconds) after which a key press counts as a long press
+# This can be overridden via configuration
+DEFAULT_LONG_PRESS_DURATION = 0.5
+
 # Default number of worker threads for callback processing
 DEFAULT_WORKER_THREADS = 4
 
@@ -80,15 +84,20 @@ class StreamDock(ABC):
         self._event_queue = queue.Queue()
         self._workers = []
 
-        # Double-press detection tracking
+        # Gesture (double-press / long-press) detection tracking
         self.last_release_time = {}  # Track last release time for each key
         self.pending_single_press = {}  # Track pending single press events
         self.pending_single_release = {}  # Track pending single release events
-        self.double_press_detected = {}  # Track which keys had double-press detected
         self.release_skip_count = {}  # Track how many releases to skip after double-press
+        self.pending_long_press = {}  # Track pending long-press timers
+        self.long_press_fired = set()  # Keys whose current hold already fired a long press
+        # Gesture timers fire on their own threads while the read thread
+        # handles the next event, so all of the state above is guarded.
+        self._gesture_lock = threading.Lock()
 
-        # Double-press interval (can be configured)
+        # Gesture timings (can be configured)
         self.double_press_interval = DEFAULT_DOUBLE_PRESS_INTERVAL
+        self.long_press_duration = DEFAULT_LONG_PRESS_DURATION
         self.screenlicent = None
 
         # Last brightness applied to the device, used by brightness up/down actions
@@ -421,10 +430,20 @@ class StreamDock(ABC):
 
         self.set_touchscreen_callback(callback)
 
-    def set_per_key_callback(self, key, on_press=None, on_release=None, on_double_press=None):
+    def set_per_key_callback(self, key, on_press=None, on_release=None, on_double_press=None,
+                             on_long_press=None):
         """
         Sets the callback functions for a specific key on the StreamDock.
-        You can register separate callbacks for press, release, and double-press events.
+        You can register separate callbacks for press, release, double-press
+        and long-press events.
+
+        When ``on_double_press`` is set, press and release are delayed by
+        ``double_press_interval`` so a second press can cancel them.
+
+        When ``on_long_press`` is set, ``on_press`` is deferred to the release:
+        a key released before ``long_press_duration`` runs ``on_press`` then
+        ``on_release``; a key held that long runs ``on_long_press`` while still
+        down, and its release runs nothing.
 
         .. note:: These callbacks will be fired from an internal reader thread.
                   Ensure that the given callback functions are thread-safe.
@@ -438,11 +457,14 @@ class StreamDock(ABC):
                                     Signature: callback(device, key)
         :param function on_double_press: Callback function to fire when the key is double-pressed.
                                          Signature: callback(device, key)
+        :param function on_long_press: Callback function to fire when the key is held down.
+                                       Signature: callback(device, key)
         """
         self.per_key_callbacks[key] = {
             'on_press': on_press,
             'on_release': on_release,
-            'on_double_press': on_double_press
+            'on_double_press': on_double_press,
+            'on_long_press': on_long_press
         }
 
     def clear_key_callback(self, key):
@@ -451,47 +473,163 @@ class StreamDock(ABC):
 
         :param int key: The key number to clear callbacks for.
         """
-        if key in self.per_key_callbacks:
-            del self.per_key_callbacks[key]
+        with self._gesture_lock:
+            self.per_key_callbacks.pop(key, None)
 
-        # Clean up any pending timers for this key
-        if key in self.pending_single_press and self.pending_single_press[key] is not None:
-            self.pending_single_press[key].cancel()
-            del self.pending_single_press[key]
+            for pending in (self.pending_single_press, self.pending_single_release,
+                            self.pending_long_press):
+                timer = pending.pop(key, None)
+                if timer is not None:
+                    timer.cancel()
 
-        if key in self.pending_single_release and self.pending_single_release[key] is not None:
-            self.pending_single_release[key].cancel()
-            del self.pending_single_release[key]
-
-        if key in self.last_release_time:
-            del self.last_release_time[key]
-
-        if key in self.double_press_detected:
-            del self.double_press_detected[key]
-
-        if key in self.release_skip_count:
-            del self.release_skip_count[key]
+            self.last_release_time.pop(key, None)
+            self.release_skip_count.pop(key, None)
+            self.long_press_fired.discard(key)
 
     def clear_all_callbacks(self):
         """
         Clears all per-key callback functions from the StreamDock.
         """
-        # Cancel all pending timers
-        for key in list(self.pending_single_press.keys()):
-            if self.pending_single_press[key] is not None:
-                self.pending_single_press[key].cancel()
+        with self._gesture_lock:
+            for pending in (self.pending_single_press, self.pending_single_release,
+                            self.pending_long_press):
+                for timer in pending.values():
+                    if timer is not None:
+                        timer.cancel()
+                pending.clear()
 
-        for key in list(self.pending_single_release.keys()):
-            if self.pending_single_release[key] is not None:
-                self.pending_single_release[key].cancel()
+            self.per_key_callbacks.clear()
+            self.last_release_time.clear()
+            self.release_skip_count.clear()
+            self.long_press_fired.clear()
 
-        # Clear all callback and tracking dictionaries
-        self.per_key_callbacks.clear()
-        self.pending_single_press.clear()
-        self.pending_single_release.clear()
-        self.last_release_time.clear()
-        self.double_press_detected.clear()
-        self.release_skip_count.clear()
+    def _queue_callback(self, callback, k):
+        self._event_queue.put((callback, (self, k)))
+
+    def _queue_in_order(self, callbacks, k):
+        """
+        Queue several callbacks as one work item so the worker pool cannot
+        reorder them (e.g. a deferred press landing after its release).
+        """
+        callbacks = [cb for cb in callbacks if cb]
+        if not callbacks:
+            return
+
+        def run_all(device, key):
+            for cb in callbacks:
+                cb(device, key)
+
+        self._queue_callback(run_all, k)
+
+    def _start_gesture_timer(self, pending, k, delay, on_timeout):
+        """
+        Start a timer stored in ``pending[k]``. It fires ``on_timeout`` (under
+        the gesture lock) only if it is still the key's pending timer, so a
+        timer racing a cancellation from the read thread does nothing.
+        """
+        def fire():
+            with self._gesture_lock:
+                if pending.get(k) is not timer:
+                    return
+                pending[k] = None
+                on_timeout()
+
+        timer = threading.Timer(delay, fire)
+        pending[k] = timer
+        timer.daemon = True
+        timer.start()
+
+    @staticmethod
+    def _cancel_pending(pending, k):
+        timer = pending.get(k)
+        if timer is not None:
+            timer.cancel()
+            pending[k] = None
+
+    def _handle_key_event(self, k, pressed):
+        """Dispatch one press/release of key ``k`` to its per-key callbacks."""
+        with self._gesture_lock:
+            callbacks = self.per_key_callbacks.get(k)
+            if callbacks is None:
+                return
+            if pressed:
+                self._handle_press(k, callbacks)
+            else:
+                self._handle_release(k, callbacks)
+
+    def _is_double_press(self, k, callbacks):
+        if callbacks.get('on_double_press') is None or k not in self.last_release_time:
+            return False
+        return time.time() - self.last_release_time[k] <= self.double_press_interval
+
+    def _handle_press(self, k, callbacks):
+        if self._is_double_press(k, callbacks):
+            self._cancel_pending(self.pending_single_press, k)
+            self._cancel_pending(self.pending_single_release, k)
+            self._cancel_pending(self.pending_long_press, k)
+            self._queue_callback(callbacks['on_double_press'], k)
+            # A third press starts a new cycle rather than another double-press
+            del self.last_release_time[k]
+            self.release_skip_count[k] = 1
+            return
+
+        if callbacks.get('on_long_press') is not None:
+            self.long_press_fired.discard(k)
+
+            def long_press():
+                self.long_press_fired.add(k)
+                self._queue_callback(callbacks['on_long_press'], k)
+
+            self._start_gesture_timer(self.pending_long_press, k,
+                                      self.long_press_duration, long_press)
+            return
+
+        if not callbacks.get('on_press'):
+            return
+        if callbacks.get('on_double_press') is not None:
+            self._start_gesture_timer(
+                self.pending_single_press, k, self.double_press_interval + 0.01,
+                lambda: self._queue_callback(callbacks['on_press'], k))
+        else:
+            self._queue_callback(callbacks['on_press'], k)
+
+    def _handle_release(self, k, callbacks):
+        if self.release_skip_count.get(k, 0) > 0:
+            self.release_skip_count[k] -= 1
+            if self.release_skip_count[k] == 0:
+                del self.release_skip_count[k]
+            return
+
+        has_double_press = callbacks.get('on_double_press') is not None
+
+        if callbacks.get('on_long_press') is not None:
+            if k in self.long_press_fired:
+                # The hold was the gesture; its release is not a tap, so it
+                # must not open a double-press window either.
+                self.long_press_fired.discard(k)
+                return
+
+            self._cancel_pending(self.pending_long_press, k)
+            tap = [callbacks.get('on_press'), callbacks.get('on_release')]
+            if has_double_press:
+                self.last_release_time[k] = time.time()
+                self._start_gesture_timer(
+                    self.pending_single_press, k, self.double_press_interval + 0.01,
+                    lambda: self._queue_in_order(tap, k))
+            else:
+                self._queue_in_order(tap, k)
+            return
+
+        if not has_double_press:
+            if callbacks.get('on_release'):
+                self._queue_callback(callbacks['on_release'], k)
+            return
+
+        self.last_release_time[k] = time.time()
+        if callbacks.get('on_release'):
+            self._start_gesture_timer(
+                self.pending_single_release, k, self.double_press_interval + 0.01,
+                lambda: self._queue_callback(callbacks['on_release'], k))
 
     def _read(self):
         while self.run_read_thread:
@@ -510,96 +648,8 @@ class StreamDock(ABC):
                         if self.key_callback is not None:
                             self._event_queue.put((self.key_callback, (self, k, new)))
 
-                        # Handle per-key callbacks with double-press detection
-                        if k in self.per_key_callbacks:
-                            callbacks = self.per_key_callbacks[k]
-
-                            # Check if this key has double-press callback enabled
-                            has_double_press = callbacks.get('on_double_press') is not None
-
-                            # Handle key press (new == 1)
-                            if new == 1:
-                                # Only use double-press detection if on_double_press is set
-                                if has_double_press:
-                                    current_time = time.time()
-
-                                    # Check if this is a double-press (press within interval after last release)
-                                    if k in self.last_release_time:
-                                        time_since_last_release = current_time - self.last_release_time[k]
-
-                                        if time_since_last_release <= self.double_press_interval:
-                                            # Double-press detected!
-                                            # Cancel any pending single press callback from first press
-                                            if k in self.pending_single_press and self.pending_single_press[k] is not None:
-                                                self.pending_single_press[k].cancel()
-                                                self.pending_single_press[k] = None
-
-                                            # Cancel any pending single release callback from first press
-                                            if k in self.pending_single_release and self.pending_single_release[k] is not None:
-                                                self.pending_single_release[k].cancel()
-                                                self.pending_single_release[k] = None
-
-                                            # Call double-press callback in worker pool
-                                            if callbacks.get('on_double_press'):
-                                                self._event_queue.put((callbacks['on_double_press'], (self, k)))
-
-                                            # Clear the last release time to prevent triple-press from being detected as another double-press
-                                            del self.last_release_time[k]
-                                            self.release_skip_count[k] = 1  # Skip the next release (from the second press)
-                                            continue
-
-                                    # Not a double-press (yet) - delay on_press callback to wait for potential double-press
-                                    if callbacks.get('on_press'):
-                                        def delayed_press_callback():
-                                            # Fire the callback only if it wasn't cancelled
-                                            if k in self.pending_single_press and self.pending_single_press[k] is not None:
-                                                self._event_queue.put((callbacks['on_press'], (self, k)))
-                                                self.pending_single_press[k] = None
-
-                                        timer = threading.Timer(self.double_press_interval + 0.01, delayed_press_callback)
-                                        self.pending_single_press[k] = timer
-                                        timer.daemon = True
-                                        timer.start()
-                                else:
-                                    # No double-press callback, use immediate on_press in worker pool
-                                    if callbacks.get('on_press'):
-                                        self._event_queue.put((callbacks['on_press'], (self, k)))
-
-                            # Handle key release (new == 0)
-                            elif new == 0:
-                                # Check if we need to skip this release due to double-press
-                                if k in self.release_skip_count and self.release_skip_count[k] > 0:
-                                    # Decrement the skip counter
-                                    self.release_skip_count[k] -= 1
-                                    # Clean up if all releases have been skipped
-                                    if self.release_skip_count[k] == 0:
-                                        del self.release_skip_count[k]
-                                        # Also clean up the double_press_detected flag
-                                        if k in self.double_press_detected:
-                                            del self.double_press_detected[k]
-                                    # Skip on_release callback entirely
-                                    continue
-
-                                # Record release time for double-press detection
-                                if has_double_press:
-                                    self.last_release_time[k] = time.time()
-
-                                    # Delay on_release callback to wait for potential double-press
-                                    if callbacks.get('on_release'):
-                                        def delayed_release_callback():
-                                            # Fire the callback only if it wasn't cancelled
-                                            if k in self.pending_single_release and self.pending_single_release[k] is not None:
-                                                self._event_queue.put((callbacks['on_release'], (self, k)))
-                                                self.pending_single_release[k] = None
-
-                                        timer = threading.Timer(self.double_press_interval + 0.01, delayed_release_callback)
-                                        self.pending_single_release[k] = timer
-                                        timer.daemon = True
-                                        timer.start()
-                                else:
-                                    # No double-press callback, use immediate on_release in worker pool
-                                    if callbacks.get('on_release'):
-                                        self._event_queue.put((callbacks['on_release'], (self, k)))
+                        if new in (0, 1):
+                            self._handle_key_event(k, new == 1)
                 del arr
             except Exception:
                 logger.exception("Error in read loop")

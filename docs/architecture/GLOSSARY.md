@@ -9,13 +9,13 @@ This document defines the core terminology used across the StreamDockForLinux pr
 
 | Term | Definition | Related Classes/Modules |
 | :--- | :--- | :--- |
-| **Action** | A system-level task triggered by a key press, release, or double-press event (e.g., launching an app, simulating a key combo, changing layouts). | `ActionType`, `action_type.py` |
+| **Action** | A system-level task triggered by a key press, release, double-press, or long-press event (e.g., launching an app, simulating a key combo, changing layouts). | `ActionType`, `action_type.py` |
 | **Brightness** | The LCD backlight intensity level for the device screen, ranging from 0 (off) to 100 (maximum). | `StreamDock.set_brightness()` |
 | **Canvas** | The internal representation of the 288x288 pixel area for rendering a single key icon or background image. | Image helpers |
 | **CRT Protocol** | The custom transport protocol signature used by StreamDock devices, characterized by 513-byte packets with a 3-byte ASCII command header (e.g., `LIG` for lighting/image, `CLE` for clear). All packets are prefixed with report ID `0x02`. See ADR-002 for full protocol specification. | `HIDTransport`, ADR-002 |
 | **Device** | The physical Stream Dock 293v3 hardware unit connected via USB. | `StreamDock`, `DeviceManager` |
 | **HID Transport** | Low-level communication layer using USB Human Interface Device (HID) protocol via `libhidapi-libusb` to send/receive raw data packets. | `HIDTransport`, `transport/` |
-| **Key** | A specific hardware button (1-15 on the 293v3 model) with associated visual (icon, label) and behavioral (action callbacks) data. Each key can have separate callbacks for press, release, and double-press events. | `Key` class |
+| **Key** | A specific hardware button (1-15 on the 293v3 model) with associated visual (icon, label) and behavioral (action callbacks) data. Each key can have separate callbacks for press, release, double-press, and long-press events. | `Key` class |
 | **Key Mapping** | The translation between physical key numbers (1-15, hardware layout) and logical key numbers (used internally for callback registration). Required because the hardware reports keys in a different order than their physical arrangement. | `Key.KEY_MAPPING` (dict) |
 | **Layout** | A complete configuration set containing 1-15 key definitions and optional background image that can be applied to the device simultaneously. | `Layout` class |
 | **Packet** | A 513-byte unit of communication sent to/from the hardware, consisting of: 1 byte report ID (always `0x02`), 3-byte ASCII command, 509 bytes data/padding. | `HIDTransport._create_packet()` |
@@ -30,10 +30,11 @@ This document defines the core terminology used across the StreamDockForLinux pr
 | **Change Layout** | Action that switches the entire device configuration to a different layout. | `ActionType.CHANGE_LAYOUT` |
 | **D-Bus Action** | System integration action using D-Bus for media control (play/pause, next/previous), volume control (up/down, mute), and other system services. | `ActionType.DBUS`, `send_dbus_command()` |
 | **Desktop File** | Standard Linux `.desktop` file format used to parse application metadata for launch actions. | `parse_desktop_file()` |
-| **Double-Press** | Key event triggered when a key is pressed twice within a configured time interval (default: 0.3s). Detected by tracking time between consecutive press events on the same key. | `DEFAULT_DOUBLE_PRESS_INTERVAL` (0.3s) |
+| **Double-Press** | Key event triggered when a key is pressed again within a configured time interval (default: 0.3s) of being released. Detected by tracking the time from the last release to the next press on the same key. | `DEFAULT_DOUBLE_PRESS_INTERVAL` (0.3s) |
 | **Execute Command** | Action that launches a system command using subprocess with full detachment via `nohup` and shell backgrounding. The launched process survives even if StreamDock exits, and output is redirected to `/dev/null`. | `execute_command()` |
 | **Key Press** | Action that emulates keyboard input using `xdotool` or `kdotool`. | `emulate_key_combo()` |
 | **Launch or Focus** | Smart application action that checks if an application is running (via `pgrep`), focuses its window if found (via `WindowUtils`), or launches it if not. Supports `.desktop` files, commands, and custom window matching. | `launch_or_focus_application()` |
+| **Long-Press** | Key event triggered when a key is held down for a configured duration (default: 0.5s). It fires while the key is still held; the release that follows runs no actions. On keys that have a long press, the press actions are deferred to an early release. | `DEFAULT_LONG_PRESS_DURATION` (0.5s) |
 | **Type Text** | Action that simulates typing text character-by-character with case sensitivity. | `type_text()` |
 
 ## Window Management & Detection
@@ -70,6 +71,7 @@ This document defines the core terminology used across the StreamDockForLinux pr
 | **On Press Actions** | List of actions executed when a key is pressed down. | Key configuration |
 | **On Release Actions** | List of actions executed when a key is released. | Key configuration |
 | **On Double Press Actions** | List of actions executed when a key is double-pressed within the threshold interval. | Key configuration |
+| **On Long Press Actions** | List of actions executed when a key is held for the long-press duration. | Key configuration |
 | **Settings** | Global device configuration section containing brightness and other device-level preferences. | YAML `settings:` section |
 | **YAML Configuration** | The primary configuration file format defining keys, layouts, window rules, and device settings. | `config_loader.py` |
 

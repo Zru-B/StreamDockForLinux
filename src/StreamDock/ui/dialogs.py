@@ -7,7 +7,8 @@ Handles key editing, action editing, and layout management
 import os
 from pathlib import Path
 
-from StreamDock.application.config_document import KeyDefinition
+from StreamDock.application.config_document import (
+    DEFAULT_DOUBLE_PRESS_INTERVAL, DEFAULT_LONG_PRESS_DURATION, KeyDefinition)
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.application.configuration_manager import (
     relativize_icon_path,
@@ -226,15 +227,19 @@ class KeyEditorDialog(ThemedDialog):
         
         self.press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
                                                 config_dir=self.config_dir)
-        self.tabs.addTab(self.press_actions_widget, "On Press Actions")
+        self.tabs.addTab(self.press_actions_widget, "On Press")
         
         self.release_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
                                                 config_dir=self.config_dir)
-        self.tabs.addTab(self.release_actions_widget, "On Release Actions")
+        self.tabs.addTab(self.release_actions_widget, "On Release")
         
         self.double_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
                                                 config_dir=self.config_dir)
-        self.tabs.addTab(self.double_press_actions_widget, "On Double Press Actions")
+        self.tabs.addTab(self.double_press_actions_widget, "On Double Press")
+        
+        self.long_press_actions_widget = ActionEditorWidget(self.available_layouts, self.available_keys,
+                                                config_dir=self.config_dir)
+        self.tabs.addTab(self.long_press_actions_widget, "On Long Press")
         
         layout.addWidget(self.tabs)
         
@@ -343,6 +348,7 @@ class KeyEditorDialog(ThemedDialog):
         self.press_actions_widget.set_actions(self.key_def.on_press_actions)
         self.release_actions_widget.set_actions(self.key_def.on_release_actions)
         self.double_press_actions_widget.set_actions(self.key_def.on_double_press_actions)
+        self.long_press_actions_widget.set_actions(self.key_def.on_long_press_actions)
     
     def get_key_definition(self) -> KeyDefinition:
         """Get the key definition from the dialog"""
@@ -362,6 +368,7 @@ class KeyEditorDialog(ThemedDialog):
         key_def.on_press_actions = self.press_actions_widget.get_actions()
         key_def.on_release_actions = self.release_actions_widget.get_actions()
         key_def.on_double_press_actions = self.double_press_actions_widget.get_actions()
+        key_def.on_long_press_actions = self.long_press_actions_widget.get_actions()
         
         return key_def
 
@@ -1486,62 +1493,75 @@ class AdvancedSettingsDialog(ThemedDialog):
         
         layout.addSpacing(metrics.spacing)
         
-        # One framed section per topic
-        settings_container = QWidget()
-        settings_container.setObjectName("card")
-        settings_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        settings_layout = QVBoxLayout(settings_container)
-        settings_layout.setContentsMargins(
-            metrics.card_padding + 4, metrics.card_padding + 4,
-            metrics.card_padding + 4, metrics.card_padding + 4)
-        settings_layout.setSpacing(metrics.spacing)
-        
-        # Section title
-        section_title = QLabel("Double-Press Detection")
-        section_title.setProperty("headingLevel", "2")
-        settings_layout.addWidget(section_title)
-        
-        # Time window setting
-        time_layout = QHBoxLayout()
-        time_label = QLabel("Time Window:")
-        time_label.setMinimumWidth(100)
-        time_layout.addWidget(time_label)
-        
-        self.interval_spin = QDoubleSpinBox()
-        self.interval_spin.setRange(0.1, 2.0)
-        self.interval_spin.setSingleStep(0.05)
-        self.interval_spin.setDecimals(2)
-        self.interval_spin.setValue(self.config.settings.double_press_interval)
-        self.interval_spin.setSuffix(" sec")
-        self.interval_spin.setMinimumWidth(120)
-        self.interval_spin.setMaximumWidth(140)
-        time_layout.addWidget(self.interval_spin)
-        
-        # Default button
-        default_btn = create_styled_button("Reset to Default")
-        default_btn.clicked.connect(lambda: self.interval_spin.setValue(0.3))
-        time_layout.addWidget(default_btn)
-        time_layout.addStretch()
-        
-        settings_layout.addLayout(time_layout)
-        
-        # Help text
-        help_text = QLabel(
+        self.interval_spin = self._add_timing_card(
+            layout, "Double-Press Detection", "Time Window:",
+            self.config.settings.double_press_interval, 0.1, 2.0,
+            DEFAULT_DOUBLE_PRESS_INTERVAL,
             "The time window (in seconds) for detecting double-presses on keys. "
             "Lower values require faster double-presses. Higher values are more forgiving "
-            "but may delay single-press actions. Default: 0.3 seconds (300ms)."
-        )
-        help_text.setProperty("textRole", "caption")
-        help_text.setWordWrap(True)
-        settings_layout.addWidget(help_text)
-        
-        layout.addWidget(settings_container)
+            "but may delay single-press actions. Default: 0.3 seconds (300ms).")
+
+        self.long_press_spin = self._add_timing_card(
+            layout, "Long-Press Detection", "Hold Time:",
+            self.config.settings.long_press_duration, 0.1, 5.0,
+            DEFAULT_LONG_PRESS_DURATION,
+            "How long (in seconds) a key must be held before its long-press actions run. "
+            "On keys that have long-press actions, the press actions run when the key is "
+            "released early instead of when it goes down. Default: 0.5 seconds (500ms).")
+
         layout.addStretch()
         
         self.add_actions("Save", self.accept)
     
+    def _add_timing_card(self, layout, title, label, value, minimum, maximum,
+                         default, help_text):
+        """Add one framed seconds setting and return its spin box."""
+        metrics = current_theme().metrics
+        card = QWidget()
+        card.setObjectName("card")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(
+            metrics.card_padding + 4, metrics.card_padding + 4,
+            metrics.card_padding + 4, metrics.card_padding + 4)
+        card_layout.setSpacing(metrics.spacing)
+
+        section_title = QLabel(title)
+        section_title.setProperty("headingLevel", "2")
+        card_layout.addWidget(section_title)
+
+        row = QHBoxLayout()
+        row_label = QLabel(label)
+        row_label.setMinimumWidth(100)
+        row.addWidget(row_label)
+
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(2)
+        spin.setValue(value)
+        spin.setSuffix(" sec")
+        spin.setMinimumWidth(120)
+        spin.setMaximumWidth(140)
+        row.addWidget(spin)
+
+        default_btn = create_styled_button("Reset to Default")
+        default_btn.clicked.connect(lambda: spin.setValue(default))
+        row.addWidget(default_btn)
+        row.addStretch()
+        card_layout.addLayout(row)
+
+        help_label = QLabel(help_text)
+        help_label.setProperty("textRole", "caption")
+        help_label.setWordWrap(True)
+        card_layout.addWidget(help_label)
+
+        layout.addWidget(card)
+        return spin
+
     def get_settings(self) -> dict:
         """Get the settings from the form"""
         return {
-            'double_press_interval': self.interval_spin.value()
+            'double_press_interval': self.interval_spin.value(),
+            'long_press_duration': self.long_press_spin.value(),
         }

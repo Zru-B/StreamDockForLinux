@@ -263,6 +263,9 @@ class Application:
 
         # 5. Configure orchestrator
         self._orchestrator.set_default_brightness(self._config.brightness)
+        if self._device:
+            self._device.double_press_interval = self._config.double_press_interval
+            self._device.long_press_duration = self._config.long_press_duration
         self._orchestrator.set_layout_changed_callback(self._notify_layout_changed)
 
         # 6. Create layouts using LayoutFactory (if device is ready)

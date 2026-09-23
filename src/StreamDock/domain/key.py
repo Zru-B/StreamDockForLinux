@@ -37,6 +37,7 @@ class Key:
         on_release=None,
         on_double_press=None,
         action_executor=None,
+        on_long_press=None,
         # --- text rendering ---
         text: str = '',
         text_color: str = 'white',
@@ -56,6 +57,7 @@ class Key:
         :param on_release: Optional callback or action list for key release
         :param on_double_press: Optional callback or action list for double press
         :param action_executor: Optional ActionExecutor instance
+        :param on_long_press: Optional callback or action list for long press
         :param text: Optional text label to render on the key
         :param text_color: Text colour (name or hex string, default 'white')
         :param background_color: Background colour used in text-only mode
@@ -81,11 +83,13 @@ class Key:
         self.on_press_actions = on_press
         self.on_release_actions = on_release
         self.on_double_press_actions = on_double_press
+        self.on_long_press_actions = on_long_press
 
         # Convert actions to callback functions
         self.on_press = self._create_callback(on_press) if on_press else None
         self.on_release = self._create_callback(on_release) if on_release else None
         self.on_double_press = self._create_callback(on_double_press) if on_double_press else None
+        self.on_long_press = self._create_callback(on_long_press) if on_long_press else None
 
         # Get the logical key number for callback registration
         self.logical_key = self.KEY_MAPPING.get(key_number, key_number)
@@ -211,13 +215,21 @@ class Key:
                 self.key_number
             )
 
-        if self.on_press is not None or self.on_release is not None or self.on_double_press is not None:
-            self.device.set_per_key_callback(
-                self.logical_key,
-                on_press=self.on_press,
-                on_release=self.on_release,
-                on_double_press=self.on_double_press
-            )
+        if self._has_callbacks():
+            self._register_callbacks()
+
+    def _has_callbacks(self) -> bool:
+        return any(cb is not None for cb in (
+            self.on_press, self.on_release, self.on_double_press, self.on_long_press))
+
+    def _register_callbacks(self):
+        self.device.set_per_key_callback(
+            self.logical_key,
+            on_press=self.on_press,
+            on_release=self.on_release,
+            on_double_press=self.on_double_press,
+            on_long_press=self.on_long_press
+        )
 
     # ------------------------------------------------------------------
     # Update helpers
@@ -265,28 +277,27 @@ class Key:
         if rendered_path:
             self.device.set_key_image(self.key_number, rendered_path)
 
-    def update_callbacks(self, on_press=None, on_release=None, on_double_press=None):
+    def update_callbacks(self, on_press=None, on_release=None, on_double_press=None,
+                         on_long_press=None):
         """
         Update the key's callbacks.
 
         :param on_press: New callback for key press
         :param on_release: New callback for key release
         :param on_double_press: New callback for key double-press
+        :param on_long_press: New callback for key long-press
         """
         self.on_press_actions = on_press
         self.on_release_actions = on_release
         self.on_double_press_actions = on_double_press
+        self.on_long_press_actions = on_long_press
 
         self.on_press = self._create_callback(on_press) if on_press else None
         self.on_release = self._create_callback(on_release) if on_release else None
         self.on_double_press = self._create_callback(on_double_press) if on_double_press else None
+        self.on_long_press = self._create_callback(on_long_press) if on_long_press else None
 
-        self.device.set_per_key_callback(
-            self.logical_key,
-            on_press=self.on_press,
-            on_release=self.on_release,
-            on_double_press=self.on_double_press
-        )
+        self._register_callbacks()
 
     def update_device(self, new_device):
         """
@@ -296,13 +307,8 @@ class Key:
         :param new_device: New device instance
         """
         self.device = new_device
-        if self.on_press is not None or self.on_release is not None or self.on_double_press is not None:
-            self.device.set_per_key_callback(
-                self.logical_key,
-                on_press=self.on_press,
-                on_release=self.on_release,
-                on_double_press=self.on_double_press
-            )
+        if self._has_callbacks():
+            self._register_callbacks()
 
     def __del__(self):
         """Clean up any temporary rendered image files."""

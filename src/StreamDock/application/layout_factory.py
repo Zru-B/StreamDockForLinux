@@ -108,6 +108,7 @@ class LayoutFactory:
             on_press=actions.get('on_press', []),
             on_release=actions.get('on_release', []),
             on_double_press=actions.get('on_double_press', []),
+            on_long_press=actions.get('on_long_press', []),
             action_executor=self._action_executor,
             text=text,
             text_color=text_color,
@@ -186,12 +187,13 @@ class LayoutFactory:
         Parse actions from key configuration.
 
         Returns:
-            Dict with 'on_press', 'on_release', and 'on_double_press' action lists
+            Dict with 'on_press', 'on_release', 'on_double_press' and 'on_long_press' action lists
         """
         actions: Dict[str, List[Tuple]] = {
             'on_press': [],
             'on_release': [],
             'on_double_press': [],
+            'on_long_press': [],
         }
 
         if 'on_press_actions' in key_data:
@@ -202,6 +204,9 @@ class LayoutFactory:
 
         if 'on_double_press_actions' in key_data:
             actions['on_double_press'] = self._parse_action_list(key_data['on_double_press_actions'])
+
+        if 'on_long_press_actions' in key_data:
+            actions['on_long_press'] = self._parse_action_list(key_data['on_long_press_actions'])
 
         return actions
 

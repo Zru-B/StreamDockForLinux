@@ -42,12 +42,16 @@ settings:
   lock_monitor: true               # Auto turn off when computer locked, default: true
   lock_verification_delay: 2.0     # Seconds to wait before confirming lock, default: 2.0
   double_press_interval: 0.3       # Time window in seconds for double-press detection
+  long_press_duration: 0.5         # Seconds a key must be held to count as a long press
 ```
 
 - **brightness:** Controls the LED brightness of the device.
 - **lock_monitor:** Requires `dbus-python`. Turns off screen when system is locked.
 - **lock_verification_delay:** Time to wait before confirming a lock event (0.1-30s). Prevents false lock detection when user aborts lock screen. Higher values are more reliable but slower to respond.
 - **double_press_interval:** Valid range 0.1-2.0s. Lower is faster but harder to trigger.
+- **long_press_duration:** Valid range 0.1-5.0s. Only affects keys that have `on_long_press_actions`.
+
+Both timings can also be changed in the editor under **Advanced Settings**.
 
 ---
 
@@ -87,7 +91,7 @@ keys:
 
 ### Action Triggers
 
-Keys support three trigger types:
+Keys support four trigger types:
 
 ```yaml
 MyKey:
@@ -98,7 +102,23 @@ MyKey:
     - "TYPE_TEXT": "Released"
   on_double_press_actions:  # Triggered on double-click
     - "KEY_PRESS": "CTRL+C"
+  on_long_press_actions:    # Triggered once the key is held for long_press_duration
+    - "KEY_PRESS": "CTRL+V"
 ```
+
+Adding a double-press or long-press trigger changes when the other triggers run, because
+the key has to wait to find out which gesture it is:
+
+- **Double press:** the press and release actions are delayed by `double_press_interval`.
+  If a second press arrives within that window after the release, only the double-press
+  actions run.
+- **Long press:** the press actions run when the key is released, not when it goes down,
+  and only if it was released before `long_press_duration`. If the key is held that long,
+  the long-press actions run while it is still down, and releasing it runs nothing.
+- **Both:** a tap waits out the double-press window and then runs press followed by release.
+  A hold runs the long press, and a double tap runs the double press.
+
+Keys with only press and release actions are unaffected and still fire immediately.
 
 For a list of all available actions, see the [Actions Reference](actions_reference.md).
 

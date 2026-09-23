@@ -32,7 +32,8 @@ class TestKey:
             11,
             on_press=on_press,
             on_release=on_release,
-            on_double_press=None
+            on_double_press=None,
+            on_long_press=None
         )
 
     def test_init_with_action_list(self, mock_device):
@@ -86,7 +87,8 @@ class TestKey:
             11,
             on_press=new_press,
             on_release=None,
-            on_double_press=None
+            on_double_press=None,
+            on_long_press=None
         )
 
     def test_update_device(self, mock_device):
@@ -104,7 +106,8 @@ class TestKey:
             11,
             on_press=on_press,
             on_release=None,
-            on_double_press=None
+            on_double_press=None,
+            on_long_press=None
         )
 
     def test_key_mapping(self, mock_device):
@@ -120,3 +123,17 @@ class TestKey:
         # Unknown key (fallback) -> itself
         k99 = Key(mock_device, 99, "img")
         assert k99.logical_key == 99
+
+    def test_a_long_press_only_key_registers_its_callbacks(self, mock_device):
+        """A key whose only action is a long press must still reach the device."""
+        mock_executor = MagicMock()
+        key = Key(mock_device, 1, "icon.png", on_long_press=[('KEY_PRESS', 'A')],
+                  action_executor=mock_executor)
+
+        key._configure()
+
+        kwargs = mock_device.set_per_key_callback.call_args.kwargs
+        assert kwargs['on_press'] is None
+        kwargs['on_long_press'](mock_device, key)
+        mock_executor.execute_actions.assert_called_with(
+            [('KEY_PRESS', 'A')], device=mock_device, key_number=1)

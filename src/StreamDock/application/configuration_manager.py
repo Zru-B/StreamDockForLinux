@@ -36,6 +36,7 @@ class StreamDockConfig:
         lock_monitor_enabled: Whether lock monitoring is enabled
         lock_verification_delay: Seconds to verify lock state
         double_press_interval: Time window for double-press detection
+        long_press_duration: Hold time after which a press counts as a long press
         keys_config: Raw key definitions from YAML
         layouts_config: Raw layout definitions from YAML
         window_rules_config: Raw window rule definitions from YAML
@@ -46,13 +47,15 @@ class StreamDockConfig:
     lock_monitor_enabled: bool = True
     lock_verification_delay: float = 2.0
     double_press_interval: float = 0.3
+    long_press_duration: float = 0.5
     keys_config: Dict[str, Dict] = field(default_factory=dict)
     layouts_config: Dict[str, Dict] = field(default_factory=dict)
     window_rules_config: Dict[str, Dict] = field(default_factory=dict)
     raw_config: Dict[str, Any] = field(default_factory=dict)
 
 
-VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions']
+VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions',
+                 'on_long_press_actions']
 
 ICON_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')
 
@@ -383,6 +386,13 @@ class ConfigurationManager:
             if not isinstance(interval, (int, float)) or interval <= 0 or interval > 2.0:
                 raise ConfigValidationError(
                     "double_press_interval must be a number between 0 and 2.0 (seconds)"
+                )
+
+        if 'long_press_duration' in settings:
+            duration = settings['long_press_duration']
+            if not isinstance(duration, (int, float)) or duration < 0.1 or duration > 5.0:
+                raise ConfigValidationError(
+                    "long_press_duration must be a number between 0.1 and 5.0 (seconds)"
                 )
 
     def _validate_keys(self) -> None:
@@ -730,6 +740,7 @@ class ConfigurationManager:
         lock_monitor_enabled = settings.get('lock_monitor', True)
         lock_verification_delay = float(settings.get('lock_verification_delay', 2.0))
         double_press_interval = float(settings.get('double_press_interval', 0.3))
+        long_press_duration = float(settings.get('long_press_duration', 0.5))
 
         # Find default layout
         default_layout_name = "default"
@@ -744,6 +755,7 @@ class ConfigurationManager:
             lock_monitor_enabled=lock_monitor_enabled,
             lock_verification_delay=lock_verification_delay,
             double_press_interval=double_press_interval,
+            long_press_duration=long_press_duration,
             keys_config=raw_config.get('keys', {}),
             layouts_config=raw_config.get('layouts', {}),
             window_rules_config=raw_config.get('windows_rules', {}),

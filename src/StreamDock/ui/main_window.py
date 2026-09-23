@@ -15,6 +15,7 @@ from StreamDock.ui.dialogs import (
     WindowRuleDialog,
 )
 from StreamDock.application.config_document import (
+    ACTION_FIELDS,
     DEFAULT_BRIGHTNESS,
     MIN_BRIGHTNESS,
     ConfigDocument,
@@ -948,6 +949,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             settings = dialog.get_settings()
             self.config.settings.double_press_interval = settings['double_press_interval']
+            self.config.settings.long_press_duration = settings['long_press_duration']
             self.mark_modified()
 
     def update_layout_list(self):
@@ -1081,7 +1083,7 @@ class MainWindow(QMainWindow):
         """Update all references to a layout when it's renamed"""
         # Update CHANGE_LAYOUT actions in keys
         for key_name, key_def in self.config.keys.items():
-            for action_list in [key_def.on_press_actions, key_def.on_release_actions, key_def.on_double_press_actions]:
+            for action_list in (getattr(key_def, field) for field in ACTION_FIELDS):
                 for action in action_list:
                     if "CHANGE_LAYOUT" in action:
                         layout_value = action["CHANGE_LAYOUT"]
@@ -1155,12 +1157,9 @@ class MainWindow(QMainWindow):
             # Remove CHANGE_LAYOUT actions from keys
             for key_name in keys_with_actions:
                 key_def = self.config.keys[key_name]
-                key_def.on_press_actions = self._remove_layout_from_actions(
-                    key_def.on_press_actions, layout_name)
-                key_def.on_release_actions = self._remove_layout_from_actions(
-                    key_def.on_release_actions, layout_name)
-                key_def.on_double_press_actions = self._remove_layout_from_actions(
-                    key_def.on_double_press_actions, layout_name)
+                for field in ACTION_FIELDS:
+                    setattr(key_def, field, self._remove_layout_from_actions(
+                        getattr(key_def, field), layout_name))
 
             # Remove window rules
             for rule_name in rules_using_layout:
@@ -1196,9 +1195,8 @@ class MainWindow(QMainWindow):
 
     def _key_has_layout_reference(self, key_def: KeyDefinition, layout_name: str) -> bool:
         """Check if a key has CHANGE_LAYOUT actions referencing the layout"""
-        all_actions = (key_def.on_press_actions +
-                      key_def.on_release_actions +
-                      key_def.on_double_press_actions)
+        all_actions = [action for field in ACTION_FIELDS
+                       for action in getattr(key_def, field)]
 
         for action in all_actions:
             if "CHANGE_LAYOUT" in action:

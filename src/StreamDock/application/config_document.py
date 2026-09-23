@@ -37,8 +37,10 @@ DEFAULT_TEXT_POSITION = "bottom"
 DEFAULT_MATCH_FIELD = "class"
 DEFAULT_LOCK_VERIFICATION_DELAY = 2.0
 DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
+DEFAULT_LONG_PRESS_DURATION = 0.5
 
-ACTION_FIELDS = ('on_press_actions', 'on_release_actions', 'on_double_press_actions')
+ACTION_FIELDS = ('on_press_actions', 'on_release_actions', 'on_double_press_actions',
+                 'on_long_press_actions')
 
 
 def _extras(data: Dict[str, Any], known: tuple) -> Dict[str, Any]:
@@ -110,6 +112,7 @@ class KeyDefinition:
         self.on_press_actions: List[Dict[str, Any]] = []
         self.on_release_actions: List[Dict[str, Any]] = []
         self.on_double_press_actions: List[Dict[str, Any]] = []
+        self.on_long_press_actions: List[Dict[str, Any]] = []
         self.extra: Dict[str, Any] = {}
         # Styling fields the source file spelled out. Written back even when
         # they equal the default, so opening and saving does not churn the
@@ -131,6 +134,7 @@ class KeyDefinition:
         self.on_press_actions = copy.deepcopy(data.get('on_press_actions', []))
         self.on_release_actions = copy.deepcopy(data.get('on_release_actions', []))
         self.on_double_press_actions = copy.deepcopy(data.get('on_double_press_actions', []))
+        self.on_long_press_actions = copy.deepcopy(data.get('on_long_press_actions', []))
         self.extra = _extras(data, self.KNOWN_FIELDS)
         self._explicit = {f for f in self.STYLE_FIELDS if f in data}
 
@@ -284,13 +288,14 @@ class Settings:
     """The 'settings' section."""
 
     KNOWN_FIELDS = ('brightness', 'lock_monitor', 'lock_verification_delay',
-                    'double_press_interval')
+                    'double_press_interval', 'long_press_duration')
 
     def __init__(self, data: Optional[Dict[str, Any]] = None):
         self.brightness: int = DEFAULT_BRIGHTNESS
         self.lock_monitor: bool = True
         self.lock_verification_delay: float = DEFAULT_LOCK_VERIFICATION_DELAY
         self.double_press_interval: float = DEFAULT_DOUBLE_PRESS_INTERVAL
+        self.long_press_duration: float = DEFAULT_LONG_PRESS_DURATION
         self.extra: Dict[str, Any] = {}
         # Settings the source file spelled out, so opening and saving does not
         # add entries the user never wrote.
@@ -307,6 +312,8 @@ class Settings:
             'lock_verification_delay', DEFAULT_LOCK_VERIFICATION_DELAY)
         self.double_press_interval = data.get(
             'double_press_interval', DEFAULT_DOUBLE_PRESS_INTERVAL)
+        self.long_press_duration = data.get(
+            'long_press_duration', DEFAULT_LONG_PRESS_DURATION)
         self.extra = _extras(data, self.KNOWN_FIELDS)
         self._explicit = {f for f in self.KNOWN_FIELDS if f in data}
 
@@ -318,7 +325,9 @@ class Settings:
                                ('lock_verification_delay',
                                 DEFAULT_LOCK_VERIFICATION_DELAY),
                                ('double_press_interval',
-                                DEFAULT_DOUBLE_PRESS_INTERVAL)):
+                                DEFAULT_DOUBLE_PRESS_INTERVAL),
+                               ('long_press_duration',
+                                DEFAULT_LONG_PRESS_DURATION)):
             value = getattr(self, field)
             if value != default or field in self._explicit:
                 result[field] = value

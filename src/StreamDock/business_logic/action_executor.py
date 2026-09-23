@@ -332,12 +332,14 @@ class ActionExecutor:
             on_press = parameter.get('actions') or parameter.get('on_press')
             on_release = parameter.get('on_release')
             on_double_press = parameter.get('on_double_press')
+            on_long_press = parameter.get('on_long_press')
             target_key = Key(
                 device, key_number,
                 image_path=image_path,
                 on_press=on_press,
                 on_release=on_release,
-                on_double_press=on_double_press
+                on_double_press=on_double_press,
+                on_long_press=on_long_press
             )
         else:
             logger.error("Error: CHANGE_KEY parameter has invalid type: %s", type(parameter))
