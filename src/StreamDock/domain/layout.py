@@ -9,7 +9,7 @@ class Layout:
     This makes it easy to switch between different key configurations.
     """
 
-    def __init__(self, device, keys, clear_keys=None, clear_all=False, name=None):
+    def __init__(self, device, keys, clear_keys=None, clear_all=False, name=None, on_applied=None):
         """
         Initialize a Layout with a device and a collection of Keys.
 
@@ -18,6 +18,8 @@ class Layout:
         :param clear_keys: Optional list of key numbers to clear (set to empty)
         :param clear_all: If True, clear all icons before applying this layout (default: False)
         :param name: Optional name for the layout (for debugging/logging)
+        :param on_applied: Optional callable given this layout once it is on the
+                           device; widgets use it to learn which keys are visible
         """
         self.device = device
         self.name = name
@@ -29,6 +31,7 @@ class Layout:
         self.keys = keys
         self.clear_keys = clear_keys or []
         self.clear_all = clear_all
+        self.on_applied = on_applied
 
         # A layout may legitimately be empty: every slot set to null is
         # documented as "explicitly empty key", and the configuration
@@ -64,6 +67,9 @@ class Layout:
 
         # Refresh the device display
         self.device.refresh()
+
+        if self.on_applied is not None:
+            self.on_applied(self)
 
     def get_key(self, key_number):
         """

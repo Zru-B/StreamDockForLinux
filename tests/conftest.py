@@ -21,6 +21,10 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
 # the palettes depend on whose desktop the suite is running on.
 _CONFIG_HOME = tempfile.mkdtemp(prefix="streamdock-tests-")
 os.environ["XDG_CONFIG_HOME"] = _CONFIG_HOME
+# Installed widgets and their state live under these; a test run must neither
+# see the user's widgets nor leave any behind.
+os.environ["XDG_DATA_HOME"] = os.path.join(_CONFIG_HOME, "data")
+os.environ["XDG_STATE_HOME"] = os.path.join(_CONFIG_HOME, "state")
 atexit.register(shutil.rmtree, _CONFIG_HOME, ignore_errors=True)
 
 

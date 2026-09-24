@@ -121,6 +121,26 @@ class TestKeyEditorBoldSwitch:
         assert dialog.get_key_definition().bold is True
 
 
+class TestKeyEditorLongPressTab:
+    """The fourth action slot must round-trip like the other three."""
+
+    def test_it_loads_the_keys_long_press_actions(self, qtbot, text_key):
+        text_key.on_long_press_actions = [{"KEY_PRESS": "d"}]
+
+        dialog = open_key_editor(qtbot, text_key)
+
+        assert dialog.long_press_actions_widget.get_actions() == [{"KEY_PRESS": "d"}]
+
+    def test_it_reaches_the_saved_key(self, qtbot, text_key):
+        dialog = open_key_editor(qtbot, text_key)
+
+        dialog.long_press_actions_widget.set_actions([{"KEY_PRESS": "d"}])
+
+        saved = dialog.get_key_definition()
+        assert saved.on_long_press_actions == [{"KEY_PRESS": "d"}]
+        assert saved.on_press_actions == []
+
+
 class TestLayoutEditorClearAll:
     """The layout editor's checkbox is a switch now."""
 

@@ -13,6 +13,8 @@ import yaml
 
 from StreamDock.application.config_document import (
     DEFAULT_BRIGHTNESS,
+    DEFAULT_DOUBLE_PRESS_INTERVAL,
+    DEFAULT_LONG_PRESS_DURATION,
     ConfigDocument,
     KeyDefinition,
     Layout,
@@ -118,15 +120,17 @@ class TestRoundTrip:
             'on_press_actions': [{'KEY_PRESS': 'a'}]}}}
         assert reload(workdir, source)['keys']['Key1']['text_position'] == 'top'
 
-    def test_preserves_all_three_action_lists(self, workdir):
+    def test_preserves_all_four_action_lists(self, workdir):
         source = {**BASE, 'keys': {'Key1': {
             'text': 'A',
             'on_press_actions': [{'KEY_PRESS': 'a'}],
             'on_release_actions': [{'KEY_PRESS': 'b'}],
-            'on_double_press_actions': [{'KEY_PRESS': 'c'}]}}}
+            'on_double_press_actions': [{'KEY_PRESS': 'c'}],
+            'on_long_press_actions': [{'KEY_PRESS': 'd'}]}}}
         key = reload(workdir, source)['keys']['Key1']
         assert key['on_release_actions'] == [{'KEY_PRESS': 'b'}]
         assert key['on_double_press_actions'] == [{'KEY_PRESS': 'c'}]
+        assert key['on_long_press_actions'] == [{'KEY_PRESS': 'd'}]
 
     def test_preserves_layout_key_positions(self, workdir):
         source = {**BASE, 'layouts': {'Main': {
@@ -164,6 +168,20 @@ class TestRoundTrip:
 
         assert reload(workdir, source)['settings'] == {'brightness': 30}
 
+    def test_explicit_default_long_press_duration_is_kept(self, workdir):
+        source = {**BASE, 'settings': {'long_press_duration': DEFAULT_LONG_PRESS_DURATION}}
+
+        assert reload(workdir, source)['settings'] == source['settings']
+
+    def test_changed_long_press_duration_is_written(self, workdir):
+        path = write_config(workdir, BASE)
+        document = ConfigDocument.load(path)
+        document.settings.long_press_duration = 1.25
+        document.save()
+
+        with open(path) as f:
+            assert yaml.safe_load(f)['streamdock']['settings']['long_press_duration'] == 1.25
+
     def test_a_saved_config_still_validates(self, workdir):
         path = write_config(workdir, BASE)
         document = ConfigDocument.load(path)
@@ -177,6 +195,14 @@ class TestDefaults:
     def test_brightness_default_matches_the_runtime(self):
         from StreamDock.application.configuration_manager import StreamDockConfig
         assert DEFAULT_BRIGHTNESS == StreamDockConfig().brightness
+
+    def test_gesture_timing_defaults_match_the_runtime_and_the_device(self):
+        from StreamDock.application.configuration_manager import StreamDockConfig
+        from StreamDock.devices import stream_dock
+        assert DEFAULT_LONG_PRESS_DURATION == StreamDockConfig().long_press_duration \
+            == stream_dock.DEFAULT_LONG_PRESS_DURATION
+        assert DEFAULT_DOUBLE_PRESS_INTERVAL == StreamDockConfig().double_press_interval \
+            == stream_dock.DEFAULT_DOUBLE_PRESS_INTERVAL
 
     def test_new_empty_has_no_path(self):
         document = ConfigDocument.new_empty()

@@ -13,7 +13,9 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from streamdock_sdk.options import OptionError, resolve_options
 from StreamDock.business_logic.action_type import ActionType
+from StreamDock.widgets.appearance import appearance_config_problems
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +175,11 @@ def expand_icon_paths(streamdock: Dict[str, Any], config_dir: str) -> None:
     for key_def in streamdock.get('keys', {}).values():
         if isinstance(key_def, dict) and isinstance(key_def.get('icon'), str):
             key_def['icon'] = resolve_icon_path(key_def['icon'], config_dir)
+        if isinstance(key_def, dict) and isinstance(key_def.get('state_icons'), dict):
+            key_def['state_icons'] = {
+                state: resolve_icon_path(path, config_dir) if isinstance(path, str) else path
+                for state, path in key_def['state_icons'].items()
+            }
 
 
 class ConfigurationManager:
@@ -197,14 +204,17 @@ class ConfigurationManager:
     - Zero orchestration dependencies
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, widgets=None):
         """
         Initialize configuration manager.
 
         Args:
             config_path: Path to YAML configuration file
+            widgets: Widget catalog (anything with get(widget_id) -> spec);
+                without one, widget keys are checked for shape only
         """
         self._config_path = config_path
+        self._widgets = widgets
         self._raw_config: Optional[Dict] = None
 
     @property
@@ -213,7 +223,7 @@ class ConfigurationManager:
         return os.path.dirname(os.path.abspath(self._config_path))
 
     @classmethod
-    def from_data(cls, streamdock: Dict[str, Any], config_path: str) -> "ConfigurationManager":
+    def from_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> "ConfigurationManager":
         """
         Build a manager around an in-memory configuration.
 
@@ -228,12 +238,12 @@ class ConfigurationManager:
         Returns:
             A manager whose validate()/parse() operate on the given data
         """
-        manager = cls(config_path)
+        manager = cls(config_path, widgets)
         manager._raw_config = streamdock
         return manager
 
     @classmethod
-    def parse_data(cls, streamdock: Dict[str, Any], config_path: str) -> StreamDockConfig:
+    def parse_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> StreamDockConfig:
         """
         Validate and parse an in-memory configuration.
 
@@ -247,12 +257,12 @@ class ConfigurationManager:
         Raises:
             ConfigValidationError: If validation fails
         """
-        manager = cls.from_data(streamdock, config_path)
+        manager = cls.from_data(streamdock, config_path, widgets)
         manager._validate_config()
         return manager._parse_config()
 
     @classmethod
-    def validate_data(cls, streamdock: Dict[str, Any], config_path: str) -> None:
+    def validate_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> None:
         """
         Validate an in-memory configuration.
 
@@ -263,10 +273,10 @@ class ConfigurationManager:
         Raises:
             ConfigValidationError: If validation fails
         """
-        cls.from_data(streamdock, config_path)._validate_config()
+        cls.from_data(streamdock, config_path, widgets)._validate_config()
 
     @classmethod
-    def collect_issues(cls, streamdock: Dict[str, Any], config_path: str) -> List[str]:
+    def collect_issues(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> List[str]:
         """
         Validate without raising, for reporting in a UI.
 
@@ -280,7 +290,7 @@ class ConfigurationManager:
             Problems found, empty when the configuration is valid
         """
         try:
-            cls.validate_data(streamdock, config_path)
+            cls.validate_data(streamdock, config_path, widgets)
         except ConfigValidationError as e:
             return [str(e)]
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -414,11 +424,14 @@ class ConfigurationManager:
             if not isinstance(key_def, dict):
                 raise ConfigValidationError(f"Key '{key_name}' definition must be a dictionary")
 
-            # Check required fields - either 'icon' or 'text'
+            # Check required fields - 'widget', or either 'icon' or 'text'
             has_icon = 'icon' in key_def
             has_text = 'text' in key_def
+            has_widget = 'widget' in key_def
 
-            if not has_icon and not has_text:
+            if has_widget or any(f in key_def for f in ('widget_options', 'state_icons', 'badge')):
+                self._validate_widget(key_name, key_def)
+            elif not has_icon and not has_text:
                 raise ConfigValidationError(
                     f"Key '{key_name}' must have either 'icon' or 'text' field"
                 )
@@ -468,14 +481,72 @@ class ConfigurationManager:
                         f"Use any of {valid_actions_str} instead."
                     )
 
-            # Validate at least one action exists
-            if not any(action_key in key_def for action_key in VALID_ACTIONS):
+            # A widget is useful as a display alone; other keys need an action.
+            if not has_widget and not any(action_key in key_def for action_key in VALID_ACTIONS):
                 raise ConfigValidationError(f"Key '{key_name}' must have at least one action")
 
             # Validate each action list
             for action_key in VALID_ACTIONS:
                 if action_key in key_def:
                     self._validate_actions(key_def[action_key], f"Key '{key_name}' {action_key}")
+
+    def _validate_widget(self, key_name: str, key_def: Dict) -> None:
+        """
+        Validate a widget key.
+
+        A widget this install doesn't know (say, uninstalled since the config
+        was written) is only logged: the key shows an error tile and the rest
+        of the configuration still loads. A known widget's options must match
+        its schema, since a mistyped value would reach the widget's code.
+        """
+        if 'widget' not in key_def:
+            for field_name in ('widget_options', 'state_icons', 'badge'):
+                if field_name in key_def:
+                    raise ConfigValidationError(f"Key '{key_name}' has '{field_name}' but no 'widget'")
+        if 'text' in key_def:
+            raise ConfigValidationError(f"Key '{key_name}' cannot combine 'widget' with 'text'")
+        widget_id = key_def['widget']
+        if not isinstance(widget_id, str) or not widget_id.strip():
+            raise ConfigValidationError(f"Key '{key_name}' widget must be a widget id")
+        options = key_def.get('widget_options') or {}
+        if not isinstance(options, dict) or not all(isinstance(k, str) for k in options):
+            raise ConfigValidationError(f"Key '{key_name}' widget_options must be a mapping of option names")
+
+        for action_key in VALID_ACTIONS:
+            for action in key_def.get(action_key) or []:
+                if isinstance(action, dict) and {'CHANGE_KEY_IMAGE', 'CHANGE_KEY_TEXT'} & set(action):
+                    logger.warning("Key '%s': the widget's next frame replaces what %s draws",
+                                   key_name, action_key)
+
+        spec = self._widgets.get(widget_id) if self._widgets is not None else None
+        problems = appearance_config_problems(key_name, key_def, spec.states if spec else None,
+                                              spec.supports_badge if spec else None)
+        if problems:
+            raise ConfigValidationError(problems[0])
+        for state, path in (key_def.get('state_icons') or {}).items():
+            self._validate_image_file(f"Image for state '{state}' of key '{key_name}'", path)
+
+        if self._widgets is None:
+            return
+        if spec is None:
+            logger.warning("Key '%s' uses widget '%s', which is not installed", key_name, widget_id)
+            return
+        try:
+            _, warnings = resolve_options(spec.options, options)
+        except OptionError as e:
+            raise ConfigValidationError(f"Key '{key_name}' widget option {e}") from e
+        for warning in warnings:
+            logger.warning("Key '%s': %s", key_name, warning)
+
+    def _validate_image_file(self, label: str, path: Any) -> None:
+        """An image path as the icon rules check it; ``label`` starts each error."""
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigValidationError(f"{label} must be a file path")
+        resolved = resolve_icon_path(path, self._config_dir)
+        if not os.path.isfile(resolved):
+            raise ConfigValidationError(f"{label} not found: {resolved}")
+        if not resolved.lower().endswith(ICON_EXTENSIONS):
+            raise ConfigValidationError(f"{label} must be an image file")
 
     def _validate_and_expand_icon_path(self, key_name: str, key_def: Dict) -> None:
         """

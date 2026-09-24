@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.domain.key import Key
 from StreamDock.domain.layout import Layout
+from StreamDock.domain.widget_key import WidgetKey
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class LayoutFactory:
     Converts StreamDockConfig (pure data) into runtime objects.
     """
 
-    def __init__(self, config_data: Dict[str, Any], device, action_executor=None):
+    def __init__(self, config_data: Dict[str, Any], device, action_executor=None, widget_host=None):
         """
         Initialize factory with configuration data and device.
 
@@ -39,10 +40,13 @@ class LayoutFactory:
             config_data: Parsed configuration dictionary
             device: Device instance to bind objects to
             action_executor: Optional ActionExecutor instance
+            widget_host: WidgetHost already configured with this config's
+                widget keys; without one, widget keys are skipped
         """
         self._config = config_data
         self._device = device
         self._action_executor = action_executor
+        self._widget_host = widget_host
         self._keys: Dict[str, Key] = {}
 
         logger.debug("LayoutFactory initialized")
@@ -66,7 +70,7 @@ class LayoutFactory:
     # ------------------------------------------------------------------
 
     def _create_keys(self) -> None:
-        """Create Key objects from configuration."""
+        """Validate every key definition once, so a bad one is reported even if unused."""
         keys_config = self._config.get('keys', {})
 
         for key_name, key_data in keys_config.items():
@@ -78,9 +82,24 @@ class LayoutFactory:
                     f"(icon={key.image_path or 'none'}, text={key.text or 'none'})"
                 )
 
-    def _build_key(self, key_name: str, key_data: Dict) -> Optional[Key]:
+    def _build_key(self, key_name: str, key_data: Dict, position: int = 0) -> Optional[Key]:
         """Build a single Key object from its configuration dict."""
         actions = self._parse_key_actions(key_data)
+        action_kwargs = dict(
+            on_press=actions.get('on_press', []),
+            on_release=actions.get('on_release', []),
+            on_double_press=actions.get('on_double_press', []),
+            on_long_press=actions.get('on_long_press', []),
+            action_executor=self._action_executor,
+        )
+
+        if key_data.get('widget'):
+            if self._widget_host is None:
+                logger.warning(f"Key '{key_name}' is a widget but widgets are not available; skipping")
+                return None
+            key = WidgetKey(self._device, position, self._widget_host, key_name, **action_kwargs)
+            key._factory_name = key_name
+            return key
 
         icon_path = key_data.get('icon', '')
 
@@ -100,16 +119,11 @@ class LayoutFactory:
                 "it will appear as a blank black square."
             )
 
-        # key_number is set to 0 here; _create_layouts_dict assigns the real position.
         key = Key(
             device=self._device,
-            key_number=0,
+            key_number=position,
             image_path=icon_path,
-            on_press=actions.get('on_press', []),
-            on_release=actions.get('on_release', []),
-            on_double_press=actions.get('on_double_press', []),
-            on_long_press=actions.get('on_long_press', []),
-            action_executor=self._action_executor,
+            **action_kwargs,
             text=text,
             text_color=text_color,
             background_color=background_color,
@@ -140,12 +154,13 @@ class LayoutFactory:
             for key_entry in keys_list_config:
                 for position_str, key_name in key_entry.items():
                     if key_name in self._keys:
+                        # A Key per slot: one shared instance would carry the
+                        # position of whichever layout was built last.
                         position = int(position_str)
-                        key = self._keys[key_name]
-                        key.key_number = position
-                        # Keep logical key in sync with the physical position
-                        key.logical_key = Key.KEY_MAPPING.get(position, position)
-                        keys_for_layout.append(key)
+                        key_data = self._config['keys'][key_name]
+                        key = self._build_key(key_name, key_data, position)
+                        if key is not None:
+                            keys_for_layout.append(key)
                     else:
                         logger.warning(
                             f"Layout '{layout_name}': key '{key_name}' not found in keys config"
@@ -156,11 +171,17 @@ class LayoutFactory:
                 keys=keys_for_layout,
                 clear_all=clear_all,
                 name=layout_name,
+                on_applied=self._report_widget_slots if self._widget_host else None,
             )
             layouts[layout_name] = layout
             logger.debug(f"Created layout: {layout_name} with {len(keys_for_layout)} keys")
 
         return layouts
+
+    def _report_widget_slots(self, layout: Layout) -> None:
+        self._widget_host.layout_applied({
+            key.key_number: key.widget_key_name for key in layout.keys if isinstance(key, WidgetKey)
+        })
 
     def _find_default_layout(self, layouts: Dict[str, Layout]) -> Layout:
         """Find the default layout."""

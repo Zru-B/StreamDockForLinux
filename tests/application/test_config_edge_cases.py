@@ -186,6 +186,9 @@ class TestSettings:
         ({"double_press_interval": 0}, "double_press_interval"),
         ({"double_press_interval": 2.1}, "double_press_interval"),
         ({"double_press_interval": "fast"}, "double_press_interval"),
+        ({"long_press_duration": 0.05}, "long_press_duration"),
+        ({"long_press_duration": 5.1}, "long_press_duration"),
+        ({"long_press_duration": "slow"}, "long_press_duration"),
     ])
     def test_rejected(self, workdir, settings, fragment):
         expect(workdir, {**base(), "settings": settings}, fragment)
@@ -197,6 +200,8 @@ class TestSettings:
         {"lock_verification_delay": 0.1},
         {"lock_verification_delay": 30.0},
         {"double_press_interval": 2.0},
+        {"long_press_duration": 0.1},
+        {"long_press_duration": 5.0},
         {"lock_monitor": False},
         {},
     ])

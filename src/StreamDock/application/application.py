@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Optional
 from StreamDock.application.configuration_manager import ConfigurationManager, StreamDockConfig
 from StreamDock.application.device_discovery import device_key, device_label, discover_devices
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
-from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEventMonitor
+from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
 from StreamDock.infrastructure import (
     DeviceRegistry,
@@ -22,6 +22,8 @@ from StreamDock.infrastructure import (
     USBHardware,
 )
 from StreamDock.orchestration import DeviceOrchestrator
+from StreamDock.widgets.host import WidgetHost, widget_key_specs
+from StreamDock.widgets.registry import WidgetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,8 @@ class Application:
     def __init__(self, config_path: str,
                  device_info: Optional[DeviceInfo] = None,
                  raw_document: Optional[Dict[str, Any]] = None,
-                 on_layout_changed: Optional[Callable[[str], None]] = None):
+                 on_layout_changed: Optional[Callable[[str], None]] = None,
+                 widget_registry: Optional[WidgetRegistry] = None):
         """
         Initialize application with configuration path.
 
@@ -62,6 +65,8 @@ class Application:
             on_layout_changed: Called with the layout name whenever the
                 active layout changes. Deliberately a plain callable: the
                 runtime must not import Qt.
+            widget_registry: Widgets to run. Defaults to the built-ins plus
+                those installed for this user.
 
         Design Contract:
             - Does NOT initialize components on construction
@@ -96,6 +101,10 @@ class Application:
         # Orchestration layer
         self._orchestrator: Optional[DeviceOrchestrator] = None
 
+        # Widgets outlive a reload so unchanged ones keep their state.
+        self._widget_registry = widget_registry
+        self._widget_host: Optional[WidgetHost] = None
+
         # State
         self._initialized = False
         self._running = False
@@ -120,7 +129,7 @@ class Application:
 
         # 1. Load configuration
         logger.debug("Loading configuration...")
-        self._config_manager = ConfigurationManager(self._config_path)
+        self._config_manager = ConfigurationManager(self._config_path, self.widget_registry)
         self._config = self._load_config()
         logger.info("Configuration loaded: brightness=%s, default_layout=%s",
                     self._config.brightness, self._config.default_layout_name)
@@ -192,9 +201,16 @@ class Application:
             ConfigValidationError: If the configuration is invalid
             FileNotFoundError: If no document was supplied and the file is missing
         """
+        widgets = self.widget_registry
         if self._raw_document is not None:
-            return ConfigurationManager.parse_data(self._raw_document, self._config_path)
+            return ConfigurationManager.parse_data(self._raw_document, self._config_path, widgets)
         return self._config_manager.load()
+
+    @property
+    def widget_registry(self) -> WidgetRegistry:
+        if self._widget_registry is None:
+            self._widget_registry = WidgetRegistry()
+        return self._widget_registry
 
     def _select_device(self, devices) -> Optional[DeviceInfo]:
         """
@@ -270,13 +286,22 @@ class Application:
 
         # 6. Create layouts using LayoutFactory (if device is ready)
         if self._device:
+            if self._widget_host is None:
+                self._widget_host = WidgetHost(self.widget_registry)
+            self._widget_host.attach(self._device, self._orchestrator.run_exclusive,
+                                     self._orchestrator.is_locked)
+            self._widget_host.configure(widget_key_specs(self._config.raw_config.get('keys', {})))
+            self._event_monitor.register_handler(SystemEvent.LOCK, lambda _event: self._widget_host.suspend())
+            self._event_monitor.register_handler(SystemEvent.WINDOW_CHANGED, self._on_window_focus)
+
             logger.info("Creating layouts from configuration...")
             from StreamDock.application.layout_factory import LayoutFactory
 
             factory = LayoutFactory(
                 config_data=self._config.raw_config,
                 device=self._device,
-                action_executor=self._action_executor
+                action_executor=self._action_executor,
+                widget_host=self._widget_host,
             )
 
             default_layout, all_layouts = factory.create_layouts()
@@ -284,9 +309,11 @@ class Application:
 
             # Give ActionExecutor the layouts dict so CHANGE_LAYOUT can resolve names at runtime
             self._action_executor.set_layouts(all_layouts)
+            self._action_executor.set_layout_switcher(self._orchestrator.apply_layout)
 
-            # Apply default layout
-            default_layout.apply()
+            # Apply default layout. Under the device lock: widgets kept
+            # running across a reload may already be pushing frames.
+            self._orchestrator.run_exclusive(default_layout.apply)
             logger.info("✓ Applied default layout: %s", default_layout.name)
 
             # Store layouts
@@ -303,6 +330,11 @@ class Application:
 
             logger.info("✓ Registered device and %d layouts with orchestrator", len(all_layouts))
             self._notify_layout_changed(default_layout.name)
+
+    def _on_window_focus(self, _event) -> None:
+        window = self._event_monitor.current_window if self._event_monitor else None
+        if self._widget_host is not None and window is not None:
+            self._widget_host.window_focused(window.class_ or '', window.title or '')
 
     def _configure_window_rules(self) -> None:
         """
@@ -390,6 +422,10 @@ class Application:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error closing device: %s", e)
 
+        if self._widget_host is not None:
+            self._widget_host.shutdown()
+            self._widget_host = None
+
         if release_devices:
             self._device = None
 
@@ -426,7 +462,8 @@ class Application:
         # leaves the running one alone.
         self._config_path = config_path or self._config_path
         self._raw_document = raw_document
-        self._config_manager = ConfigurationManager(self._config_path)
+        self._config_manager = ConfigurationManager(self._config_path, self.widget_registry)
+        self.widget_registry.refresh()
         try:
             new_config = self._load_config()
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -443,6 +480,9 @@ class Application:
             self._orchestrator.stop(release_devices=False)
 
         self._config = new_config
+
+        if self._widget_host is not None:
+            self._widget_host.detach()
 
         if self._device:
             # Drop stale callbacks and images first: set_per_key_callback only

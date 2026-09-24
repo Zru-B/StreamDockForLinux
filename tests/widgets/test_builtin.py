@@ -1,0 +1,263 @@
+"""Every built-in widget draws a key-sized frame with its defaults and variants."""
+
+from datetime import datetime
+
+import pytest
+
+from streamdock_sdk.options import resolve_options
+from streamdock_sdk.scheduler import WidgetDriver
+from StreamDock.widgets.builtin import (
+    _common, _notifications, _pulse, system_stats, vpn_connected, weather)
+from StreamDock.infrastructure import mpris as _mpris
+from StreamDock.widgets.registry import load_builtin_specs
+
+SPECS = load_builtin_specs()
+
+VARIANTS = {
+    'digital_clock': [{}, {'format': '12h', 'show_seconds': True}, {'timezone': 'Asia/Tokyo'}],
+    'analog_clock': [{}, {'show_seconds': True}],
+    'date': [{'format': name} for name in ('weekday_day_month', 'day_month', 'iso', 'numeric')],
+    'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
+    'mic_muted': [{}, {'show_caption': False}],
+    'sound_muted': [{}],
+    'vpn_connected': [{}, {'source': 'interfaces'}],
+    'media_playing': [{}, {'player': 'spotify'}],
+    'now_playing': [{}, {'show_art': False}],
+    'weather': [{}, {'units': 'fahrenheit', 'location': '32.08,34.78'}],
+    'slack_notifications': [{}, {'app_name': 'Signal'}],
+    'whatsapp_notifications': [{}],
+    'telegram_notifications': [{}],
+}
+
+PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Very Long Song Title Indeed',
+                              ['Some Artist'])
+
+
+@pytest.fixture(autouse=True)
+def frozen_world(monkeypatch):
+    monkeypatch.setattr(_common, 'now', lambda zone=None: datetime(2026, 9, 23, 16, 5, 7, tzinfo=zone))
+    monkeypatch.setattr(_pulse, 'read_muted', lambda kind: True)
+    monkeypatch.setattr(_pulse.EventWatcher, 'start', lambda self: None)
+    monkeypatch.setattr(vpn_connected, 'networkmanager_vpn', lambda: False)
+    monkeypatch.setattr(vpn_connected, 'interface_up', lambda patterns: False)
+    monkeypatch.setattr(system_stats, 'read_cpu_times', lambda: (50, 100))
+    monkeypatch.setattr(system_stats, 'read_memory_percent', lambda: 42.0)
+    monkeypatch.setattr(system_stats.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(_mpris, 'current', lambda player='', with_metadata=True: PLAYING)
+    monkeypatch.setattr(weather, 'locate', lambda location, timeout=0: (51.5, -0.1))
+    monkeypatch.setattr(weather, 'fetch', lambda position, units, timeout=0: weather.Reading(21.4, 'rain'))
+    monkeypatch.setattr(_notifications.HUB, 'subscribe', lambda callback: None)
+    monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
+
+
+def test_every_builtin_has_variants_listed():
+    assert set(SPECS) == set(VARIANTS)
+
+
+@pytest.mark.parametrize('widget_id, options', [
+    (widget_id, options) for widget_id, variants in VARIANTS.items() for options in variants
+])
+def test_renders_a_key_sized_frame(widget_id, options):
+    spec = SPECS[widget_id]
+    resolved, warnings = resolve_options(spec.options, options)
+    assert warnings == []
+    frame = WidgetDriver(spec.widget_cls, resolved).render_once()
+    assert frame.size == (112, 112)
+    assert frame.mode == 'RGB'
+
+
+def test_clock_ticks_every_minute_on_the_minute():
+    spec = SPECS['digital_clock']
+    driver = WidgetDriver(spec.widget_cls, resolve_options(spec.options, {})[0])
+    driver.widget = spec.widget_cls()
+    driver.widget.setup(driver.ctx)
+    assert [(timer.interval, timer.align) for timer in driver._timers] == [(60, True)]
+
+
+def driver_for(widget_id, **options):
+    spec = SPECS[widget_id]
+    return WidgetDriver(spec.widget_cls, resolve_options(spec.options, options)[0])
+
+
+def test_cpu_percentage_is_a_difference_of_two_readings(monkeypatch):
+    readings = iter([(100, 1000), (150, 1100)])
+    monkeypatch.setattr(system_stats, 'read_cpu_times', lambda: next(readings))
+    driver = driver_for('system_stats', metric='cpu')
+    driver.render_once()
+    assert driver.widget.cpu == pytest.approx(50.0)
+    assert (driver.state, driver.badge) == ('normal', '50%')
+
+
+def test_states_report_what_the_widgets_see():
+    # These are the names users map images to in state_icons.
+    cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
+             'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
+             'whatsapp_notifications': 'none', 'telegram_notifications': 'none'}
+    for widget_id, state in cases.items():
+        driver = driver_for(widget_id)
+        driver.render_once()
+        assert driver.state == state, widget_id
+        assert state in SPECS[widget_id].states
+
+
+def started(widget_id, **options):
+    driver = driver_for(widget_id, **options)
+    driver.widget = SPECS[widget_id].widget_cls()
+    driver.widget.setup(driver.ctx)
+    return driver, driver.widget
+
+
+def notify(app, sender=':1.7', summary='Alice', body='hi', replaces=0, entry=''):
+    return _notifications.NotificationEvent('notify', sender, app, summary, body, entry, replaces)
+
+
+class TestNotificationCounters:
+    def test_counts_its_app_and_press_clears(self):
+        driver, widget = started('slack_notifications')
+        for event in (notify('Slack'), notify('Slack'), notify('Firefox'), notify('Slack', replaces=12)):
+            widget.on_notification(driver.ctx, event)
+        # A notification replacing an earlier one was already counted.
+        assert (driver.state, driver.badge) == ('unread', '2')
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('none', None)
+
+    def test_browser_notifications_count_by_site(self):
+        driver, widget = started('whatsapp_notifications')
+        widget.on_notification(driver.ctx, notify('Google Chrome', body='web.whatsapp.com\n\nhello'))
+        widget.on_notification(driver.ctx, notify('Google Chrome', body='github.com\n\nPR merged'))
+        widget.on_notification(driver.ctx, notify('ZapZap'))
+        assert driver.badge == '2'
+
+    def test_desktop_entry_identifies_the_app(self):
+        driver, widget = started('telegram_notifications')
+        widget.on_notification(driver.ctx, notify('', entry='org.telegram.desktop'))
+        assert driver.badge == '1'
+
+    def test_app_withdrawing_its_notifications_uncounts_them(self):
+        # Chat apps close their notifications once the message is read.
+        driver, widget = started('slack_notifications')
+        widget.on_notification(driver.ctx, notify('Slack', sender=':1.7'))
+        widget.on_notification(driver.ctx, notify('Slack', sender=':1.7'))
+        widget.on_notification(driver.ctx, _notifications.NotificationEvent('close', ':1.99'))
+        assert driver.badge == '2'
+        widget.on_notification(driver.ctx, _notifications.NotificationEvent('close', ':1.7'))
+        assert driver.badge == '1'
+        for _ in range(3):
+            widget.on_notification(driver.ctx, _notifications.NotificationEvent('close', ':1.7'))
+        assert (driver.state, driver.badge) == ('none', None)
+
+    def test_following_the_app_can_be_turned_off(self):
+        driver, widget = started('slack_notifications', follow_app=False)
+        widget.on_notification(driver.ctx, notify('Slack'))
+        widget.on_notification(driver.ctx, _notifications.NotificationEvent('close', ':1.7'))
+        assert driver.badge == '1'
+
+    @pytest.mark.parametrize('widget_id, app, title', [
+        ('slack_notifications', 'Slack', 'general - Acme - Slack'),
+        ('whatsapp_notifications', 'firefox', '(3) WhatsApp — Mozilla Firefox'),
+        ('telegram_notifications', 'TelegramDesktop', 'Telegram'),
+    ])
+    def test_focusing_the_app_clears(self, widget_id, app, title):
+        driver, widget = started(widget_id)
+        widget.on_notification(driver.ctx, notify(app, body='web.whatsapp.com') if 'whatsapp' in widget_id
+                               else notify(app))
+        assert driver.badge == '1'
+        widget.on_window_focus(driver.ctx, 'konsole', 'bash')
+        assert driver.badge == '1'
+        widget.on_window_focus(driver.ctx, app, title)
+        assert driver.badge is None
+
+    def test_focus_clearing_can_be_turned_off(self):
+        driver, widget = started('slack_notifications', clear_on_focus=False)
+        widget.on_notification(driver.ctx, notify('Slack'))
+        widget.on_window_focus(driver.ctx, 'Slack', 'Slack')
+        assert driver.badge == '1'
+
+    def test_lost_bus_shows_unavailable(self):
+        driver, widget = started('slack_notifications')
+        widget.on_notification(driver.ctx, None)
+        assert driver.state == 'unavailable'
+
+    def test_counters_keep_listening_while_hidden(self):
+        for widget_id in ('slack_notifications', 'whatsapp_notifications', 'telegram_notifications'):
+            assert SPECS[widget_id].run_while_hidden and SPECS[widget_id].window_focus
+
+
+@pytest.mark.parametrize('line, expected', [
+    ('{"sender":":1.5","member":"Notify","payload":{"data":["Slack",0,"","Alice","hi",[],'
+     '{"desktop-entry":{"type":"s","data":"slack"}},-1]}}', ('notify', ':1.5', 'Slack', 'slack', 0)),
+    ('{"sender":":1.5","member":"Notify","payload":{"data":["Slack",42,"","t","b",[],{},-1]}}',
+     ('notify', ':1.5', 'Slack', '', 42)),
+    ('{"sender":":1.5","member":"CloseNotification","payload":{"data":[7]}}', ('close', ':1.5', '', '', 0)),
+    ('{"member":"GetServerInformation","payload":{"data":[]}}', None),
+    ('not json', None),
+])
+def test_monitor_lines_are_parsed(line, expected):
+    event = _notifications.parse_event(line)
+    assert (None if event is None else
+            (event.kind, event.sender, event.app, event.desktop_entry, event.replaces_id)) == expected
+
+
+@pytest.mark.parametrize('code, is_day, state', [
+    (0, True, 'clear'), (0, False, 'clear_night'), (2, True, 'partly_cloudy'), (3, True, 'cloudy'),
+    (45, True, 'fog'), (53, True, 'rain'), (81, True, 'rain'), (73, True, 'snow'), (86, True, 'snow'),
+    (95, True, 'storm'), (None, True, 'unknown'),
+])
+def test_weather_codes_map_to_states(code, is_day, state):
+    assert weather.condition(code, is_day) == state
+    assert state in weather.STATES
+
+
+def test_coordinates_skip_geocoding(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(weather, '_get_json', lambda *args: pytest.fail('no lookup expected'))
+    assert weather.locate(' 32.08 , 34.78 ') == (32.08, 34.78)
+
+
+def test_mpris_prefers_the_playing_player(monkeypatch):
+    replies = {
+        ('call', 'ListNames'): [['org.mpris.MediaPlayer2.firefox', 'org.mpris.MediaPlayer2.spotify', ':1.5']],
+        ('get-property', 'org.mpris.MediaPlayer2.firefox', 'PlaybackStatus'): 'Paused',
+        ('get-property', 'org.mpris.MediaPlayer2.spotify', 'PlaybackStatus'): 'Playing',
+        ('get-property', 'org.mpris.MediaPlayer2.spotify', 'Metadata'): {
+            'xesam:title': {'type': 's', 'data': 'Song'},
+            'xesam:artist': {'type': 'as', 'data': ['A', 'B']},
+            'mpris:artUrl': {'type': 's', 'data': 'file:///tmp/art.png'},
+        },
+    }
+
+    def busctl(*args):
+        key = ('call', args[-1]) if args[0] == 'call' else (args[0], args[1], args[-1])
+        return replies.get(key)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(_mpris, '_busctl', busctl)
+    status = _mpris.current()
+    assert (status.player, status.status, status.title, status.artist) == \
+        ('org.mpris.MediaPlayer2.spotify', 'playing', 'Song', 'A, B')
+    assert _mpris.current('firefox', with_metadata=False).status == 'paused'
+    assert _mpris.current('vlc').status == 'none'
+
+
+def test_interface_detection_uses_the_up_flag(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    for name, flags in (('tun0', '0x1091'), ('wg0', '0x1090'), ('eth0', '0x1003')):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / 'flags').write_text(flags)
+    assert vpn_connected.interface_up('tun*', str(tmp_path)) is True
+    assert vpn_connected.interface_up('wg*', str(tmp_path)) is False
+    assert vpn_connected.interface_up('ppp*', str(tmp_path)) is False
+
+
+def test_pactl_mute_output_is_parsed(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = 'Mute: yes\n'
+
+    monkeypatch.undo()
+    monkeypatch.setattr(_pulse.subprocess, 'run', lambda *args, **kwargs: Result())
+    assert _pulse.read_muted('source') is True
+    Result.stdout = 'Mute: no\n'
+    assert _pulse.read_muted('sink') is False
+    Result.returncode = 1
+    assert _pulse.read_muted('sink') is None

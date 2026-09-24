@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import queue
+import tempfile
 import threading
 import time
 from abc import ABC, ABCMeta, abstractmethod
@@ -255,6 +257,21 @@ class StreamDock(ABC):
     @abstractmethod
     def set_key_image(self, key, image):
         pass
+
+    def set_key_pil_image(self, key, image):
+        """
+        Show an in-memory PIL image on a key.
+
+        Widgets produce frames in memory; this fallback hands them to
+        set_key_image through a temp file for devices without a direct path.
+        """
+        fd, path = tempfile.mkstemp(suffix='.png', prefix='sdframe_')
+        os.close(fd)
+        try:
+            image.save(path, format='PNG')
+            return self.set_key_image(key, path)
+        finally:
+            os.remove(path)
 
     @abstractmethod
     def set_brightness(self, percent):

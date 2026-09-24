@@ -33,6 +33,11 @@ from StreamDock.ui.settings_store import (
     set_design,
     set_scheme,
 )
+from StreamDock.ui.widget_support import (
+    WidgetManagerDialog,
+    shared_previews,
+    shared_registry,
+)
 from StreamDock.ui.widgets import (
     KeySquare,
     LayoutListWidget,
@@ -292,6 +297,7 @@ class MainWindow(QMainWindow):
         for row in range(3):
             for col in range(5):
                 key_square = KeySquare(position)
+                key_square.set_preview_service(shared_previews())
                 key_square.clicked.connect(self.on_key_square_clicked)
                 key_square.key_moved.connect(self.on_key_moved)
                 self.grid_layout.addWidget(key_square, row, col)
@@ -424,6 +430,9 @@ class MainWindow(QMainWindow):
         self.manage_keys_action = self._command(
             "Manage All &Keys...", self.manage_all_keys,
             icon=('input-keyboard', 'preferences-desktop-keyboard'))
+        self.manage_widgets_action = self._command(
+            "&Widgets...", self.manage_widgets,
+            icon=('preferences-desktop-plasma', 'applications-utilities'))
         self.advanced_settings_action = self._command(
             "&Advanced Settings...", self.show_advanced_settings,
             icon=('configure', 'preferences-system'))
@@ -445,7 +454,7 @@ class MainWindow(QMainWindow):
                 MenuSpec("&File", [self.new_action, self.open_action,
                                    self.save_action, self.save_as_action,
                                    SEPARATOR, self.quit_action]),
-                MenuSpec("&Keys", [self.manage_keys_action]),
+                MenuSpec("&Keys", [self.manage_keys_action, self.manage_widgets_action]),
                 MenuSpec("&Settings", [self.advanced_settings_action,
                                        SEPARATOR, appearance]),
             ],
@@ -812,7 +821,7 @@ class MainWindow(QMainWindow):
         Returns:
             True if the caller should proceed.
         """
-        issues = self.config.validate()
+        issues = self.config.validate(shared_registry())
         if not issues:
             return True
 
@@ -1443,6 +1452,27 @@ class MainWindow(QMainWindow):
             square.set_key(key_name, key_def)
         else:
             square.set_empty()
+
+    def manage_widgets(self):
+        """List, install and remove widgets."""
+        dialog = WidgetManagerDialog(shared_registry(), parent=self)
+        dialog.widgets_changed.connect(self.on_widgets_changed)
+        dialog.exec()
+
+    def on_widgets_changed(self) -> None:
+        """
+        Redraw widget keys, and hand the change to the device.
+
+        The runtime only picks up an installed or removed widget when a
+        configuration is applied, so re-apply one the device already has.
+        """
+        shared_previews().clear()
+        if self.current_layout is not None:
+            self.display_layout(self.current_layout)
+        if self.device_bar.is_connected():
+            self.on_apply_requested()
+        else:
+            self.set_needs_apply(True)
 
     def manage_all_keys(self):
         """Show dialog to manage all key definitions"""

@@ -139,6 +139,21 @@ class TestApplicationReload:
         assert app.reload(raw_document=document.to_dict()['streamdock']) is True
         assert app.get_config().brightness == 42
 
+    def test_reload_applies_the_gesture_timings_to_the_device(self, temp_dir, device, device_info):
+        """The Advanced Settings timings used to stop at the parsed config."""
+        from StreamDock.application.config_document import ConfigDocument
+
+        config_path = self.write_config(temp_dir)
+        app = self.build_app(config_path, device, device_info)
+
+        document = ConfigDocument.load(config_path)
+        document.settings.double_press_interval = 0.45
+        document.settings.long_press_duration = 1.2
+        app.reload(raw_document=document.to_dict()['streamdock'])
+
+        assert device.double_press_interval == 0.45
+        assert device.long_press_duration == 1.2
+
     # ── failure leaves the running config alone ──────────────────────────
 
     def test_invalid_config_is_refused(self, temp_dir, device, device_info):

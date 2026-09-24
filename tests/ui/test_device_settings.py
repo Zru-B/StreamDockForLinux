@@ -1,10 +1,19 @@
 """
-The Device Settings panel: the brightness slider and the lock switch.
+The Device Settings panel: the brightness slider and the lock switch, plus the
+Advanced Settings dialog with its gesture timings.
 """
 
-import pytest
+from unittest.mock import patch
 
-from StreamDock.application.config_document import MIN_BRIGHTNESS
+import pytest
+from PyQt6.QtWidgets import QDialog
+
+from StreamDock.application.config_document import (
+    DEFAULT_DOUBLE_PRESS_INTERVAL,
+    DEFAULT_LONG_PRESS_DURATION,
+    MIN_BRIGHTNESS,
+)
+from StreamDock.ui.dialogs import AdvancedSettingsDialog
 from StreamDock.ui.main_window import MainWindow
 from StreamDock.ui.widgets import ToggleSwitch
 
@@ -82,3 +91,46 @@ class TestToggleSwitch:
     def test_it_shows_its_label(self, switch):
         assert switch.text() == "Turn it off"
         assert switch.sizeHint().width() > ToggleSwitch.TRACK_WIDTH
+
+
+class TestAdvancedSettings:
+    """Both gesture timings travel config -> dialog -> config."""
+
+    def open_dialog(self, qtbot, window):
+        dialog = AdvancedSettingsDialog(window.config)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_it_shows_the_configured_timings(self, qtbot, window):
+        window.config.settings.double_press_interval = 0.45
+        window.config.settings.long_press_duration = 1.2
+
+        dialog = self.open_dialog(qtbot, window)
+
+        assert dialog.get_settings() == {'double_press_interval': 0.45,
+                                         'long_press_duration': 1.2}
+
+    def test_the_long_press_spin_box_matches_the_validator_range(self, qtbot, window):
+        dialog = self.open_dialog(qtbot, window)
+
+        assert dialog.long_press_spin.minimum() == 0.1
+        assert dialog.long_press_spin.maximum() == 5.0
+
+    def test_accepting_writes_both_timings_to_the_config(self, window):
+        with patch('StreamDock.ui.main_window.AdvancedSettingsDialog') as dialog_cls:
+            dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            dialog_cls.return_value.get_settings.return_value = {
+                'double_press_interval': 0.5, 'long_press_duration': 0.8}
+
+            window.show_advanced_settings()
+
+        assert window.config.settings.double_press_interval == 0.5
+        assert window.config.settings.long_press_duration == 0.8
+        assert window.modified
+
+    def test_it_defaults_to_the_shared_constants(self, qtbot, window):
+        dialog = self.open_dialog(qtbot, window)
+
+        assert dialog.get_settings() == {
+            'double_press_interval': DEFAULT_DOUBLE_PRESS_INTERVAL,
+            'long_press_duration': DEFAULT_LONG_PRESS_DURATION}

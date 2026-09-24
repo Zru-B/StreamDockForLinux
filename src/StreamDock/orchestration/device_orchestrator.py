@@ -226,6 +226,24 @@ class DeviceOrchestrator:
         """
         return operation()
 
+    @_serialized
+    def apply_layout(self, layout_name: str, clear_icons: bool = False) -> None:
+        """
+        Switch every attached device to a layout on request (CHANGE_LAYOUT).
+
+        Goes through the device lock and the current-layout tracking like a
+        window-driven switch, so a widget frame can't land on the new layout
+        and the GUI hears about the change.
+
+        Args:
+            layout_name: Name of a registered layout
+            clear_icons: Blank the keys first, for a layout without clear_all
+        """
+        for device_id, device in self._devices.items():
+            if clear_icons:
+                _unwrap(device).clear_all_icons()
+            self._apply_layout(device_id, layout_name, force=True)
+
     def register_layout(self, name: str, layout: Any) -> None:
         """
         Register a layout for use by devices.

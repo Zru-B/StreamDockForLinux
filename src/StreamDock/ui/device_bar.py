@@ -301,6 +301,9 @@ class DeviceBar(QWidget):
                 themed_icon(*ICONS['disconnect' if self._connected else 'connect']))
         self._update_buttons()
 
+    def is_connected(self) -> bool:
+        return self._connected
+
     def set_needs_apply(self, needs_apply: bool) -> None:
         """
         Enable Apply only when the device is out of date.

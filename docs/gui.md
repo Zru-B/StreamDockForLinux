@@ -61,6 +61,14 @@ reconnected. Note that saving does not enable it and applying does not clear
 the modified marker in the title bar — writing the file and pushing to the
 device stay independent.
 
+## Widgets
+
+**Keys → Widgets…** lists the built-in widgets and any you have installed, and
+installs, removes or re-approves third-party ones. After a change the
+configuration is applied again if a device is connected, so the device picks
+up the change. To put a widget on a key, open the key and choose
+**Display Type → Widget**. See [Widgets](widgets.md).
+
 ## The default configuration
 
 The application opens the same configuration each time. When you open a

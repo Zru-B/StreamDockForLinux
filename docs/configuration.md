@@ -89,6 +89,30 @@ keys:
 
 > **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image. If no icon is present, the text is centred by default.
 
+### Widget Keys
+
+A widget key draws itself at runtime: a clock, the date, CPU load, the microphone's mute state. Use `widget` instead of `icon` or `text`:
+
+```yaml
+keys:
+  Clock:
+    widget: digital_clock
+    widget_options:
+      format: 12h
+```
+
+A widget key needs no actions, but can have any of them. It can also show your own images per state (`state_icons`), or a base `icon` with the widget's badge (an unread count, say) in a corner:
+
+```yaml
+keys:
+  Slack:
+    widget: slack_notifications
+    icon: img/slack.png
+    badge: { position: top_right }
+```
+
+See [Widgets](widgets.md) for the built-in widgets, their states and badges, and installing or writing your own.
+
 ### Action Triggers
 
 Keys support four trigger types:

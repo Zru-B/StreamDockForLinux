@@ -237,11 +237,12 @@ class TestActions:
 
         device.set_per_key_callback.assert_called_once()
 
-    def test_all_three_action_lists_are_wired(self, workdir, device):
+    def test_all_four_action_lists_are_wired(self, workdir, device):
         keys = {"KeyA": {"text": "A",
                          "on_press_actions": [{"KEY_PRESS": "a"}],
                          "on_release_actions": [{"KEY_PRESS": "b"}],
-                         "on_double_press_actions": [{"KEY_PRESS": "c"}]}}
+                         "on_double_press_actions": [{"KEY_PRESS": "c"}],
+                         "on_long_press_actions": [{"KEY_PRESS": "d"}]}}
 
         default, _ = build(workdir, device, config(keys), action_executor=Mock())
         default.apply()
@@ -250,6 +251,17 @@ class TestActions:
         assert kwargs['on_press'] is not None
         assert kwargs['on_release'] is not None
         assert kwargs['on_double_press'] is not None
+        assert kwargs['on_long_press'] is not None
+
+    def test_a_long_press_only_key_is_registered(self, workdir, device):
+        keys = {"KeyA": {"text": "A", "on_long_press_actions": [{"KEY_PRESS": "d"}]}}
+
+        default, _ = build(workdir, device, config(keys), action_executor=Mock())
+        default.apply()
+
+        kwargs = device.set_per_key_callback.call_args.kwargs
+        assert kwargs['on_long_press'] is not None
+        assert kwargs['on_press'] is None
 
     def test_a_lowercase_action_name_is_dropped(self, workdir, device):
         """Known gap: it passes validation, then the factory discards it."""

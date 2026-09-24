@@ -86,7 +86,10 @@ class SystemEventMonitor:
         self._window_poll_thread: Optional[threading.Thread] = None
         self._window_poll_running = False
         self._window_poll_interval = 0.5  # seconds
-        self._last_window_class: Optional[str] = None
+        # Class and title: a browser switching tabs keeps its class, and both
+        # title-based layout rules and widgets watching for a web app need it.
+        self._last_window_key: Optional[tuple] = None
+        self._current_window = None
 
         logger.debug("SystemEventMonitor initialized with verification_delay=%.1fs",
                     verification_delay)
@@ -222,11 +225,12 @@ class SystemEventMonitor:
                     continue
 
                 window_info = self._windows.get_active_window()
-                current_class = window_info.class_ if window_info else None
+                key = (window_info.class_, window_info.title) if window_info else None
 
-                if current_class != self._last_window_class:
-                    self._last_window_class = current_class
-                    logger.debug("Window changed: %s", current_class)
+                if key != self._last_window_key:
+                    self._last_window_key = key
+                    self._current_window = window_info
+                    logger.debug("Window changed: %s", key[0] if key else None)
                     self._dispatch_event(SystemEvent.WINDOW_CHANGED)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error in window poll loop: %s", e)
@@ -377,6 +381,11 @@ class SystemEventMonitor:
             self._pending_verification.cancel()
             self._pending_verification = None
             logger.debug("Cancelled pending lock verification timer")
+
+    @property
+    def current_window(self):
+        """The focused window as last polled (a WindowInfo), or None."""
+        return self._current_window
 
     def is_locked(self) -> bool:
         """

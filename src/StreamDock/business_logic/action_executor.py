@@ -12,6 +12,7 @@ from typing import Callable, List, Tuple
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.domain.key import Key
 from StreamDock.image_helpers.pil_helper import render_key_image
+from StreamDock.infrastructure import mpris
 from StreamDock.infrastructure.system_interface import SystemInterface
 from StreamDock.infrastructure.window_interface import WindowInterface
 
@@ -161,6 +162,7 @@ class ActionExecutor:
         self._windows = window_manager
         self._action_handlers = {}
         self._layouts = {}  # layout_name -> Layout object, populated after factory creates layouts
+        self._layout_switcher = None
         self._register_built_in_handlers()
 
     def _register_built_in_handlers(self):
@@ -183,6 +185,15 @@ class ActionExecutor:
     def set_layouts(self, layouts: dict) -> None:
         """Provide the layouts registry so CHANGE_LAYOUT can resolve names to Layout objects."""
         self._layouts = layouts
+
+    def set_layout_switcher(self, switcher: Callable[[str, bool], None]) -> None:
+        """
+        Route CHANGE_LAYOUT by name through the orchestrator.
+
+        Applying a layout directly skips the device lock and the orchestrator's
+        current-layout tracking, so the GUI never learns of the switch.
+        """
+        self._layout_switcher = switcher
 
     def execute_action(self, action: Tuple, device=None, key_number=None) -> None:
         if not isinstance(action, tuple) or len(action) != 2:
@@ -355,6 +366,15 @@ class ActionExecutor:
             return
 
         layout = parameter["layout"]
+        action_clear_all = parameter.get("clear_all", False)
+
+        if isinstance(layout, str) and self._layout_switcher is not None:
+            if layout not in self._layouts:
+                logger.error("CHANGE_LAYOUT: unknown layout '%s'", layout)
+                return
+            clear_icons = action_clear_all and not self._layouts[layout].clear_all
+            self._layout_switcher(layout, clear_icons)
+            return
 
         # If layout is still a name string (resolved lazily after factory builds layouts),
         # look it up in the registry now.
@@ -365,61 +385,57 @@ class ActionExecutor:
                 return
             layout = resolved
 
-        action_clear_all = parameter.get("clear_all", False)
         if action_clear_all and not layout.clear_all:
             device.clear_all_icons()
         layout.apply()
 
+    # Shortcut names (with or without the legacy _any suffix) -> MPRIS Player method.
+    _MEDIA_SHORTCUTS = {
+        'play_pause': 'PlayPause',
+        'next': 'Next',
+        'previous': 'Previous',
+        'stop': 'Stop',
+    }
+
     def _handle_dbus(self, parameter, unused_device, unused_key_number):
-        # Helper to build a 'target any active MPRIS player' command.
-        def _mpris_any(method: str) -> str:
-            return (
-                "dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus "
-                "org.freedesktop.DBus.ListNames "
-                "| grep -o 'org.mpris.MediaPlayer2.[^\"]*' | head -1 "
-                f"| xargs -r -I {{}} dbus-send --session --print-reply --dest={{}} "
-                f"/org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.{method}"
-            )
-
-        shortcuts = {
-            # Generic variants discover any running MPRIS-capable player
-            "play_pause":     _mpris_any("PlayPause"),
-            "play_pause_any": _mpris_any("PlayPause"),
-            "next":           _mpris_any("Next"),
-            "next_any":       _mpris_any("Next"),
-            "previous":       _mpris_any("Previous"),
-            "previous_any":   _mpris_any("Previous"),
-            "stop":           _mpris_any("Stop"),
-            "stop_any":       _mpris_any("Stop"),
-        }
-
-        # Determine command string
         if isinstance(parameter, dict):
             action = parameter.get("action")
-            if action in shortcuts:
-                command = shortcuts[action]
+            method = self._MEDIA_SHORTCUTS.get(action[:-4] if isinstance(action, str) and action.endswith('_any')
+                                               else action)
+            if method:
+                self._control_media(method)
             elif action == "volume_up":
                 self._system.set_volume("+5%")
-                return
             elif action == "volume_down":
                 self._system.set_volume("-5%")
-                return
             elif action == "mute":
                 self._system.toggle_mute()
-                return
             else:
                 logger.error("Unknown D-Bus shortcut: %s", action)
-                return
-        elif isinstance(parameter, str):
-            command = parameter
-        else:
-            logger.error("Invalid D-Bus command format: %s", type(parameter))
             return
 
+        if not isinstance(parameter, str):
+            logger.error("Invalid D-Bus command format: %s", type(parameter))
+            return
         try:
-            subprocess.run(command, shell=True, check=True, capture_output=True)
+            subprocess.run(parameter, shell=True, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
             logger.error("Error executing D-Bus command: %s", e)
+
+    @staticmethod
+    def _control_media(method: str) -> None:
+        """
+        Send a Player method to the media player the user means.
+
+        That is the one playing, else one paused, else any: taking the first
+        player on the bus sent Play/Pause to an idle browser tab as soon as a
+        browser registered as a player next to Spotify.
+        """
+        player = mpris.current(with_metadata=False).player
+        if player is None:
+            logger.warning("No media player found for %s", method)
+            return
+        mpris.call(player, method)
 
     def _handle_brightness_up(self, unused_parameter, device, unused_key_number):
         if device:

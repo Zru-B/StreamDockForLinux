@@ -46,12 +46,27 @@ class TestActionExecutor(unittest.TestCase):
         self.executor.execute_action((ActionType.DEVICE_BRIGHTNESS_DOWN, None), device=mock_device)
         mock_device.set_brightness.assert_called_with(50)
 
-    @patch('StreamDock.business_logic.action_executor.subprocess.run')
-    def test_dbus_command(self, mock_run):
-        """Test D-Bus command dispatch."""
+    @patch('StreamDock.business_logic.action_executor.mpris')
+    def test_media_shortcuts_go_to_the_player_in_use(self, mock_mpris):
+        """Guards against Play/Pause reaching an idle browser tab listed before Spotify."""
+        mock_mpris.current.return_value.player = 'org.mpris.MediaPlayer2.spotify'
+        for action, method in (("play_pause", "PlayPause"), ("next_any", "Next"),
+                               ("previous", "Previous"), ("stop_any", "Stop")):
+            self.executor.execute_action((ActionType.DBUS, {"action": action}))
+            mock_mpris.call.assert_called_with('org.mpris.MediaPlayer2.spotify', method)
+        mock_mpris.current.assert_called_with(with_metadata=False)
+
+    @patch('StreamDock.business_logic.action_executor.mpris')
+    def test_media_shortcut_without_a_player_does_nothing(self, mock_mpris):
+        mock_mpris.current.return_value.player = None
         self.executor.execute_action((ActionType.DBUS, {"action": "play_pause"}))
+        mock_mpris.call.assert_not_called()
+
+    @patch('StreamDock.business_logic.action_executor.subprocess.run')
+    def test_dbus_raw_command_still_runs(self, mock_run):
+        self.executor.execute_action((ActionType.DBUS, "dbus-send --session --dest=x /x x.Y"))
         mock_run.assert_called_once()
-        self.assertIn("PlayPause", mock_run.call_args[0][0])
+        self.assertEqual(mock_run.call_args[0][0], "dbus-send --session --dest=x /x x.Y")
 
     @patch('StreamDock.business_logic.action_executor._launch_detached')
     def test_launch_app_force_new(self, mock_launch):

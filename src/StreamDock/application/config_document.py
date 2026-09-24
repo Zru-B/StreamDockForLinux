@@ -98,12 +98,19 @@ class KeyDefinition:
     """A single key definition."""
 
     STYLE_FIELDS = ('text_color', 'background_color', 'font_size', 'bold', 'text_position')
-    KNOWN_FIELDS = ('icon', 'text') + STYLE_FIELDS + ACTION_FIELDS
+    KNOWN_FIELDS = ('icon', 'text', 'widget', 'widget_options', 'state_icons', 'badge') \
+        + STYLE_FIELDS + ACTION_FIELDS
 
     def __init__(self, name: str, data: Optional[Dict[str, Any]] = None):
         self.name = name
         self.icon: Optional[str] = None
         self.text: Optional[str] = None
+        self.widget: Optional[str] = None
+        self.widget_options: Dict[str, Any] = {}
+        # A widget key may show the user's images: per state, and/or one base
+        # icon with the widget's badge drawn on top.
+        self.state_icons: Dict[str, str] = {}
+        self.badge: Union[bool, Dict[str, Any], None] = None
         self.text_color: str = DEFAULT_TEXT_COLOR
         self.background_color: str = DEFAULT_BACKGROUND_COLOR
         self.font_size: int = DEFAULT_FONT_SIZE
@@ -126,6 +133,10 @@ class KeyDefinition:
         """Populate from a YAML key definition."""
         self.icon = data.get('icon')
         self.text = data.get('text')
+        self.widget = data.get('widget')
+        self.widget_options = copy.deepcopy(data.get('widget_options') or {})
+        self.state_icons = dict(data.get('state_icons') or {})
+        self.badge = copy.deepcopy(data.get('badge'))
         self.text_color = data.get('text_color', DEFAULT_TEXT_COLOR)
         self.background_color = data.get('background_color', DEFAULT_BACKGROUND_COLOR)
         self.font_size = data.get('font_size', DEFAULT_FONT_SIZE)
@@ -142,9 +153,19 @@ class KeyDefinition:
         """Serialise back to a YAML key definition, preserving unknown fields."""
         result: Dict[str, Any] = dict(self.extra)
 
-        # icon and text are mutually exclusive: the runtime validator rejects a
-        # key carrying both.
-        if self.icon:
+        # widget, icon and text are mutually exclusive: the runtime validator
+        # rejects a key carrying more than one.
+        if self.widget:
+            result['widget'] = self.widget
+            if self.widget_options:
+                result['widget_options'] = copy.deepcopy(self.widget_options)
+            if self.icon:
+                result['icon'] = self.icon
+            if self.state_icons:
+                result['state_icons'] = dict(self.state_icons)
+            if self.badge is not None:
+                result['badge'] = copy.deepcopy(self.badge)
+        elif self.icon:
             result['icon'] = self.icon
         elif self.text:
             result['text'] = self.text
@@ -163,6 +184,10 @@ class KeyDefinition:
                 result[field] = copy.deepcopy(actions)
 
         return result
+
+    def is_widget(self) -> bool:
+        """True if a widget draws this key."""
+        return bool(self.widget)
 
     def has_icon(self) -> bool:
         """True if this key renders an icon."""
@@ -498,15 +523,18 @@ class ConfigDocument:
 
     # ── validation ────────────────────────────────────────────────────────
 
-    def validate(self) -> List[str]:
+    def validate(self, widgets=None) -> List[str]:
         """
         Check the document against the runtime's rules without raising.
+
+        Args:
+            widgets: Widget catalog to check widget options against
 
         Returns:
             Problems found, empty when the configuration is valid
         """
         return ConfigurationManager.collect_issues(
-            self.to_dict()['streamdock'], self._validation_path)
+            self.to_dict()['streamdock'], self._validation_path, widgets)
 
     def to_stream_dock_config(self) -> StreamDockConfig:
         """

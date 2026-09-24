@@ -14,6 +14,7 @@ from StreamDock.application.config_document import (
 from StreamDock.application.configuration_manager import resolve_icon_path
 from StreamDock.ui.styles import get_colors
 from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
+from StreamDock.widgets.appearance import Appearance
 from PyQt6.QtCore import (
     QEasingCurve,
     QMimeData,
@@ -204,6 +205,9 @@ class KeySquare(QFrame):
         # Directory relative icon paths resolve against; set by the main
         # window whenever the open configuration changes.
         self.config_dir: str = os.getcwd()
+        # Draws widget snapshots; set by the main window. Without one a
+        # widget key shows its name.
+        self.preview_service = None
         
         # Fixed size matching physical device screen
         self.setFixedSize(112, 112)
@@ -270,12 +274,50 @@ class KeySquare(QFrame):
         self.repaint()
         self.label.repaint()
     
+    def set_preview_service(self, service) -> None:
+        self.preview_service = service
+        service.preview_ready.connect(self._on_preview_ready)
+
+    def _widget_preview_args(self, key_def: KeyDefinition):
+        return (key_def.widget, key_def.widget_options,
+                Appearance.from_key_config(key_def.to_dict(), self.config_dir))
+
+    def _on_preview_ready(self, key: str) -> None:
+        key_def = self.key_definition
+        if key_def is not None and key_def.is_widget() and \
+                key == self.preview_service.key(*self._widget_preview_args(key_def)):
+            self.set_key(self.key_name, key_def)
+
+    def _show_widget(self, key_def: KeyDefinition) -> None:
+        """A snapshot of the widget, as the device will show it."""
+        pixmap = None
+        if self.preview_service is not None:
+            pixmap = self.preview_service.pixmap(*self._widget_preview_args(key_def))
+        self.setStyleSheet("""
+            KeySquare { background-color: #000000; border: none; }
+            KeySquare:hover { background-color: #000000; }
+        """)
+        if pixmap is not None:
+            self.label.setText("")
+            self.label.setPixmap(pixmap)
+            self.label.setStyleSheet("background-color: #000000; padding: 0px; margin: 0px;")
+        else:
+            self.label.setPixmap(QPixmap())
+            self.label.setText(f"{key_def.widget}\n…")
+            font = QFont()
+            font.setPointSize(8)
+            self.label.setFont(font)
+            self.label.setStyleSheet("color: #9e9e9e; background-color: #000000;")
+
     def set_key(self, key_name: str, key_def: KeyDefinition):
         """Set the square to display a key"""
         self.key_name = key_name
         self.key_definition = key_def
         
-        if key_def.is_icon_based():
+        if key_def.is_widget():
+            self._show_widget(key_def)
+
+        elif key_def.is_icon_based():
             # Icon mode: fill entire square with icon.
             # Relative paths resolve against the config file's directory, the
             # same rule the runtime applies, so the preview matches the device.

@@ -4,6 +4,7 @@ Dialogs for StreamDock Configuration Editor
 Handles key editing, action editing, and layout management
 """
 
+import copy
 import os
 from pathlib import Path
 
@@ -23,9 +24,16 @@ from StreamDock.ui.widgets import (
     glyph_button,
 )
 from StreamDock.ui.styles import get_colors
+from StreamDock.ui.widget_support import (
+    WidgetImagesForm,
+    WidgetOptionsForm,
+    describe_spec,
+    shared_previews,
+    shared_registry,
+)
 from StreamDock.ui.theme import Flavor, current_theme
 from PIL import Image
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -54,9 +62,10 @@ from PyQt6.QtWidgets import (
 
 COLORS = get_colors()
 
-# The two ways a key can be drawn, as the segmented control spells them.
+# The ways a key can be drawn, as the segmented control spells them.
 DISPLAY_ICON = "Icon"
 DISPLAY_TEXT = "Text"
+DISPLAY_WIDGET = "Widget"
 
 
 # Labels that Title Case gets wrong. Everything else is derived from
@@ -129,9 +138,13 @@ class KeyEditorDialog(ThemedDialog):
     
     def __init__(self, key_def: KeyDefinition = None, existing_keys: list = None, 
                  available_layouts: list = None, available_keys: list = None,
-                 config_dir: str = None, parent=None):
+                 config_dir: str = None, parent=None, widget_registry=None, widget_previews=None):
         super().__init__(parent=parent)
         self.key_def = key_def or KeyDefinition("NewKey")
+        self.widget_registry = widget_registry or shared_registry()
+        self.widget_previews = widget_previews or shared_previews()
+        self.widget_options_form = None
+        self.widget_images_form = None
         self.existing_keys = existing_keys or []
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
@@ -141,7 +154,7 @@ class KeyEditorDialog(ThemedDialog):
         
         self.setWindowTitle("Edit Key" if key_def else "Create New Key")
         self.setMinimumSize(600, 750)
-        self.resize(650, 800)
+        self.resize(650, 860)
         
         self.setup_ui()
         self.load_key_data()
@@ -156,8 +169,8 @@ class KeyEditorDialog(ThemedDialog):
         self.name_edit = QLineEdit(self.key_def.name)
         header_form.addRow("Key Name:", self.name_edit)
         
-        # Display type: two choices, so one pill rather than a box of radios
-        self.display_type = SegmentedControl([DISPLAY_ICON, DISPLAY_TEXT])
+        # Display type: three choices, so one pill rather than a box of radios
+        self.display_type = SegmentedControl([DISPLAY_ICON, DISPLAY_TEXT, DISPLAY_WIDGET])
         header_form.addRow("Display Type:", self.display_type)
         layout.addLayout(header_form)
         
@@ -221,6 +234,8 @@ class KeyEditorDialog(ThemedDialog):
         text_layout.addRow("Bold:", self.bold_toggle)
         
         layout.addWidget(self.text_widget)
+
+        self._build_widget_section(layout)
         
         # Actions tabs
         self.tabs = QTabWidget()
@@ -247,11 +262,139 @@ class KeyEditorDialog(ThemedDialog):
         
         self.display_type.selection_changed.connect(self.update_display_type)
     
+    def _build_widget_section(self, layout):
+        """The widget picker, its options form and a preview of the result."""
+        self.widget_widget = QWidget()
+        widget_layout = QVBoxLayout(self.widget_widget)
+        widget_layout.setContentsMargins(0, 0, 0, 0)
+
+        picker = QFormLayout()
+        self.widget_combo = QComboBox()
+        for spec in self.widget_registry.all():
+            label = f"{spec.name} ({spec.version})"
+            if not spec.builtin:
+                label += " — third-party"
+            self.widget_combo.addItem(label, spec.id)
+        picker.addRow("Widget:", self.widget_combo)
+        widget_layout.addLayout(picker)
+
+        row = QHBoxLayout()
+        self.widget_description = QLabel()
+        self.widget_description.setWordWrap(True)
+        self.widget_description.setAlignment(Qt.AlignmentFlag.AlignTop)
+        row.addWidget(self.widget_description, stretch=1)
+        self.widget_preview = QLabel()
+        self.widget_preview.setFixedSize(112, 112)
+        self.widget_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.widget_preview.setStyleSheet("background-color: #000000;")
+        row.addWidget(self.widget_preview)
+        widget_layout.addLayout(row)
+
+        # Options and the key's own images, as tabs so the dialog stays short.
+        self.widget_tabs = QTabWidget()
+        self.widget_tabs.setMinimumHeight(240)
+        holders = []
+        for title in ("Options", "Images"):
+            page = QWidget()
+            holder = QVBoxLayout(page)
+            holder.addStretch()
+            holders.append(holder)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setWidget(page)
+            self.widget_tabs.addTab(scroll, title)
+        self.widget_options_holder, self.widget_images_holder = holders
+        widget_layout.addWidget(self.widget_tabs)
+        layout.addWidget(self.widget_widget)
+
+        # Options change on every keystroke; draw once typing pauses.
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)
+        self._preview_timer.timeout.connect(self.update_widget_preview)
+        self.widget_previews.preview_ready.connect(self._on_preview_ready)
+        self.widget_combo.currentIndexChanged.connect(lambda _index: self._rebuild_widget_options({}))
+
+    @staticmethod
+    def _discard(form, holder):
+        if form is not None:
+            # deleteLater only acts back in the event loop; hide it now so the
+            # old form never shows through the new one.
+            form.hide()
+            holder.removeWidget(form)
+            form.deleteLater()
+
+    def select_widget(self, widget_id: str) -> None:
+        """Pick a widget by id, listing it as not installed when it is unknown."""
+        index = self.widget_combo.findData(widget_id)
+        if index < 0:
+            self.widget_combo.addItem(f"{widget_id} (not installed)", widget_id)
+            index = self.widget_combo.count() - 1
+        self.widget_combo.setCurrentIndex(index)
+
+    def current_widget_id(self):
+        return self.widget_combo.currentData()
+
+    def _rebuild_widget_options(self, values, images=None):
+        """
+        Build the forms for the chosen widget.
+
+        ``images`` is (icon, state_icons, badge); by default the base image and
+        badge carry over from the previous widget, and state images - named
+        after the previous widget's states - do not.
+        """
+        if images is None:
+            icon, _, badge = self.widget_images_form.values() if self.widget_images_form else (None, {}, None)
+            images = (icon, {}, badge)
+        self._discard(self.widget_options_form, self.widget_options_holder)
+        self._discard(self.widget_images_form, self.widget_images_holder)
+        self.widget_options_form = None
+        spec = self.widget_registry.get(self.current_widget_id() or "")
+        self.widget_description.setText(describe_spec(spec) if spec else
+                                        "This widget is not installed. Its settings are kept as they are.")
+        self._unknown_widget_options = dict(values) if spec is None else {}
+        if spec is not None:
+            self.widget_options_form = WidgetOptionsForm(spec.options, values)
+            self.widget_options_form.changed.connect(self._preview_timer.start)
+            self.widget_options_holder.insertWidget(0, self.widget_options_form)
+        self.widget_images_form = WidgetImagesForm(spec, *images, self.config_dir)
+        self.widget_images_form.changed.connect(self._preview_timer.start)
+        self.widget_images_holder.insertWidget(0, self.widget_images_form)
+        self.update_widget_preview()
+
+    def widget_options(self) -> dict:
+        if self.widget_options_form is None:
+            return dict(getattr(self, "_unknown_widget_options", {}))
+        return self.widget_options_form.values()
+
+    def widget_appearance(self):
+        return self.widget_images_form.appearance() if self.widget_images_form else None
+
+    def update_widget_preview(self):
+        widget_id = self.current_widget_id()
+        if not widget_id:
+            return
+        pixmap = self.widget_previews.pixmap(widget_id, self.widget_options(), self.widget_appearance())
+        if pixmap is None:
+            self.widget_preview.setText("…")
+        else:
+            self.widget_preview.setPixmap(pixmap)
+
+    def _on_preview_ready(self, key: str):
+        widget_id = self.current_widget_id()
+        if widget_id and key == self.widget_previews.key(widget_id, self.widget_options(),
+                                                         self.widget_appearance()):
+            self.update_widget_preview()
+
     def update_display_type(self):
         """Update visible widgets based on display type"""
-        is_icon = self.display_type.current() == DISPLAY_ICON
-        self.icon_widget.setVisible(is_icon)
-        self.text_widget.setVisible(not is_icon)
+        current = self.display_type.current()
+        self.icon_widget.setVisible(current == DISPLAY_ICON)
+        self.text_widget.setVisible(current == DISPLAY_TEXT)
+        self.widget_widget.setVisible(current == DISPLAY_WIDGET)
+        if current == DISPLAY_WIDGET and self.widget_images_form is None:
+            self._rebuild_widget_options({})
     
     def select_icon(self):
         """Select an icon file"""
@@ -324,7 +467,14 @@ class KeyEditorDialog(ThemedDialog):
     
     def load_key_data(self):
         """Load existing key data into the dialog"""
-        if self.key_def.is_icon_based():
+        if self.key_def.is_widget():
+            self.widget_combo.blockSignals(True)
+            self.select_widget(self.key_def.widget)
+            self.widget_combo.blockSignals(False)
+            self._rebuild_widget_options(self.key_def.widget_options,
+                                         (self.key_def.icon, self.key_def.state_icons, self.key_def.badge))
+            self.display_type.set_current(DISPLAY_WIDGET)
+        elif self.key_def.is_icon_based():
             self.display_type.set_current(DISPLAY_ICON)
             if self.key_def.icon:
                 self.icon_path_label.setText(self.key_def.icon)
@@ -350,13 +500,41 @@ class KeyEditorDialog(ThemedDialog):
         self.double_press_actions_widget.set_actions(self.key_def.on_double_press_actions)
         self.long_press_actions_widget.set_actions(self.key_def.on_long_press_actions)
     
+    def widget_option_errors(self) -> list:
+        """Problems with the widget options as entered, empty when fine."""
+        if self.display_type.current() != DISPLAY_WIDGET or self.widget_options_form is None:
+            return []
+        return self.widget_options_form.errors()
+
+    def accept(self):
+        """Refuse to close on widget options the runtime would reject."""
+        errors = self.widget_option_errors()
+        if errors:
+            QMessageBox.warning(self, "Invalid widget option", errors[0])
+            return
+        super().accept()
+
     def get_key_definition(self) -> KeyDefinition:
-        """Get the key definition from the dialog"""
-        key_def = KeyDefinition(self.name_edit.text())
+        """
+        Get the key definition from the dialog.
+
+        Starts from the key as loaded, so fields the dialog doesn't show -
+        text_position, fields this version doesn't know - survive an edit.
+        """
+        key_def = copy.deepcopy(self.key_def)
+        key_def.name = self.name_edit.text()
         
-        if self.display_type.current() == DISPLAY_ICON:
+        if self.display_type.current() == DISPLAY_WIDGET:
+            key_def.widget = self.current_widget_id()
+            key_def.widget_options = self.widget_options()
+            key_def.icon, key_def.state_icons, key_def.badge = self.widget_images_form.values()
+            key_def.text = None
+        elif self.display_type.current() == DISPLAY_ICON:
             key_def.icon = self.selected_icon_path or self.key_def.icon
             key_def.text = None
+            key_def.widget = None
+            key_def.widget_options = {}
+            key_def.state_icons, key_def.badge = {}, None
         else:
             key_def.text = self.text_edit.text()
             key_def.text_color = self.text_color_edit.text()
@@ -364,6 +542,9 @@ class KeyEditorDialog(ThemedDialog):
             key_def.font_size = self.font_size_spin.value()
             key_def.bold = self.bold_toggle.isChecked()
             key_def.icon = None
+            key_def.widget = None
+            key_def.widget_options = {}
+            key_def.state_icons, key_def.badge = {}, None
         
         key_def.on_press_actions = self.press_actions_widget.get_actions()
         key_def.on_release_actions = self.release_actions_widget.get_actions()
@@ -1116,7 +1297,9 @@ class ManageKeysDialog(ThemedDialog):
             widget_layout.setSpacing(8)
             
             # Key info label
-            if key_def.is_icon_based():
+            if key_def.is_widget():
+                item_text = f"{key_name} (Widget: {key_def.widget})"
+            elif key_def.is_icon_based():
                 item_text = f"{key_name} (Icon: {Path(key_def.icon).name})"
             elif key_def.is_text_based():
                 item_text = f"{key_name} (Text: {key_def.text})"
