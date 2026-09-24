@@ -135,6 +135,18 @@ You also need to be in the `plugdev` group; the script tells you if you are not:
 sudo usermod -aG plugdev $USER   # then log out and back in
 ```
 
+To check it worked, unplug and replug the deck, then:
+
+```bash
+lsusb | grep 6603:1006           # the deck (HOTSPOTEKUSB)
+ls -l /dev/hidraw*               # its node should be group plugdev, crw-rw----
+```
+
+If your deck reports a different vendor/product ID in `lsusb`, change the
+two IDs in `contrib/99-streamdock.rules` before running the script. If the
+deck moves the mouse pointer or triggers Mouse Keys, see
+[Troubleshooting](troubleshooting.md#mouse-keys--cursor-issues).
+
 ### Starting at login
 
 StreamDock is a normal desktop application, so use your desktop's own
