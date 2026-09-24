@@ -91,6 +91,21 @@ Dolphin and Kate are:
 - A **sidebar** on the left lists the layouts (the default one starred) and
   the window rules, ruled off from a framed **view** holding the key grid.
   The heading over the view names the layout showing and counts its keys.
+  - Each layout row says how full it is and what leads to it
+    (`12 / 15 keys · 2 rules · via key`); a layout nothing switches to is
+    flagged *unreachable*. Right-click to edit, rename (F2), duplicate, make it
+    the default, or start a window rule aimed at it.
+  - Each rule row reads as what it does - `firefox`, then `→ FirefoxLayout · by
+    class` - listed in the order rules are tried. Drag rows, or use *Try
+    Earlier / Later*, to change which rule wins; clicking a rule shows its
+    layout.
+  - On both lists, double-click or Enter edits and Delete removes.
+  - The rule editor lists recently focused windows (while a deck is
+    connected): click one to take its class or title, and the windows the
+    pattern matches are shown in bold. A blank rule name is generated from the
+    pattern.
+  - Deleting a layout asks whether its window rules move to another layout or
+    go with it.
 - Device settings are a form under the view, and messages land in a **status
   bar** that also shows the path of the open configuration.
 - **Apply** turns orange while there are changes the device has not seen -

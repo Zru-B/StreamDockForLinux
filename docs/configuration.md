@@ -219,6 +219,11 @@ windows_rules:
 - `title`: Window title bar text.
 - `raw`: Raw window info string.
 
+**Order:** the first matching rule wins. Rules are tried by `priority`
+(optional integer, higher first, default `0`), then in the order they appear
+in the file. The editor's Window Rules panel lists them in that order; dragging
+a rule to a new place rewrites the file order and clears `priority`.
+
 **Requirements:**
 - **X11:** `xdotool`
 - **Wayland/KDE:** `kdotool` or KWin scripting.

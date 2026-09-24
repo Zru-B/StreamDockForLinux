@@ -8,6 +8,7 @@ extracted from ConfigLoader to be infrastructure-independent.
 import copy
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -783,6 +784,15 @@ class ConfigurationManager:
                     raise ConfigValidationError(
                         f"Window rule '{rule_name}': 'is_regex' must be a boolean"
                     )
+                if rule_def['is_regex']:
+                    patterns = window_name if isinstance(window_name, list) else [window_name]
+                    for pattern in patterns:
+                        try:
+                            re.compile(pattern)
+                        except re.error as e:
+                            raise ConfigValidationError(
+                                f"Window rule '{rule_name}': invalid regular expression "
+                                f"{pattern!r}: {e}") from e
 
             # Validate match_field (optional)
             if 'match_field' in rule_def:

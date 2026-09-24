@@ -208,6 +208,7 @@ class StreamDockGui:
         window.connect_requested.connect(service.connect_device)
         window.disconnect_requested.connect(service.disconnect_device)
         window.apply_config_requested.connect(service.apply_config)
+        window.recent_windows_provider = service.recent_windows
 
         # worker -> GUI
         service.devices_discovered.connect(window.on_devices_discovered)

@@ -7,6 +7,7 @@ No device dependencies - pure business logic.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, Pattern, Union
 
@@ -33,6 +34,51 @@ class LayoutRule:
     layout_name: str
     match_field: str = 'class'
     priority: int = 0
+
+
+def rule_patterns(window_name, is_regex: bool = False):
+    """
+    A rule's ``window_name`` as the matcher takes it.
+
+    With ``is_regex`` every pattern becomes a case-insensitive regex; a plain
+    word still matches anywhere, as ``search()`` does. Raises ``re.error``
+    for a pattern that does not compile.
+    """
+    if not is_regex:
+        return window_name
+    if isinstance(window_name, list):
+        return [re.compile(pattern, re.IGNORECASE) for pattern in window_name]
+    return re.compile(window_name, re.IGNORECASE)
+
+
+def window_matches(window_info: WindowInfo, pattern, match_field: str = 'class') -> bool:
+    """
+    Whether a window satisfies a rule's pattern.
+
+    Shared with the rule editor's live preview, so what the editor says
+    matches is what the runtime will switch on.
+
+    Supports:
+    - String: case-insensitive substring match
+    - Pattern (regex): ``search()``
+    - List: any of the above (OR)
+    """
+    if match_field not in ('title', 'class', 'raw'):
+        logger.warning("Invalid match_field: %s", match_field)
+        return False
+    field_value = getattr(window_info, 'class_' if match_field == 'class' else match_field, None)
+    if field_value is None:
+        logger.debug("Window missing field: %s", match_field)
+        return False
+
+    for candidate in pattern if isinstance(pattern, list) else [pattern]:
+        if isinstance(candidate, Pattern):
+            if candidate.search(field_value):
+                return True
+        elif isinstance(candidate, str):
+            if candidate.lower() in field_value.lower():
+                return True
+    return False
 
 
 class LayoutManager:
@@ -177,51 +223,7 @@ class LayoutManager:
         return self._default_layout_name
 
     def _matches_rule(self, window_info: WindowInfo, rule: LayoutRule) -> bool:
-        """
-        PURE BUSINESS LOGIC: Check if window matches rule.
-
-        Supports multiple pattern types:
-        - String: Case-insensitive substring match
-        - Pattern (regex): Regex match with search()
-        - List: Match any pattern (OR logic)
-
-        Args:
-            window_info: Window to match
-            rule: Rule to check
-
-        Returns:
-            True if window matches rule pattern, False otherwise
-        """
-        # Get field value from WindowInfo
-        try:
-            if rule.match_field == 'title':
-                field_value = window_info.title
-            elif rule.match_field == 'class':
-                field_value = window_info.class_
-            elif rule.match_field == 'raw':
-                field_value = window_info.raw
-            else:
-                logger.warning("Invalid match_field: %s", rule.match_field)
-                return False
-        except AttributeError:
-            logger.debug("Window missing field: %s", rule.match_field)
-            return False
-
-        # Normalize pattern to list for uniform processing
-        patterns = rule.pattern if isinstance(rule.pattern, list) else [rule.pattern]
-
-        # Match against any pattern (OR logic)
-        for pattern in patterns:
-            if isinstance(pattern, Pattern):
-                # Regex match
-                if pattern.search(field_value):
-                    return True
-            elif isinstance(pattern, str):
-                # Substring match (case-insensitive)
-                if pattern.lower() in field_value.lower():
-                    return True
-
-        return False
+        return window_matches(window_info, rule.pattern, rule.match_field)
 
     def _sort_rules(self) -> None:
         """

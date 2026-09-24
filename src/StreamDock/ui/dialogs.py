@@ -6,6 +6,7 @@ Handles key editing, action editing, and layout management
 
 import copy
 import os
+import re
 from pathlib import Path
 
 from StreamDock.application.config_document import (
@@ -19,7 +20,10 @@ from StreamDock.ui.chrome import ThemedDialog, make_button
 from StreamDock.ui.widgets import (
     ActionListContainer,
     ActionListItem,
+    SIDEBAR_CAPTION_ROLE,
+    KeySquare,
     SegmentedControl,
+    SidebarRowDelegate,
     ToggleSwitch,
     glyph_button,
 )
@@ -31,11 +35,13 @@ from StreamDock.ui.widget_support import (
     shared_previews,
     shared_registry,
 )
-from StreamDock.ui.theme import Flavor, current_theme
+from StreamDock.ui.theme import Flavor, current_theme, themed_icon
 from PIL import Image
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPalette,
+                         QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -54,6 +60,9 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -1236,413 +1245,826 @@ class ActionDialog(ThemedDialog):
         return None
 
 
+def run_key_editor(parent, config, key_name: str = None):
+    """
+    Edit ``key_name`` (or create a key when None) and store the result in ``config``.
+
+    Both the grid and Manage Keys go through here, so a key is edited with the
+    same icon directory and the same rename rules wherever it is opened from.
+
+    Returns:
+        The stored key's name, or None when cancelled or refused
+    """
+    key_def = config.keys.get(key_name) if key_name else None
+    others = [name for name in config.keys if name != key_name]
+    editor = KeyEditorDialog(key_def, others, list(config.layouts), others,
+                             config_dir=config.config_dir, parent=parent)
+    if editor.exec() != QDialog.DialogCode.Accepted:
+        return None
+    new_def = editor.get_key_definition()
+    if new_def.name in others:
+        QMessageBox.warning(parent, "Error", f"A key named '{new_def.name}' already exists.")
+        return None
+    if key_name:
+        config.replace_key(key_name, new_def)
+    else:
+        config.add_key(new_def.name, new_def)
+    return new_def.name
+
+
+def describe_key(key_def: KeyDefinition) -> str:
+    """What the key shows, in a few words."""
+    if key_def.is_widget():
+        return f"Widget: {key_def.widget}"
+    if key_def.is_icon_based():
+        return f"Icon: {Path(key_def.icon).name}"
+    if key_def.has_text():
+        return f"Text: {key_def.text}"
+    return "No icon or text"
+
+
+CAPTION_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class _ThumbnailDelegate(QStyledItemDelegate):
+    """Thumbnail over the key's name, and an optional usage line in a quieter colour."""
+
+    def paint(self, painter, option, index):
+        # The view hands every item the same option object, and
+        # initStyleOption writes the item's foreground into its palette; a
+        # copy keeps one dimmed key from dimming the next.
+        option = QStyleOptionViewItem(option)
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QApplication.style()
+        painter.save()
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
+        rect = option.rect.adjusted(4, 4, -4, -4)
+        size = option.decorationSize
+        icon_rect = QRect(rect.x() + (rect.width() - size.width()) // 2, rect.y(),
+                          size.width(), size.height())
+        option.icon.paint(painter, icon_rect)
+        metrics = option.fontMetrics
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        text_rect = QRect(rect.x(), icon_rect.bottom() + 4, rect.width(), metrics.height())
+        painter.setPen(option.palette.color(
+            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text))
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignHCenter,
+                         metrics.elidedText(index.data(Qt.ItemDataRole.DisplayRole),
+                                            Qt.TextElideMode.ElideRight, rect.width()))
+        caption = index.data(CAPTION_ROLE)
+        if caption:
+            font = QFont(option.font)
+            font.setPointSizeF(max(6.0, option.font.pointSizeF() * 0.85))
+            painter.setFont(font)
+            small = QFontMetrics(font)
+            painter.setPen(option.palette.color(QPalette.ColorRole.HighlightedText) if selected
+                           else QColor(COLORS['text_secondary']))
+            painter.drawText(QRect(rect.x(), text_rect.bottom() + 2, rect.width(), small.height()),
+                             Qt.AlignmentFlag.AlignHCenter,
+                             small.elidedText(caption, Qt.TextElideMode.ElideRight, rect.width()))
+        painter.restore()
+
+
+class KeyThumbnailGrid(QWidget):
+    """
+    Keys as the thumbnails the device grid draws, under a name filter.
+
+    Keys are found by how they look on the deck far more often than by name,
+    so this is what both the key picker and Manage Keys show.
+    """
+
+    THUMBNAIL = 64
+
+    activated = pyqtSignal(str)
+    selection_changed = pyqtSignal()
+
+    def __init__(self, config_dir: str, multi_select: bool = False, parent=None):
+        super().__init__(parent)
+        self._keys = {}
+        self._extra_filter = None
+        self._renderer = KeySquare(0)
+        self._renderer.config_dir = config_dir
+        self._renderer.preview_service = shared_previews()
+        self._renderer.preview_service.preview_ready.connect(self._refresh_widget_thumbnails)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(current_theme().metrics.spacing)
+
+        self.filter_row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filter keys by name")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.apply_filter)
+        self.filter_row.addWidget(self.search, stretch=1)
+        layout.addLayout(self.filter_row)
+
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.list.setMovement(QListWidget.Movement.Static)
+        self.list.setUniformItemSizes(True)
+        self.list.setWordWrap(True)
+        self.list.setSpacing(6)
+        self.list.setIconSize(QSize(self.THUMBNAIL, self.THUMBNAIL))
+        self.list.setItemDelegate(_ThumbnailDelegate(self.list))
+        self._set_cell_height(captioned=False)
+        if multi_select:
+            self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.list.itemActivated.connect(
+            lambda item: self.activated.emit(item.data(Qt.ItemDataRole.UserRole)))
+        self.list.itemSelectionChanged.connect(self.selection_changed.emit)
+        self.list.currentItemChanged.connect(lambda *_: self.selection_changed.emit())
+        layout.addWidget(self.list, stretch=1)
+
+        self.empty_label = QLabel("No keys match")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self.empty_label.hide()
+        layout.addWidget(self.empty_label)
+
+    def set_keys(self, keys: dict, captions: dict = None, dimmed=(), tooltips: dict = None) -> None:
+        """
+        Show ``keys`` (name -> KeyDefinition), keeping the selection by name.
+
+        Args:
+            captions: Optional second line under a key's name
+            dimmed: Names drawn in the secondary colour
+            tooltips: Optional extra tooltip line per name
+        """
+        selected = set(self.selected_names())
+        current = self.current_name()
+        self._keys = keys
+        self.list.clear()
+        captions, tooltips, dimmed = captions or {}, tooltips or {}, set(dimmed)
+        self._set_cell_height(captioned=bool(captions))
+        for name in sorted(keys, key=str.casefold):
+            item = QListWidgetItem(self._thumbnail(name, keys[name]), name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setData(CAPTION_ROLE, captions.get(name))
+            item.setToolTip("\n".join(filter(None, [name, describe_key(keys[name]),
+                                                     tooltips.get(name)])))
+            if name in dimmed:
+                item.setForeground(QColor(COLORS['text_secondary']))
+            self.list.addItem(item)
+            if name == current:
+                self.list.setCurrentItem(item)
+            item.setSelected(name in selected)
+        self.apply_filter()
+
+    def set_extra_filter(self, predicate) -> None:
+        """Hide keys for which ``predicate(name)`` is false; None shows all."""
+        self._extra_filter = predicate
+        self.apply_filter()
+
+    def apply_filter(self, *_args) -> None:
+        needle = self.search.text().strip().casefold()
+        first_visible = None
+        for item in self._items():
+            name = item.data(Qt.ItemDataRole.UserRole)
+            hidden = needle not in name.casefold() or \
+                (self._extra_filter is not None and not self._extra_filter(name))
+            item.setHidden(hidden)
+            if hidden:
+                item.setSelected(False)
+            elif first_visible is None:
+                first_visible = item
+        # Keep a match current, so typing a few letters and pressing Enter acts on it.
+        current = self.list.currentItem()
+        if current is None or current.isHidden():
+            self.list.setCurrentItem(first_visible)
+        self.empty_label.setVisible(first_visible is None)
+        self.selection_changed.emit()
+
+    def current_name(self):
+        item = self.list.currentItem()
+        return None if item is None or item.isHidden() else item.data(Qt.ItemDataRole.UserRole)
+
+    def selected_names(self) -> list:
+        """The selected keys, or the current one when nothing is selected."""
+        names = [item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()
+                 if not item.isHidden()]
+        if not names and self.current_name():
+            names = [self.current_name()]
+        return names
+
+    def visible_names(self) -> list:
+        return [item.data(Qt.ItemDataRole.UserRole) for item in self._items() if not item.isHidden()]
+
+    def select(self, name: str) -> None:
+        for item in self._items():
+            if item.data(Qt.ItemDataRole.UserRole) == name:
+                self.list.clearSelection()
+                self.list.setCurrentItem(item)
+                self.list.scrollToItem(item)
+                return
+
+    def release(self) -> None:
+        """Stop listening for widget snapshots; the preview service outlives this grid."""
+        try:
+            self._renderer.preview_service.preview_ready.disconnect(self._refresh_widget_thumbnails)
+        except TypeError:
+            pass
+
+    def _set_cell_height(self, captioned: bool) -> None:
+        lines = self.list.fontMetrics().height() * (2 if captioned else 1) + (2 if captioned else 0)
+        self.list.setGridSize(QSize(self.THUMBNAIL + 56, self.THUMBNAIL + lines + 16))
+
+    def _items(self):
+        return [self.list.item(row) for row in range(self.list.count())]
+
+    def _thumbnail(self, name: str, key_def: KeyDefinition) -> QIcon:
+        self._renderer.set_key(name, key_def)
+        pixmap = self._renderer.grab().scaled(
+            self.THUMBNAIL, self.THUMBNAIL, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        icon = QIcon(pixmap)
+        # Without this the selection tints the thumbnail, which then no
+        # longer looks like the key.
+        icon.addPixmap(pixmap, QIcon.Mode.Selected)
+        return icon
+
+    def _refresh_widget_thumbnails(self, _key: str) -> None:
+        """Widget snapshots arrive after the grid is drawn; redraw once they do."""
+        for item in self._items():
+            name = item.data(Qt.ItemDataRole.UserRole)
+            key_def = self._keys.get(name)
+            if key_def is not None and key_def.is_widget():
+                item.setIcon(self._thumbnail(name, key_def))
+
+
 class ManageKeysDialog(ThemedDialog):
-    """Dialog for managing all key definitions"""
-    
+    """Every key definition, with where each one is used."""
+
     def __init__(self, config, parent=None):
-        super().__init__(parent=parent)
+        super().__init__("Manage All Keys", parent=parent)
         self.config = config
         self.modified = False
-        
-        self.setWindowTitle("Manage All Keys")
-        self.setMinimumSize(600, 500)
-        
-        self.setup_ui()
-        self.refresh_keys_list()
-    
-    def setup_ui(self):
-        """Setup the UI"""
+        self.setMinimumSize(680, 540)
+
         layout = self.content_layout
-        
-        # Title bar with add button
-        title_layout = QHBoxLayout()
-        
-        title = QLabel("All Key Definitions")
-        title.setProperty("headingLevel", "2")
-        title_layout.addWidget(title)
-        
-        title_layout.addStretch()
-        
-        self.add_btn = glyph_button("+", "add", "Add new key", size=24,
-                                    icon=('list-add', 'list-add-symbolic'))
-        self.add_btn.clicked.connect(self.add_new_key)
-        title_layout.addWidget(self.add_btn)
-        
-        layout.addLayout(title_layout)
-        
-        # Keys list
-        self.keys_list = QListWidget()
-        layout.addWidget(self.keys_list)
-        
+        self.grid = KeyThumbnailGrid(config.config_dir, multi_select=True)
+        self.unused_only = QCheckBox("Unused only")
+        self.unused_only.setToolTip("Keys on no layout and not swapped in by any CHANGE_KEY action")
+        self.unused_only.toggled.connect(self._apply_unused_filter)
+        self.grid.filter_row.addWidget(self.unused_only)
+        self.grid.activated.connect(self.edit_key_by_name)
+        self.grid.search.returnPressed.connect(self.edit_selected)
+        self.grid.selection_changed.connect(self._update_buttons)
+        layout.addWidget(self.grid, stretch=1)
+
+        buttons = QHBoxLayout()
+        self.new_btn = make_button("New…")
+        self.new_btn.setIcon(themed_icon('list-add'))
+        self.new_btn.clicked.connect(self.add_new_key)
+        self.edit_btn = make_button("Edit…")
+        self.edit_btn.setIcon(themed_icon('document-edit', 'edit-entry'))
+        self.edit_btn.clicked.connect(self.edit_selected)
+        self.duplicate_btn = make_button("Duplicate")
+        self.duplicate_btn.setIcon(themed_icon('edit-copy'))
+        self.duplicate_btn.clicked.connect(self.duplicate_selected)
+        self.delete_btn = make_button("Delete")
+        self.delete_btn.setIcon(themed_icon('edit-delete', 'edit-delete-symbolic'))
+        self.delete_btn.clicked.connect(self.delete_selected)
+        for button in (self.new_btn, self.edit_btn, self.duplicate_btn, self.delete_btn):
+            button.setAutoDefault(False)
+            buttons.addWidget(button)
+        buttons.addStretch()
+        self.summary = QLabel()
+        self.summary.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        buttons.addWidget(self.summary)
+        layout.addLayout(buttons)
+
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.grid.list)
+        delete_shortcut.activated.connect(self.delete_selected)
+
         self.add_actions("Close", self.accept, cancel=None)
-    
+        self.affirmative_button.setAutoDefault(False)
+        self.affirmative_button.setDefault(False)
+        self.refresh_keys_list()
+        self.grid.search.setFocus()
+
     def refresh_keys_list(self):
-        """Refresh the keys list display"""
-        self.keys_list.clear()
-        
-        if not self.config.keys:
-            item = QListWidgetItem("No keys defined")
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.keys_list.addItem(item)
-            return
-        
-        for key_name, key_def in self.config.keys.items():
-            # Create list item
-            item = QListWidgetItem(self.keys_list)
-            
-            # Create custom widget with edit and delete buttons
-            widget = QWidget()
-            widget_layout = QHBoxLayout(widget)
-            widget_layout.setContentsMargins(8, 0, 8, 0)
-            widget_layout.setSpacing(8)
-            
-            # Key info label
-            if key_def.is_widget():
-                item_text = f"{key_name} (Widget: {key_def.widget})"
-            elif key_def.is_icon_based():
-                item_text = f"{key_name} (Icon: {Path(key_def.icon).name})"
-            elif key_def.is_text_based():
-                item_text = f"{key_name} (Text: {key_def.text})"
-            else:
-                item_text = key_name
-            
-            label = QLabel(item_text)
-            widget_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignVCenter)
-            
-            widget_layout.addStretch()
-            
-            edit_btn = glyph_button("✎", "edit", "Edit key", size=22,
-                                    icon=('document-edit', 'edit-entry'))
-            edit_btn.clicked.connect(lambda checked, n=key_name: self.edit_key_by_name(n))
-            widget_layout.addWidget(edit_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
-            
-            delete_btn = glyph_button("✕", "remove", "Delete key", size=22,
-                                      icon=('edit-delete', 'edit-delete-symbolic'))
-            delete_btn.clicked.connect(lambda checked, n=key_name: self.delete_key_by_name(n))
-            widget_layout.addWidget(delete_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
-            
-            # Set the widget for the item with proper height
-            row_height = current_theme().metrics.list_row_height
-            widget.setMinimumHeight(row_height)
-            item.setSizeHint(QSize(widget.sizeHint().width(), row_height))
-            self.keys_list.setItemWidget(item, widget)
-            
-            # Store key name in item data
-            item.setData(Qt.ItemDataRole.UserRole, key_name)
-    
+        """Redraw every key with its usage."""
+        self._usage = {name: self.config.key_usage(name) for name in self.config.keys}
+        captions, tooltips = {}, {}
+        for name, usage in self._usage.items():
+            captions[name] = ", ".join(usage.layouts) if usage.layouts else \
+                ("via CHANGE_KEY" if usage.changed_to_by else "unused")
+            lines = []
+            if usage.layouts:
+                lines.append("On layouts: " + ", ".join(usage.layouts))
+            if usage.changed_to_by:
+                lines.append("Swapped in by: " + ", ".join(usage.changed_to_by))
+            tooltips[name] = "\n".join(lines) or "Not used anywhere"
+        unused = [name for name, usage in self._usage.items() if usage.unused]
+        self.grid.set_keys(self.config.keys, captions, dimmed=unused, tooltips=tooltips)
+        self.summary.setText(f"{len(self.config.keys)} keys, {len(unused)} unused")
+        self._update_buttons()
+
+    def _apply_unused_filter(self, checked: bool) -> None:
+        self.grid.set_extra_filter((lambda name: self._usage[name].unused) if checked else None)
+
+    def _update_buttons(self) -> None:
+        count = len(self.grid.selected_names())
+        self.edit_btn.setEnabled(count == 1)
+        self.duplicate_btn.setEnabled(count == 1)
+        self.delete_btn.setEnabled(count > 0)
+        self.delete_btn.setText(f"Delete {count}" if count > 1 else "Delete")
+
     def add_new_key(self):
-        """Add a new key"""
-        existing_keys = list(self.config.keys.keys())
-        available_layouts = list(self.config.layouts.keys())
-        available_keys = list(self.config.keys.keys())
-        editor = KeyEditorDialog(existing_keys=existing_keys,
-                                available_layouts=available_layouts,
-                                available_keys=available_keys,
-                                parent=self)
-        
-        if editor.exec() == QDialog.DialogCode.Accepted:
-            key_def = editor.get_key_definition()
-            
-            # Check if key name already exists
-            if key_def.name in self.config.keys:
-                QMessageBox.warning(self, "Error", "Key name already exists!")
-                return
-            
-            # Add key to config
-            self.config.add_key(key_def.name, key_def)
-            self.modified = True
-            self.refresh_keys_list()
-    
+        name = run_key_editor(self, self.config)
+        if name:
+            self._changed(select=name)
+
+    def edit_selected(self):
+        names = self.grid.selected_names()
+        if len(names) == 1:
+            self.edit_key_by_name(names[0])
+
     def edit_key_by_name(self, key_name: str):
-        """Edit a key by its name"""
-        if not key_name or key_name not in self.config.keys:
+        if key_name not in self.config.keys:
             return
-        
-        key_def = self.config.keys[key_name]
-        existing_keys = [k for k in self.config.keys.keys() if k != key_name]
-        available_layouts = list(self.config.layouts.keys())
-        available_keys = [k for k in self.config.keys.keys() if k != key_name]
-        
-        editor = KeyEditorDialog(key_def, existing_keys, available_layouts, available_keys, self)
-        
-        if editor.exec() == QDialog.DialogCode.Accepted:
-            new_key_def = editor.get_key_definition()
-            
-            # Check if name changed and new name already exists
-            if new_key_def.name != key_name and new_key_def.name in self.config.keys:
-                QMessageBox.warning(self, "Error", "Key name already exists!")
-                return
-            
-            # If name changed, update all layouts
-            if new_key_def.name != key_name:
-                self.rename_key_in_layouts(key_name, new_key_def.name)
-                self.config.remove_key(key_name)
-            
-            # Update key definition
-            self.config.add_key(new_key_def.name, new_key_def)
-            self.modified = True
-            self.refresh_keys_list()
-    
+        name = run_key_editor(self, self.config, key_name)
+        if name:
+            self._changed(select=name)
+
+    def duplicate_selected(self):
+        names = self.grid.selected_names()
+        if len(names) == 1:
+            self._changed(select=self.config.duplicate_key(names[0]))
+
+    def delete_selected(self):
+        names = self.grid.selected_names()
+        if not names:
+            return
+        used = {name: self._usage[name] for name in names if not self._usage[name].unused}
+        subject = f"key '{names[0]}'" if len(names) == 1 else f"{len(names)} keys"
+        message = f"Delete {subject}?"
+        if used:
+            details = []
+            for name, usage in used.items():
+                places = usage.layouts + [f"CHANGE_KEY in {other}" for other in usage.changed_to_by]
+                details.append(f"• {name}: {', '.join(places)}")
+            message += ("\n\nStill in use - it will be removed from these layouts and actions:\n"
+                        + "\n".join(details))
+        reply = QMessageBox.question(self, "Confirm Deletion", message,
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for name in names:
+            self.config.delete_key(name)
+        self._changed()
+
     def delete_key_by_name(self, key_name: str):
-        """Delete a key by its name"""
-        if not key_name or key_name not in self.config.keys:
-            return
-        
-        # Check which layouts use this key
-        using_layouts = []
-        for layout_name, layout in self.config.layouts.items():
-            for pos, assigned_key in layout.keys.items():
-                if assigned_key == key_name:
-                    using_layouts.append(layout_name)
-                    break
-        
-        # Confirm deletion
-        if using_layouts:
-            layouts_str = ", ".join(using_layouts)
-            reply = QMessageBox.question(
-                self,
-                "Confirm Deletion",
-                f"Key '{key_name}' is used in the following layout(s):\n{layouts_str}\n\n"
-                f"Deleting this key will remove it from all layouts.\n\nContinue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-        else:
-            reply = QMessageBox.question(
-                self,
-                "Confirm Deletion",
-                f"Are you sure you want to delete key '{key_name}'?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # Remove key from all layouts
-            for layout in self.config.layouts.values():
-                positions_to_remove = []
-                for pos, assigned_key in layout.keys.items():
-                    if assigned_key == key_name:
-                        positions_to_remove.append(pos)
-                for pos in positions_to_remove:
-                    layout.remove_key_at_position(pos)
-            
-            # Remove key definition
-            self.config.remove_key(key_name)
-            self.modified = True
-            self.refresh_keys_list()
-    
-    def rename_key_in_layouts(self, old_name: str, new_name: str):
-        """Rename a key in all layouts"""
-        for layout in self.config.layouts.values():
-            for position, key_name in list(layout.keys.items()):
-                if key_name == old_name:
-                    layout.keys[position] = new_name
-    
+        self.grid.select(key_name)
+        self.delete_selected()
+
+    def _changed(self, select: str = None) -> None:
+        self.modified = True
+        self.refresh_keys_list()
+        if select:
+            self.grid.select(select)
+
     def was_modified(self) -> bool:
         """Check if any modifications were made"""
         return self.modified
 
+    def done(self, result: int) -> None:
+        self.grid.release()
+        super().done(result)
+
+
+class KeyPickerDialog(ThemedDialog):
+    """Pick an existing key by its thumbnail."""
+
+    def __init__(self, keys: dict, title: str, config_dir: str,
+                 in_layout=(), exclude=(), parent=None):
+        """
+        Args:
+            keys: Key name -> KeyDefinition to choose from
+            title: Window title, which also names what picking does
+            config_dir: Where relative icon paths resolve
+            in_layout: Names already on the current layout, marked as such
+            exclude: Names not to offer at all
+        """
+        super().__init__(title, parent)
+        self.selected_key = None
+        self.setMinimumSize(560, 460)
+
+        self.grid = KeyThumbnailGrid(config_dir)
+        self.search = self.grid.search
+        self.grid.activated.connect(self._pick)
+        self.search.returnPressed.connect(self._pick_current)
+        self.grid.selection_changed.connect(self._update_affirmative)
+        self.content_layout.addWidget(self.grid, stretch=1)
+
+        excluded = set(exclude)
+        in_layout = set(in_layout)
+        self.grid.set_keys({name: key_def for name, key_def in keys.items() if name not in excluded},
+                           dimmed=in_layout,
+                           tooltips={name: "Already on this layout" for name in in_layout})
+
+        self.add_actions("Assign", self._pick_current)
+        self._update_affirmative()
+        self.search.setFocus()
+
+    def _update_affirmative(self) -> None:
+        if self.affirmative_button is not None:
+            self.affirmative_button.setEnabled(self.grid.current_name() is not None)
+
+    def _pick_current(self) -> None:
+        name = self.grid.current_name()
+        if name is not None:
+            self._pick(name)
+
+    def _pick(self, name: str) -> None:
+        self.selected_key = name
+        self.accept()
+
+    def done(self, result: int) -> None:
+        self.grid.release()
+        super().done(result)
+
+
+MATCH_FIELD_LABELS = {
+    "class": "Application (window class)",
+    "title": "Window title",
+    "raw": "Raw detector output (advanced)",
+}
+
+
+def split_patterns(text: str):
+    """'a, b' -> ['a', 'b']; a single pattern stays a plain string, as the file spells it."""
+    patterns = [part.strip() for part in text.split(",") if part.strip()]
+    return patterns[0] if len(patterns) == 1 else patterns
+
 
 class WindowRuleDialog(ThemedDialog):
-    """Dialog for adding/editing a window rule"""
-    
-    def __init__(self, available_layouts: list, rule_name: str = None, window_rule=None, existing_rules: list = None, parent=None):
+    """
+    Add or edit a window rule.
+
+    The hard part of a rule is knowing what the window calls itself, so the
+    dialog lists recently focused windows to take a pattern from, and says
+    which of them the pattern matches, through the same matcher the
+    runtime uses.
+    """
+
+    def __init__(self, available_layouts: list, rule_name: str = None, window_rule=None,
+                 existing_rules: list = None, parent=None, recent_windows=(),
+                 suggest_name=None, preset_layout: str = None):
+        """
+        Args:
+            recent_windows: WindowInfo objects, newest first
+            suggest_name: pattern -> a free rule name, for a name left blank
+            preset_layout: Target layout to start from, for a new rule
+        """
         super().__init__(parent=parent)
         self.available_layouts = available_layouts
         self.original_rule_name = rule_name
         self.window_rule = window_rule
         self.existing_rules = existing_rules or []
-        
+        self.recent_windows = list(recent_windows)
+        self.suggest_name = suggest_name or (lambda pattern: "")
+
         self.setWindowTitle("Add Window Rule" if not rule_name else "Edit Window Rule")
-        self.setMinimumWidth(450)
-        
+        self.setMinimumWidth(520)
+
         self.setup_ui()
-        
+
         if window_rule:
             self.load_rule(window_rule)
-    
+        elif preset_layout:
+            index = self.layout_combo.findText(preset_layout)
+            if index >= 0:
+                self.layout_combo.setCurrentIndex(index)
+        self._refresh_matches()
+
     def setup_ui(self):
         """Setup the UI"""
         layout = self.content_layout
-        
-        # Form layout
         form = QFormLayout()
-        
-        # Rule name
-        self.name_input = QLineEdit()
-        if self.original_rule_name:
-            self.name_input.setText(self.original_rule_name)
-        self.name_input.setPlaceholderText("Enter a unique rule name")
-        form.addRow("Rule Name:", self.name_input)
-        
-        # Window name pattern
+
         self.window_name_input = QLineEdit()
-        self.window_name_input.setPlaceholderText("e.g., firefox, kate, konsole")
-        form.addRow("Window Pattern:", self.window_name_input)
-        
-        # Match field selector
-        self.match_field_combo = QComboBox()
-        self.match_field_combo.addItems(["class", "title", "raw"])
-        self.match_field_combo.setCurrentText("class")
-        self.match_field_combo.currentTextChanged.connect(self._update_placeholder)
-        form.addRow("Match By:", self.match_field_combo)
-        
-        # Target layout
+        self.window_name_input.setToolTip("Matched case-insensitively anywhere in the text. "
+                                          "Separate several patterns with commas; any of them matches.")
+        self.window_name_input.textChanged.connect(self._refresh_matches)
+        form.addRow("When the:", self.match_row())
+        self.regex_check = QCheckBox("Regular expression")
+        self.regex_check.setToolTip("Treat each pattern as a case-insensitive regular expression")
+        self.regex_check.toggled.connect(self._refresh_matches)
+        pattern_row = QHBoxLayout()
+        pattern_row.addWidget(self.window_name_input, stretch=1)
+        pattern_row.addWidget(self.regex_check)
+        form.addRow("contains:", pattern_row)
+
         self.layout_combo = QComboBox()
         if self.available_layouts:
             self.layout_combo.addItems(self.available_layouts)
         else:
             self.layout_combo.addItem("No layouts available")
             self.layout_combo.setEnabled(False)
-        form.addRow("Target Layout:", self.layout_combo)
-        
+        form.addRow("switch to:", self.layout_combo)
+
+        self.name_input = QLineEdit()
+        if self.original_rule_name:
+            self.name_input.setText(self.original_rule_name)
+        self.name_input.textChanged.connect(self._refresh_name_placeholder)
+        form.addRow("Rule name:", self.name_input)
         layout.addLayout(form)
-        
-        # Help text
-        help_label = QLabel(
-            "The window rule will automatically switch to the target layout\n"
-            "when a window matching the pattern becomes active.\n\n"
-            "Match By:\n"
-            "• class - Match against window class/application name (recommended)\n"
-            "• title - Match against window title text\n"
-            "• raw - Match against raw window information"
-        )
-        help_label.setProperty("textRole", "caption")
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
-        
+
+        recent_label = QLabel("Recently focused windows - click one to use it:")
+        recent_label.setProperty("textRole", "caption")
+        layout.addWidget(recent_label)
+        self.recent_list = QListWidget()
+        self.recent_list.setMinimumHeight(170)
+        self.recent_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.recent_list.setItemDelegate(SidebarRowDelegate(self.recent_list))
+        self.recent_list.itemClicked.connect(self._use_recent_window)
+        if self.recent_windows:
+            for window in self.recent_windows:
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, window)
+                item.setToolTip(f"Class: {window.class_}\nTitle: {window.title}")
+                self.recent_list.addItem(item)
+        else:
+            item = QListWidgetItem("None yet - connect the deck, then switch to the window you "
+                                   "mean and back here.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.recent_list.addItem(item)
+        layout.addWidget(self.recent_list, stretch=1)
+
+        self.match_summary = QLabel()
+        self.match_summary.setProperty("textRole", "caption")
+        self.match_summary.setWordWrap(True)
+        layout.addWidget(self.match_summary)
+
         self.add_actions("Save", self.validate_and_accept)
-    
-    def _update_placeholder(self, match_field: str):
+        self._update_placeholder()
+        self.window_name_input.setFocus()
+
+    def match_row(self) -> QComboBox:
+        self.match_field_combo = QComboBox()
+        # Raw output is detector-specific; offered only to a rule already using it.
+        for field_name in ("class", "title"):
+            self.match_field_combo.addItem(MATCH_FIELD_LABELS[field_name], field_name)
+        self.match_field_combo.currentIndexChanged.connect(self._update_placeholder)
+        self.match_field_combo.currentIndexChanged.connect(self._refresh_matches)
+        return self.match_field_combo
+
+    def match_field(self) -> str:
+        return self.match_field_combo.currentData() or "class"
+
+    def _update_placeholder(self, *_args):
         """Update the placeholder text based on selected match field"""
         placeholders = {
-            'class': 'e.g., firefox, kate, konsole, chrome',
-            'title': 'e.g., Mozilla Firefox, Document.txt',
-            'raw': 'e.g., full window information string'
+            'class': 'e.g. firefox, konsole, jetbrains-idea',
+            'title': 'e.g. Google Meet, - YouTube',
+            'raw': 'text from the detector output',
         }
-        self.window_name_input.setPlaceholderText(placeholders.get(match_field, ''))
-    
+        self.window_name_input.setPlaceholderText(placeholders.get(self.match_field(), ''))
+
+    def _refresh_name_placeholder(self, *_args):
+        pattern = self.window_name_input.text().strip()
+        suggestion = self.suggest_name(pattern) if pattern else ""
+        self.name_input.setPlaceholderText(f"Automatic: {suggestion}" if suggestion
+                                           else "Automatic from the pattern")
+
+    def _use_recent_window(self, item: QListWidgetItem):
+        window = item.data(Qt.ItemDataRole.UserRole)
+        if window is None:
+            return
+        value = window.title if self.match_field() == "title" else window.class_
+        self.window_name_input.setText(value)
+
+    def _refresh_matches(self, *_args):
+        from StreamDock.business_logic.layout_manager import rule_patterns, window_matches
+        self._refresh_name_placeholder()
+        pattern = split_patterns(self.window_name_input.text())
+        field_name = self.match_field()
+        try:
+            pattern = rule_patterns(pattern, self.regex_check.isChecked()) if pattern else pattern
+        except re.error as e:
+            self.match_summary.setText(f"✗ Not a valid regular expression: {e}")
+            return
+        matched = []
+        for row in range(self.recent_list.count()):
+            item = self.recent_list.item(row)
+            window = item.data(Qt.ItemDataRole.UserRole)
+            if window is None:
+                continue
+            # The field being matched on top, where the eye compares it with the pattern.
+            by_title = field_name == "title"
+            item.setText(window.title if by_title else window.class_)
+            item.setData(SIDEBAR_CAPTION_ROLE, window.class_ if by_title else window.title)
+            hit = bool(pattern) and window_matches(window, pattern, field_name)
+            font = item.font()
+            font.setBold(hit)
+            item.setFont(font)
+            if hit:
+                matched.append(window)
+        if not pattern:
+            self.match_summary.setText("Type part of the application name or title, "
+                                       "or pick a window above.")
+        elif not self.recent_windows:
+            self.match_summary.setText("")
+        elif matched:
+            count = len(matched)
+            self.match_summary.setText(f"✓ Matches {count} of the recent windows (shown in bold).")
+        else:
+            self.match_summary.setText("Matches none of the recent windows.")
+
     def validate_and_accept(self):
         """Validate the form before accepting"""
-        name = self.name_input.text().strip()
+        name = self.rule_name()
         window_name = self.window_name_input.text().strip()
-        
-        if not name:
-            QMessageBox.warning(self, "Validation Error", "Rule name is required.")
+
+        if not window_name or not split_patterns(window_name):
+            QMessageBox.warning(self, "Validation Error", "Enter what the window's name contains.")
             return
-        
+
+        if self.regex_check.isChecked():
+            from StreamDock.business_logic.layout_manager import rule_patterns
+            try:
+                rule_patterns(split_patterns(window_name), True)
+            except re.error as e:
+                QMessageBox.warning(self, "Validation Error", f"Not a valid regular expression: {e}")
+                return
+
         # Check if name already exists (but allow keeping the same name when editing)
         if name != self.original_rule_name and name in self.existing_rules:
             QMessageBox.warning(self, "Validation Error", f"Rule name '{name}' already exists.")
             return
-        
-        if not window_name:
-            QMessageBox.warning(self, "Validation Error", "Window name pattern is required.")
-            return
-        
+
         if not self.available_layouts:
             QMessageBox.warning(self, "Validation Error", "No layouts available.")
             return
-        
+
         self.accept()
-    
+
+    def rule_name(self) -> str:
+        return self.name_input.text().strip() or \
+            self.suggest_name(self.window_name_input.text().strip()) or "WindowRule"
+
     def load_rule(self, rule):
         """Load rule data into the form"""
-        if rule.window_name:
-            self.window_name_input.setText(rule.window_name)
+        # window_name may be a list in the file; show it comma-separated.
+        patterns = rule.patterns() if hasattr(rule, 'patterns') else [rule.window_name]
+        self.window_name_input.setText(", ".join(str(p) for p in patterns if p))
         if rule.layout:
             index = self.layout_combo.findText(rule.layout)
             if index >= 0:
                 self.layout_combo.setCurrentIndex(index)
-        if hasattr(rule, 'match_field') and rule.match_field:
-            index = self.match_field_combo.findText(rule.match_field)
-            if index >= 0:
-                self.match_field_combo.setCurrentIndex(index)
-    
+        self.regex_check.setChecked(bool(getattr(rule, 'is_regex', False)))
+        field_name = getattr(rule, 'match_field', None) or "class"
+        if self.match_field_combo.findData(field_name) < 0 and field_name in MATCH_FIELD_LABELS:
+            self.match_field_combo.addItem(MATCH_FIELD_LABELS[field_name], field_name)
+        index = self.match_field_combo.findData(field_name)
+        if index >= 0:
+            self.match_field_combo.setCurrentIndex(index)
+
     def get_rule_data(self) -> dict:
         """Get the rule data from the form (validation already done)"""
-        name = self.name_input.text().strip()
-        window_name = self.window_name_input.text().strip()
-        layout = self.layout_combo.currentText()
-        match_field = self.match_field_combo.currentText()
-        
         return {
-            'name': name,
-            'window_name': window_name,
-            'layout': layout,
-            'match_field': match_field
+            'name': self.rule_name(),
+            'window_name': split_patterns(self.window_name_input.text()),
+            'layout': self.layout_combo.currentText(),
+            'match_field': self.match_field(),
+            'is_regex': self.regex_check.isChecked(),
         }
 
 
 class LayoutEditorDialog(ThemedDialog):
     """Dialog for creating or editing a layout"""
-    
-    def __init__(self, layout_name: str = None, clear_all: bool = False, 
-                 existing_layouts: list = None, parent=None):
+
+    def __init__(self, layout_name: str = None, clear_all: bool = False,
+                 existing_layouts: list = None, parent=None, rename_only: bool = False):
+        """
+        Args:
+            rename_only: Show just the name, selected, for F2
+        """
         super().__init__(parent=parent)
         self.original_name = layout_name
         self.existing_layouts = existing_layouts or []
-        
-        self.setWindowTitle("Edit Layout" if layout_name else "New Layout")
-        self.setMinimumSize(400, 200)
-        
+
+        self.setWindowTitle("Rename Layout" if rename_only
+                            else "Edit Layout" if layout_name else "New Layout")
+        self.setMinimumWidth(400)
+
         self.setup_ui(layout_name, clear_all)
-    
+        self.clear_all_toggle.setVisible(not rename_only)
+        self.name_input.selectAll()
+        self.name_input.setFocus()
+
     def setup_ui(self, layout_name: str, clear_all: bool):
         """Setup the UI"""
         layout = self.content_layout
         layout.setSpacing(16)
-        
-        # Layout name
+
         form_layout = QFormLayout()
         form_layout.setSpacing(12)
-        
+
         self.name_input = QLineEdit()
         if layout_name:
             self.name_input.setText(layout_name)
         self.name_input.setPlaceholderText("Enter layout name")
         form_layout.addRow("Layout Name:", self.name_input)
-        
+
         layout.addLayout(form_layout)
-        
-        # Clear all icons switch
+
         self.clear_all_toggle = ToggleSwitch(
-            "Clear all icons when switching to this layout")
+            "Blank keys this layout leaves empty")
+        self.clear_all_toggle.setToolTip(
+            "Otherwise a position this layout leaves empty keeps the previous layout's key - "
+            "its image and its actions.")
         self.clear_all_toggle.setChecked(clear_all)
         layout.addWidget(self.clear_all_toggle)
-        
-        # Help text
-        help_label = QLabel(
-            "When 'Clear all icons' is enabled, all keys will be cleared\n"
-            "before this layout is applied, ensuring a clean slate."
-        )
-        help_label.setProperty("textRole", "caption")
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
-        
+
         layout.addStretch()
-        
+
         self.add_actions("Save", self.validate_and_accept)
-    
+
     def validate_and_accept(self):
         """Validate the form before accepting"""
         name = self.name_input.text().strip()
-        
+
         if not name:
             QMessageBox.warning(self, "Validation Error", "Layout name is required.")
             return
-        
+
         # Check if name already exists (but allow keeping the same name when editing)
         if name != self.original_name and name in self.existing_layouts:
             QMessageBox.warning(self, "Validation Error", f"Layout name '{name}' already exists.")
             return
-        
+
         self.accept()
-    
+
     def get_layout_data(self) -> dict:
         """Get the layout data from the form"""
         return {
             'name': self.name_input.text().strip(),
             'clear_all': self.clear_all_toggle.isChecked()
         }
+
+
+class DeleteLayoutDialog(ThemedDialog):
+    """
+    Confirm deleting a layout, and decide what happens to its window rules.
+
+    A rule may not point at a missing layout - the file would stop loading -
+    so its rules either move to another layout or go with it.
+    """
+
+    def __init__(self, layout_name: str, usage, other_layouts: list, emptied_keys=(), parent=None):
+        """
+        Args:
+            emptied_keys: Keys left with no action at all, which the user must fix
+        """
+        super().__init__("Delete Layout", parent=parent)
+        self.setMinimumWidth(420)
+        layout = self.content_layout
+
+        lines = [f"Delete layout '{layout_name}'?"]
+        if usage.keys:
+            lines.append(f"\nThe CHANGE_LAYOUT actions switching to it will be removed from: "
+                         f"{', '.join(usage.keys)}.")
+        if emptied_keys:
+            lines.append(f"\n⚠ That leaves {', '.join(emptied_keys)} with no action at all; "
+                         "edit or delete them afterwards, or the configuration will not apply.")
+        message = QLabel("\n".join(lines))
+        message.setWordWrap(True)
+        layout.addWidget(message)
+
+        self.move_radio = None
+        self.target_combo = None
+        if usage.rules:
+            rules_label = QLabel(f"Window rules switching to it: {', '.join(usage.rules)}")
+            rules_label.setWordWrap(True)
+            layout.addWidget(rules_label)
+            row = QHBoxLayout()
+            self.move_radio = QRadioButton("Move them to")
+            self.target_combo = QComboBox()
+            self.target_combo.addItems(other_layouts)
+            row.addWidget(self.move_radio)
+            row.addWidget(self.target_combo, stretch=1)
+            layout.addLayout(row)
+            self.delete_radio = QRadioButton("Delete them too")
+            layout.addWidget(self.delete_radio)
+            if other_layouts:
+                self.move_radio.setChecked(True)
+            else:
+                self.move_radio.setEnabled(False)
+                self.target_combo.setEnabled(False)
+                self.delete_radio.setChecked(True)
+            self.move_radio.toggled.connect(self.target_combo.setEnabled)
+
+        self.add_actions("Delete", self.accept, role="danger")
+
+    def move_rules_to(self):
+        """The layout to move the rules to, or None to delete them."""
+        if self.move_radio is not None and self.move_radio.isChecked():
+            return self.target_combo.currentText()
+        return None
 
 
 class AdvancedSettingsDialog(ThemedDialog):

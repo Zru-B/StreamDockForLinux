@@ -12,6 +12,7 @@ deliberately free of Qt, so it can be tested without a display.
 import copy
 import os
 import tempfile
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -270,7 +271,7 @@ class Layout:
 class WindowRule:
     """A rule mapping a focused window to a layout."""
 
-    KNOWN_FIELDS = ('window_name', 'layout', 'match_field', 'priority')
+    KNOWN_FIELDS = ('window_name', 'layout', 'match_field', 'priority', 'is_regex')
 
     def __init__(self, name: str, data: Optional[Dict[str, Any]] = None):
         self.name = name
@@ -278,6 +279,7 @@ class WindowRule:
         self.layout: str = ""
         self.match_field: str = DEFAULT_MATCH_FIELD
         self.priority: int = 0
+        self.is_regex: bool = False
         self.extra: Dict[str, Any] = {}
 
         if data:
@@ -290,6 +292,7 @@ class WindowRule:
         self.layout = data.get('layout', "")
         self.match_field = data.get('match_field', DEFAULT_MATCH_FIELD)
         self.priority = data.get('priority', 0)
+        self.is_regex = data.get('is_regex', False)
         self.extra = _extras(data, self.KNOWN_FIELDS)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -300,6 +303,8 @@ class WindowRule:
         result['match_field'] = self.match_field
         if self.priority:
             result['priority'] = self.priority
+        if self.is_regex:
+            result['is_regex'] = self.is_regex
         return result
 
     def patterns(self) -> List[str]:
@@ -357,6 +362,62 @@ class Settings:
             if value != default or field in self._explicit:
                 result[field] = value
         return result
+
+
+def _actions_of(key_def: KeyDefinition) -> List[Dict[str, Any]]:
+    return [action for field_name in ACTION_FIELDS for action in getattr(key_def, field_name)
+            if isinstance(action, dict)]
+
+
+@dataclass
+class KeyUsage:
+    """Where a key is reachable from: layout slots, and other keys' CHANGE_KEY actions."""
+    layouts: List[str] = field(default_factory=list)
+    changed_to_by: List[str] = field(default_factory=list)
+
+    @property
+    def unused(self) -> bool:
+        return not self.layouts and not self.changed_to_by
+
+
+@dataclass
+class LayoutUsage:
+    """How a layout is reached: as the default, by window rules, or by CHANGE_LAYOUT keys."""
+    is_default: bool = False
+    rules: List[str] = field(default_factory=list)
+    keys: List[str] = field(default_factory=list)
+
+    @property
+    def reachable(self) -> bool:
+        return self.is_default or bool(self.rules) or bool(self.keys)
+
+
+def _layout_target(action: Dict[str, Any]) -> Optional[str]:
+    """The layout a CHANGE_LAYOUT action switches to, in either of its spellings."""
+    value = action.get('CHANGE_LAYOUT')
+    if isinstance(value, dict):
+        value = value.get('layout')
+    return value if isinstance(value, str) else None
+
+
+def _retarget_layout(action: Dict[str, Any], new_name: str) -> None:
+    if isinstance(action['CHANGE_LAYOUT'], dict):
+        action['CHANGE_LAYOUT']['layout'] = new_name
+    else:
+        action['CHANGE_LAYOUT'] = new_name
+
+
+def _unique_name(base: str, taken) -> str:
+    name, n = base, 1
+    while name in taken:
+        n += 1
+        name = f"{base}{n}"
+    return name
+
+
+def _renamed(mapping: Dict[str, Any], old: str, new: str) -> Dict[str, Any]:
+    """The mapping with one key renamed in place; the file keeps its order."""
+    return {new if name == old else name: value for name, value in mapping.items()}
 
 
 class ConfigDocument:
@@ -591,6 +652,158 @@ class ConfigDocument:
     def remove_key(self, key_name: str) -> None:
         """Remove a key definition if present."""
         self.keys.pop(key_name, None)
+
+    def key_usage(self, key_name: str) -> KeyUsage:
+        """Layouts placing the key, and keys whose CHANGE_KEY swaps it in."""
+        usage = KeyUsage()
+        for layout_name, layout in self.layouts.items():
+            if key_name in layout.keys.values():
+                usage.layouts.append(layout_name)
+        for other_name, other in self.keys.items():
+            if other_name != key_name and any(
+                    action.get('CHANGE_KEY') == key_name for action in _actions_of(other)):
+                usage.changed_to_by.append(other_name)
+        return usage
+
+    def replace_key(self, old_name: str, key_def: KeyDefinition) -> None:
+        """
+        Store an edited key; a new name follows it into every layout and CHANGE_KEY.
+
+        Without that a rename orphans the slots showing it and turns the
+        actions that swap it in into references to nothing.
+        """
+        new_name = key_def.name
+        if new_name != old_name:
+            for layout in self.layouts.values():
+                for position, name in list(layout.keys.items()):
+                    if name == old_name:
+                        layout.keys[position] = new_name
+            for other in self.keys.values():
+                for action in _actions_of(other):
+                    if action.get('CHANGE_KEY') == old_name:
+                        action['CHANGE_KEY'] = new_name
+            self.keys.pop(old_name, None)
+        self.add_key(new_name, key_def)
+
+    def delete_key(self, key_name: str) -> None:
+        """Remove a key with its layout slots and the CHANGE_KEY actions that target it."""
+        for layout in self.layouts.values():
+            for position, name in list(layout.keys.items()):
+                if name == key_name:
+                    layout.remove_key_at_position(position)
+        for other in self.keys.values():
+            for field_name in ACTION_FIELDS:
+                setattr(other, field_name, [
+                    action for action in getattr(other, field_name)
+                    if not (isinstance(action, dict) and action.get('CHANGE_KEY') == key_name)])
+        self.remove_key(key_name)
+
+    def duplicate_key(self, key_name: str) -> str:
+        """Copy a key under the first free ``<name>Copy``/``<name>Copy2``…; returns the new name."""
+        new_name, n = f"{key_name}Copy", 1
+        while new_name in self.keys:
+            n += 1
+            new_name = f"{key_name}Copy{n}"
+        self.add_key(new_name, KeyDefinition(new_name, copy.deepcopy(self.keys[key_name].to_dict())))
+        return new_name
+
+    # ── layouts ───────────────────────────────────────────────────────────
+
+    def layout_usage(self, layout_name: str) -> LayoutUsage:
+        layout = self.layouts.get(layout_name)
+        return LayoutUsage(
+            is_default=bool(layout and layout.is_default),
+            rules=[name for name, rule in self.window_rules.items() if rule.layout == layout_name],
+            keys=[name for name, key_def in self.keys.items()
+                  if any(_layout_target(action) == layout_name for action in _actions_of(key_def))])
+
+    def rename_layout(self, old_name: str, new_name: str) -> None:
+        """Rename a layout where it stands, and repoint its rules and CHANGE_LAYOUT actions."""
+        if new_name == old_name or old_name not in self.layouts:
+            return
+        self.layouts = _renamed(self.layouts, old_name, new_name)
+        self.layouts[new_name].name = new_name
+        for key_def in self.keys.values():
+            for action in _actions_of(key_def):
+                if _layout_target(action) == old_name:
+                    _retarget_layout(action, new_name)
+        for rule in self.window_rules.values():
+            if rule.layout == old_name:
+                rule.layout = new_name
+
+    def delete_layout(self, layout_name: str, move_rules_to: Optional[str] = None) -> None:
+        """
+        Remove a layout, and the CHANGE_LAYOUT actions that switch to it.
+
+        Its window rules move to ``move_rules_to``, or are deleted without
+        one: a rule naming a missing layout fails validation, so leaving it
+        would make the whole file unloadable.
+        """
+        for key_def in self.keys.values():
+            for field_name in ACTION_FIELDS:
+                setattr(key_def, field_name, [
+                    action for action in getattr(key_def, field_name)
+                    if not (isinstance(action, dict) and _layout_target(action) == layout_name)])
+        for rule_name, rule in list(self.window_rules.items()):
+            if rule.layout == layout_name:
+                if move_rules_to:
+                    rule.layout = move_rules_to
+                else:
+                    del self.window_rules[rule_name]
+        self.remove_layout(layout_name)
+
+    def keys_emptied_by_layout_delete(self, layout_name: str) -> List[str]:
+        """Keys whose every action switches to this layout: deleting it leaves them invalid."""
+        return [name for name, key_def in self.keys.items()
+                if (actions := _actions_of(key_def))
+                and all(_layout_target(action) == layout_name for action in actions)]
+
+    def duplicate_layout(self, layout_name: str) -> str:
+        """Copy a layout, placed right after it and never the default; returns the new name."""
+        source = self.layouts[layout_name]
+        new_name = _unique_name(f"{layout_name}Copy", self.layouts)
+        data = copy.deepcopy(source.to_dict())
+        data.pop('Default', None)
+        copied = Layout(new_name, data)
+        items = []
+        for name, layout in self.layouts.items():
+            items.append((name, layout))
+            if name == layout_name:
+                items.append((new_name, copied))
+        self.layouts = dict(items)
+        return new_name
+
+    # ── window rules ──────────────────────────────────────────────────────
+
+    def ordered_rules(self) -> List[WindowRule]:
+        """Rules in the order the runtime tries them: priority first, then file order."""
+        return sorted(self.window_rules.values(), key=lambda rule: -int(rule.priority or 0))
+
+    def set_rule_order(self, names: List[str]) -> None:
+        """
+        Make the rules be tried in this order.
+
+        The runtime sorts by priority but keeps file order among equals, so
+        the file order alone can carry it; priorities are cleared rather
+        than renumbered, which would stamp a number on every rule in the file.
+        """
+        rules = [self.window_rules[name] for name in names if name in self.window_rules]
+        rules += [rule for name, rule in self.window_rules.items() if name not in names]
+        for rule in rules:
+            rule.priority = 0
+        self.window_rules = {rule.name: rule for rule in rules}
+
+    def rename_rule(self, old_name: str, new_name: str) -> None:
+        if new_name == old_name or old_name not in self.window_rules:
+            return
+        self.window_rules = _renamed(self.window_rules, old_name, new_name)
+        self.window_rules[new_name].name = new_name
+
+    def suggest_rule_name(self, pattern: str, exclude: Optional[str] = None) -> str:
+        """A readable unique name from the first pattern: 'jetbrains-idea' -> 'JetbrainsIdeaRule'."""
+        words = ''.join(ch if ch.isalnum() else ' ' for ch in pattern.split(',')[0]).split()
+        base = ''.join(word[:1].upper() + word[1:] for word in words) or 'Window'
+        return _unique_name(f"{base}Rule", [name for name in self.window_rules if name != exclude])
 
     def add_layout(self, layout_name: str, layout: Layout) -> None:
         """Add or replace a layout."""

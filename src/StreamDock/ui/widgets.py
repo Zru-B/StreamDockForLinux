@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
     QEasingCurve,
     QMimeData,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -30,10 +31,14 @@ from PyQt6.QtGui import (
     QColor,
     QDrag,
     QFont,
+    QFontMetrics,
     QIcon,
+    QKeySequence,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -48,6 +53,9 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -566,6 +574,68 @@ class KeySquare(QFrame):
         return self.key_definition is None
 
 
+# Second line under a sidebar row's title, drawn smaller and quieter.
+SIDEBAR_CAPTION_ROLE = Qt.ItemDataRole.UserRole + 1
+# A palette name ('warning', 'danger') for a caption reporting a problem.
+SIDEBAR_PROBLEM_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class SidebarRowDelegate(QStyledItemDelegate):
+    """An icon, a title, and an optional caption line beneath it."""
+
+    def sizeHint(self, option, index):
+        metrics = option.fontMetrics
+        lines = metrics.height() * 2 + 2 if index.data(SIDEBAR_CAPTION_ROLE) else metrics.height()
+        return QSize(0, max(current_theme().metrics.list_row_height, lines + 10))
+
+    def paint(self, painter, option, index):
+        # The view hands every row the same option; initStyleOption writes
+        # the row's own colours into it, so work on a copy.
+        option = QStyleOptionViewItem(option)
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QApplication.style()
+        painter.save()
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
+
+        rect = option.rect.adjusted(8, 0, -8, 0)
+        size = option.decorationSize
+        if not option.icon.isNull():
+            icon_rect = QRect(rect.x(), rect.y() + (rect.height() - size.height()) // 2,
+                              size.width(), size.height())
+            option.icon.paint(painter, icon_rect)
+            rect.setLeft(icon_rect.right() + 8)
+
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        text_color = option.palette.color(
+            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text)
+        caption = index.data(SIDEBAR_CAPTION_ROLE)
+        metrics = option.fontMetrics
+        small_font = QFont(option.font)
+        small_font.setBold(False)
+        small_font.setPointSizeF(max(6.0, option.font.pointSizeF() * 0.85))
+        small = QFontMetrics(small_font)
+        block = metrics.height() + (small.height() + 2 if caption else 0)
+        top = rect.y() + (rect.height() - block) // 2
+
+        painter.setFont(option.font)
+        painter.setPen(text_color)
+        painter.drawText(QRect(rect.x(), top, rect.width(), metrics.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         metrics.elidedText(option.text, Qt.TextElideMode.ElideRight, rect.width()))
+        if caption:
+            painter.setFont(small_font)
+            if selected:
+                painter.setPen(text_color)
+            elif index.data(SIDEBAR_PROBLEM_ROLE):
+                painter.setPen(QColor(COLORS[index.data(SIDEBAR_PROBLEM_ROLE)]))
+            else:
+                painter.setPen(QColor(COLORS['text_secondary']))
+            painter.drawText(QRect(rect.x(), top + metrics.height() + 2, rect.width(), small.height()),
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             small.elidedText(caption, Qt.TextElideMode.ElideRight, rect.width()))
+        painter.restore()
+
+
 class SidebarSection(QWidget):
     """
     One titled list in the sidebar: a heading with an add button, then the rows.
@@ -574,7 +644,13 @@ class SidebarSection(QWidget):
     heading ruled off from the rows beneath it, sitting straight on the
     window - and on GNOME as a card. The stylesheet decides; the widget only
     names its parts.
+
+    Every row answers the same way: double-click or Enter edits it, Delete
+    removes it, and right-click offers the rest.
     """
+
+    edit_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
 
     def __init__(self, title: str, add_tooltip: str, parent=None):
         super().__init__(parent)
@@ -608,10 +684,16 @@ class SidebarSection(QWidget):
         self.list_widget.setObjectName("sidebarList")
         self.list_widget.setFrameShape(QFrame.Shape.NoFrame)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.setItemDelegate(SidebarRowDelegate(self.list_widget))
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.itemActivated.connect(self._on_item_activated)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self._layout.addWidget(self.list_widget)
+
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.list_widget)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self._delete_current)
 
         theme_manager().changed.connect(self._apply_metrics)
         self._apply_metrics()
@@ -632,11 +714,11 @@ class SidebarSection(QWidget):
             self._layout.setSpacing(metrics.spacing)
         self.rule.setVisible(breeze)
         self.list_widget.setIconSize(QSize(metrics.icon_size, metrics.icon_size))
-        for index in range(self.list_widget.count()):
-            self.list_widget.item(index).setSizeHint(QSize(0, metrics.list_row_height))
+        self.list_widget.doItemsLayout()
 
     def _add_row(self, text: str, key: str, icon: QIcon = None,
-                 bold: bool = False, tooltip: str = "") -> QListWidgetItem:
+                 bold: bool = False, tooltip: str = "", caption: str = "",
+                 problem: Optional[str] = None) -> QListWidgetItem:
         """
         Append one row.
 
@@ -646,13 +728,16 @@ class SidebarSection(QWidget):
             icon: The picture at its left, if any
             bold: Whether to weight the text
             tooltip: Hover text
+            caption: A quieter second line
+            problem: Palette name to draw the caption in, flagging it
 
         Returns:
             The item
         """
         item = QListWidgetItem(icon if icon is not None else QIcon(), text)
         item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
+        item.setData(SIDEBAR_CAPTION_ROLE, caption or None)
+        item.setData(SIDEBAR_PROBLEM_ROLE, problem)
         if bold:
             font = item.font()
             font.setBold(True)
@@ -671,7 +756,6 @@ class SidebarSection(QWidget):
         """
         item = QListWidgetItem(text)
         item.setFlags(Qt.ItemFlag.NoItemFlags)
-        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
         self.list_widget.addItem(item)
 
     def select(self, key: str) -> None:
@@ -686,9 +770,31 @@ class SidebarSection(QWidget):
                 self.list_widget.setCurrentRow(index)
                 return
 
+    def keys(self) -> list:
+        """Every row's key, top to bottom."""
+        return [self.list_widget.item(index).data(Qt.ItemDataRole.UserRole)
+                for index in range(self.list_widget.count())
+                if self.list_widget.item(index).data(Qt.ItemDataRole.UserRole)]
+
     def _selected_key(self) -> Optional[str]:
         current = self.list_widget.currentItem()
         return current.data(Qt.ItemDataRole.UserRole) if current else None
+
+    def _on_item_activated(self, item: QListWidgetItem) -> None:
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if key:
+            self.edit_requested.emit(key)
+
+    def _delete_current(self) -> None:
+        key = self._selected_key()
+        if key:
+            self.delete_requested.emit(key)
+
+    def _menu_action(self, menu: QMenu, icon_names, text: str, handler) -> QAction:
+        action = QAction(themed_icon(*icon_names) if icon_names else QIcon(), text, menu)
+        action.triggered.connect(handler)
+        menu.addAction(action)
+        return action
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         raise NotImplementedError
@@ -698,17 +804,27 @@ class SidebarSection(QWidget):
 
 
 class LayoutListWidget(SidebarSection):
-    """The layouts a configuration holds, with the default marked."""
+    """The layouts a configuration holds, with the default marked and how each is reached."""
 
     layout_selected = pyqtSignal(str)  # Emits layout name
     add_layout_clicked = pyqtSignal()
     delete_layout_clicked = pyqtSignal(str)  # Emits layout name
     set_default_clicked = pyqtSignal(str)  # Emits layout name to set as default
     edit_layout_clicked = pyqtSignal(str)  # Emits layout name to edit
+    rename_layout_clicked = pyqtSignal(str)
+    duplicate_layout_clicked = pyqtSignal(str)
+    add_rule_for_layout_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__("Layouts", "Add new layout", parent)
+        self._default = None
         self.add_btn.clicked.connect(self.add_layout_clicked.emit)
+        self.edit_requested.connect(self.edit_layout_clicked.emit)
+        self.delete_requested.connect(self.delete_layout_clicked.emit)
+        rename_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F2), self.list_widget)
+        rename_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        rename_shortcut.activated.connect(
+            lambda: self._selected_key() and self.rename_layout_clicked.emit(self._selected_key()))
 
     def _show_context_menu(self, position):
         """Show context menu for layout items"""
@@ -721,28 +837,36 @@ class LayoutListWidget(SidebarSection):
             return
 
         menu = QMenu(self)
-
-        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Layout", self)
-        edit_action.triggered.connect(lambda: self.edit_layout_clicked.emit(layout_name))
-        menu.addAction(edit_action)
-
+        emit = lambda signal: (lambda: signal.emit(layout_name))  # noqa: E731
+        self._menu_action(menu, ('document-edit', 'edit-entry'), "Edit…",
+                          emit(self.edit_layout_clicked))
+        self._menu_action(menu, ('edit-rename',), "Rename…\tF2", emit(self.rename_layout_clicked))
+        self._menu_action(menu, ('edit-copy',), "Duplicate", emit(self.duplicate_layout_clicked))
+        if layout_name != self._default:
+            self._menu_action(menu, ('starred-symbolic', 'rating', 'emblem-favorite'),
+                              "Set as Default", emit(self.set_default_clicked))
+        self._menu_action(menu, ('preferences-system-windows', 'window'),
+                          "New Window Rule for This Layout…", emit(self.add_rule_for_layout_clicked))
         menu.addSeparator()
-
-        set_default_action = QAction(themed_icon('starred-symbolic', 'rating', 'emblem-favorite'),
-                                     "Set as Default", self)
-        set_default_action.triggered.connect(lambda: self.set_default_clicked.emit(layout_name))
-        menu.addAction(set_default_action)
-
-        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
-        delete_action.triggered.connect(lambda: self.delete_layout_clicked.emit(layout_name))
-        menu.addAction(delete_action)
+        self._menu_action(menu, ('edit-delete', 'edit-delete-symbolic'), "Delete\tDel",
+                          emit(self.delete_layout_clicked))
 
         menu.exec(self.list_widget.mapToGlobal(position))
 
-    def set_layouts(self, layout_names: list, default_layout: str = None):
-        """Set the list of layouts"""
+    def set_layouts(self, layout_names: list, default_layout: str = None,
+                    captions: dict = None, unreachable=(), tooltips: dict = None):
+        """
+        Set the list of layouts.
+
+        Args:
+            captions: Second line per layout, e.g. "12 / 15 keys · 2 rules"
+            unreachable: Layouts nothing switches to, drawn as a warning
+            tooltips: Hover text per layout
+        """
         selected = self._selected_key()
+        self._default = default_layout
         self.list_widget.clear()
+        captions, tooltips, unreachable = captions or {}, tooltips or {}, set(unreachable)
 
         layout_icon = themed_icon('view-grid', 'view-grid-symbolic')
         default_icon = themed_icon('starred-symbolic', 'rating', 'emblem-favorite')
@@ -751,7 +875,9 @@ class LayoutListWidget(SidebarSection):
             self._add_row(name, name,
                           icon=default_icon if is_default and not default_icon.isNull() else layout_icon,
                           bold=is_default,
-                          tooltip="Default layout" if is_default else "")
+                          tooltip=tooltips.get(name) or ("Default layout" if is_default else ""),
+                          caption=captions.get(name, ""),
+                          problem='warning' if name in unreachable else None)
 
         if selected is not None:
             self.select(selected)
@@ -1075,16 +1201,27 @@ class ActionListContainer(QWidget):
 
 
 class WindowRulesWidget(SidebarSection):
-    """The window rules a configuration holds."""
+    """
+    The window rules, in the order they are tried.
+
+    The first matching rule wins, so the order is the meaning: rows are
+    listed as the runtime tries them and can be dragged into a new order.
+    """
 
     rule_selected = pyqtSignal(str)  # Emits rule name
     add_rule_clicked = pyqtSignal()
     delete_rule_clicked = pyqtSignal(str)  # Emits rule name
     edit_rule_clicked = pyqtSignal(str)  # Emits rule name to edit
+    order_changed = pyqtSignal(list)  # Rule names in their new order
 
     def __init__(self, parent=None):
         super().__init__("Window Rules", "Add new window rule", parent)
         self.add_btn.clicked.connect(self.add_rule_clicked.emit)
+        self.edit_requested.connect(self.edit_rule_clicked.emit)
+        self.delete_requested.connect(self.delete_rule_clicked.emit)
+        self.list_widget.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list_widget.model().rowsMoved.connect(lambda *_: self.order_changed.emit(self.keys()))
 
     def _show_context_menu(self, position):
         """Show context menu for window rule items"""
@@ -1097,21 +1234,40 @@ class WindowRulesWidget(SidebarSection):
             return
 
         menu = QMenu(self)
-
-        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Rule", self)
-        edit_action.triggered.connect(lambda: self.edit_rule_clicked.emit(rule_name))
-        menu.addAction(edit_action)
-
+        row = self.list_widget.row(item)
+        self._menu_action(menu, ('document-edit', 'edit-entry'), "Edit…",
+                          lambda: self.edit_rule_clicked.emit(rule_name))
+        up = self._menu_action(menu, ('go-up',), "Try Earlier", lambda: self.move(rule_name, -1))
+        up.setEnabled(row > 0)
+        down = self._menu_action(menu, ('go-down',), "Try Later", lambda: self.move(rule_name, 1))
+        down.setEnabled(row < len(self.keys()) - 1)
         menu.addSeparator()
-
-        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
-        delete_action.triggered.connect(lambda: self.delete_rule_clicked.emit(rule_name))
-        menu.addAction(delete_action)
+        self._menu_action(menu, ('edit-delete', 'edit-delete-symbolic'), "Delete\tDel",
+                          lambda: self.delete_rule_clicked.emit(rule_name))
 
         menu.exec(self.list_widget.mapToGlobal(position))
 
-    def set_rules(self, rules: dict):
-        """Set the list of window rules"""
+    def move(self, rule_name: str, step: int) -> None:
+        """Move a rule up (-1) or down (+1) in the order."""
+        names = self.keys()
+        index = names.index(rule_name)
+        target = index + step
+        if 0 <= target < len(names):
+            names.insert(target, names.pop(index))
+            self.order_changed.emit(names)
+
+    def set_rules(self, rules, layouts=None):
+        """
+        Set the list of window rules.
+
+        Args:
+            rules: WindowRule objects in the order they are tried (a dict
+                of them is taken in its own order)
+            layouts: Names of the layouts that exist, to flag rules whose
+                target is gone; None skips the check
+        """
+        if isinstance(rules, dict):
+            rules = list(rules.values())
         selected = self._selected_key()
         self.list_widget.clear()
         if not rules:
@@ -1119,11 +1275,19 @@ class WindowRulesWidget(SidebarSection):
             return
 
         icon = themed_icon('preferences-system-windows', 'window', 'window-symbolic')
-        for rule_name, rule in rules.items():
-            target = getattr(rule, 'layout', '') or ''
-            pattern = getattr(rule, 'window_name', '') or ''
-            tooltip = f"{pattern} → {target}" if pattern and target else ""
-            self._add_row(rule_name, rule_name, icon=icon, tooltip=tooltip)
+        for position, rule in enumerate(rules, start=1):
+            patterns = rule.patterns() if hasattr(rule, 'patterns') else [str(rule.window_name)]
+            pattern_text = ", ".join(patterns) or "(no pattern)"
+            field = getattr(rule, 'match_field', 'class') or 'class'
+            missing = layouts is not None and rule.layout not in layouts
+            caption = (f"→ {rule.layout} (missing!)" if missing else f"→ {rule.layout}") + f" · by {field}"
+            if getattr(rule, 'is_regex', False):
+                caption += " · regex"
+            verb = "matches the regex" if getattr(rule, 'is_regex', False) else "contains"
+            tooltip = (f"{rule.name}\nTried {_ordinal(position)}: when the window {field} {verb} "
+                       f"{' or '.join(repr(p) for p in patterns)}, switch to {rule.layout}")
+            self._add_row(pattern_text, rule.name, icon=icon, tooltip=tooltip,
+                          caption=caption, problem='danger' if missing else None)
 
         if selected is not None:
             self.select(selected)
@@ -1137,6 +1301,11 @@ class WindowRulesWidget(SidebarSection):
         rule_name = item.data(Qt.ItemDataRole.UserRole)
         if rule_name:
             self.rule_selected.emit(rule_name)
+
+
+def _ordinal(n: int) -> str:
+    suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
 
 
 class ToggleSwitch(QAbstractButton):

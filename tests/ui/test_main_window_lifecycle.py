@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from StreamDock.application.config_document import ConfigDocument
 from StreamDock.ui.main_window import MainWindow
@@ -254,9 +254,9 @@ class TestApplyGate:
         window.on_config_applied(config_path)
         key_def = window.config.keys['KeyA']
 
-        with patch('StreamDock.ui.main_window.KeyEditorDialog') as dialog_cls:
+        with patch('StreamDock.ui.dialogs.KeyEditorDialog') as dialog_cls:
             dialog = dialog_cls.return_value
-            dialog.exec.return_value = dialog.DialogCode.Accepted
+            dialog.exec.return_value = QDialog.DialogCode.Accepted
             dialog.get_key_definition.return_value = key_def
             window.edit_key('KeyA')
 

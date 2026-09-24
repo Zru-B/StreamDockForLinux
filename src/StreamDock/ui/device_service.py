@@ -107,6 +107,16 @@ class DeviceService(QObject):
         """The connected device, or None."""
         return self._app.get_device_info() if self._app else None
 
+    def recent_windows(self) -> list:
+        """
+        Recently focused windows, newest first; empty while no device runs.
+
+        Called from the GUI thread: it only copies a list the monitor guards.
+        """
+        app = self._app
+        monitor = app.get_event_monitor() if app is not None else None
+        return monitor.recent_windows if monitor is not None else []
+
     # ── slots ─────────────────────────────────────────────────────────────
 
     @pyqtSlot()

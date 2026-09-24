@@ -13,6 +13,7 @@ from StreamDock.application.device_discovery import device_key, device_label, di
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.business_logic.layout_manager import rule_patterns
 from StreamDock.infrastructure import (
     DeviceRegistry,
     HardwareInterface,
@@ -345,7 +346,7 @@ class Application:
         """
         for rule_name, rule_config in self._config.window_rules_config.items():
             # Extract rule parameters
-            pattern = rule_config['window_name']
+            pattern = rule_patterns(rule_config['window_name'], rule_config.get('is_regex', False))
             layout_name = rule_config['layout']
             match_field = rule_config.get('match_field', 'class')
             priority = rule_config.get('priority', 0)

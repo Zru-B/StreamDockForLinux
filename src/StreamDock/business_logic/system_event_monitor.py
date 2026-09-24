@@ -9,6 +9,7 @@ No infrastructure dependencies - uses SystemInterface abstraction.
 import logging
 import threading
 import time
+from collections import deque
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
@@ -16,6 +17,8 @@ from StreamDock.infrastructure.system_interface import SystemInterface
 from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
+
+RECENT_WINDOW_COUNT = 15
 
 
 class SystemEvent(Enum):
@@ -90,6 +93,11 @@ class SystemEventMonitor:
         # title-based layout rules and widgets watching for a web app need it.
         self._last_window_key: Optional[tuple] = None
         self._current_window = None
+        # Recently focused windows, newest last, for the rule editor's picker:
+        # by the time the user is editing a rule, the window they mean has
+        # already lost focus to the editor.
+        self._recent_windows: deque = deque(maxlen=RECENT_WINDOW_COUNT)
+        self._recent_lock = threading.Lock()
 
         logger.debug("SystemEventMonitor initialized with verification_delay=%.1fs",
                     verification_delay)
@@ -230,6 +238,7 @@ class SystemEventMonitor:
                 if key != self._last_window_key:
                     self._last_window_key = key
                     self._current_window = window_info
+                    self._remember_window(window_info)
                     logger.debug("Window changed: %s", key[0] if key else None)
                     self._dispatch_event(SystemEvent.WINDOW_CHANGED)
             except Exception as e:  # pylint: disable=broad-exception-caught
@@ -381,6 +390,22 @@ class SystemEventMonitor:
             self._pending_verification.cancel()
             self._pending_verification = None
             logger.debug("Cancelled pending lock verification timer")
+
+    def _remember_window(self, window_info) -> None:
+        if window_info is None or not (window_info.class_ or window_info.title):
+            return
+        key = (window_info.class_, window_info.title)
+        with self._recent_lock:
+            for existing in list(self._recent_windows):
+                if (existing.class_, existing.title) == key:
+                    self._recent_windows.remove(existing)
+            self._recent_windows.append(window_info)
+
+    @property
+    def recent_windows(self) -> list:
+        """Recently focused windows (WindowInfo), newest first, without repeats."""
+        with self._recent_lock:
+            return list(reversed(self._recent_windows))
 
     @property
     def current_window(self):
