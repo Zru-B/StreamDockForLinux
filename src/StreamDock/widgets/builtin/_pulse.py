@@ -7,11 +7,12 @@ the desktop's volume applet - shows on the key at once instead of at the next
 poll.
 """
 
+import json
 import re
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from streamdock_sdk import Option, Widget
 from StreamDock.widgets.builtin import _common
@@ -103,6 +104,82 @@ def step_volume(kind: str, step: int, maximum: int = 100, unmute: bool = True) -
     except (OSError, subprocess.TimeoutExpired):
         pass
     return read_level(kind)
+
+
+@dataclass(frozen=True)
+class Sink:
+    """An audio output: its pactl name, what the desktop calls it, and what kind of device it is."""
+
+    name: str
+    description: str
+    # 'speakers', 'headphones' or 'hdmi'.
+    kind: str = 'speakers'
+
+
+HEADPHONE_FORMS = ('headphone', 'headset', 'hands-free', 'handsfree', 'earbuds')
+
+
+def sink_kind(name: str, description: str = '', port: str = '', form_factor: str = '', bus: str = '') -> str:
+    text = ' '.join((name, description, port)).lower()
+    if 'hdmi' in text or 'displayport' in text:
+        return 'hdmi'
+    if form_factor.lower() in HEADPHONE_FORMS or bus.lower() == 'bluetooth' or \
+            any(word in text for word in ('headphone', 'headset')):
+        return 'headphones'
+    return 'speakers'
+
+
+def _pactl_output(*args: str) -> Optional[str]:
+    try:
+        result = subprocess.run(['pactl', *args], capture_output=True, text=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def list_sinks() -> Optional[List[Sink]]:
+    """Every output, or None when pactl can't be asked."""
+    output = _pactl_output('--format=json', 'list', 'sinks')
+    if output is not None:
+        try:
+            sinks = []
+            for entry in json.loads(output):
+                properties = entry.get('properties') or {}
+                name = entry.get('name', '')
+                description = entry.get('description') or name
+                sinks.append(Sink(name, description, sink_kind(
+                    name, description, entry.get('active_port') or '',
+                    properties.get('device.form_factor', ''), properties.get('device.bus', ''))))
+            return sinks
+        except (ValueError, AttributeError, TypeError):
+            pass
+    # pactl older than 16 has no JSON: names only.
+    output = _pactl_output('list', 'short', 'sinks')
+    if output is None:
+        return None
+    names = [line.split('\t')[1] for line in output.splitlines() if line.count('\t') >= 1]
+    return [Sink(name, name, sink_kind(name)) for name in names]
+
+
+def default_sink() -> Optional[str]:
+    output = _pactl_output('get-default-sink')
+    return output.strip() or None if output is not None else None
+
+
+def set_default_sink(name: str, move_streams: bool = True) -> None:
+    """
+    Make ``name`` the default output.
+
+    PipeWire moves the playing streams along by itself; PulseAudio leaves
+    them where they are, so with ``move_streams`` they're moved explicitly.
+    """
+    _pactl_output('set-default-sink', name)
+    if not move_streams:
+        return
+    for line in (_pactl_output('list', 'short', 'sink-inputs') or '').splitlines():
+        stream = line.split('\t')[0]
+        if stream.isdigit():
+            _pactl_output('move-sink-input', stream, name)
 
 
 # One ``pactl subscribe`` serves every mute and volume key in the process.

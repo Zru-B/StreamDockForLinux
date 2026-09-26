@@ -101,6 +101,7 @@ can see where it will go.
 | Sound Mute | `sound_muted` | same as Microphone Mute |
 | Pomodoro | `pomodoro` | `work_minutes`, `break_minutes`, `auto_start_work`, `notify`, `show_time`, `work_color`, `break_color`, `background` |
 | Do Not Disturb | `do_not_disturb` | `backend` (`auto`, `kde`, `gnome`, `xfce`, `dunst`, `swaync`), `interval`, `show_caption`, `on_color`, `off_color`, `color` |
+| Audio Output | `audio_output` | `outputs`, `move_streams`, `show_name`, `names`, `color`, `background` |
 | Volume | `volume` | `step`, `max_volume`, `unmute_on_raise`, `color`, `gauge_color`, `muted_color`, `background` |
 | Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
 | VPN Status | `vpn_connected` | `source` (`auto`, `networkmanager`, `interfaces`), `interfaces`, `interval`, colours |
@@ -118,6 +119,7 @@ States and badges, for `state_icons` and badge overlays:
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
 | `do_not_disturb` | `on`, `off`, `unavailable` | — |
 | `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
+| `audio_output` | `speakers`, `headphones`, `hdmi`, `unknown` | — |
 | `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `battery` | `charging`, `discharging`, `full`, `low`, `unavailable` | the charge, e.g. `64%` |
@@ -175,6 +177,24 @@ counted twice. To count something else, set `interfaces` to names or patterns,
 e.g. `wlan0` or `en*, wg0`. `units: bits` shows Mb/s, as speed tests do; the
 default is MB/s, as file managers show. The state is `idle` while both
 directions stay below `idle_below` kB/s.
+
+### Audio Output
+
+**Audio Output** shows which output sound plays through, as speakers,
+headphones or a monitor with the output's name, and each press switches to the
+next one. What's playing moves along to the new output.
+
+- `outputs` limits and orders the outputs a press cycles through, by part of
+  their name: `Speakers, Buds` switches between those two only. Empty cycles
+  through all of them.
+- `names` gives outputs short names for the key: `Built-in=Desk, Sony=Buds`.
+- Bluetooth outputs, and outputs named or plugged in as headphones or a
+  headset, show headphones. HDMI and DisplayPort outputs show a monitor.
+  Everything else shows a speaker.
+
+It uses `pactl`, like the volume widgets, and follows changes made elsewhere.
+PipeWire moves playing streams to the new output by itself. On PulseAudio the
+widget moves them, unless `move_streams` is off.
 
 ### Volume
 
