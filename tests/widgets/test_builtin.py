@@ -8,7 +8,7 @@ from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
     _common, _dnd, _notifications, _pulse, audio_output, battery, network_speed, pomodoro, system_stats,
-    vpn_connected, weather)
+    temperature, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -22,6 +22,7 @@ VARIANTS = {
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
     'audio_output': [{}, {'show_name': False}, {'outputs': 'hdmi', 'names': 'hdmi=TV'}],
+    'temperature': [{}, {'sensor': 'nvme/Composite', 'units': 'fahrenheit', 'label': 'SSD'}],
     'battery': [{}, {'device': 'MX Master', 'label': 'Mouse'}],
     'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
     'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
@@ -80,6 +81,7 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(_pulse, 'list_sinks', lambda: list(SINKS))
     monkeypatch.setattr(_pulse, 'default_sink', lambda: SINKS[0].name)
     monkeypatch.setattr(battery, 'read_battery', lambda device: battery.Reading(64, 'Discharging'))
+    monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 47.0)
     monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
 
@@ -126,7 +128,8 @@ def test_states_report_what_the_widgets_see():
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
              'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
-             'pomodoro': 'idle', 'battery': 'discharging', 'audio_output': 'speakers'}
+             'pomodoro': 'idle', 'battery': 'discharging', 'audio_output': 'speakers',
+             'temperature': 'normal'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -678,3 +681,49 @@ class TestAudioOutput:
         _pulse.set_default_sink('sink2')
         assert calls == [('set-default-sink', 'sink2'), ('list', 'short', 'sink-inputs'),
                          ('move-sink-input', '12', 'sink2')]
+
+
+class TestTemperature:
+    @staticmethod
+    def chip(root, index, name, readings):
+        folder = root / f'hwmon{index}'
+        folder.mkdir()
+        (folder / 'name').write_text(name + '\n')
+        for number, (label, millidegrees) in enumerate(readings, start=1):
+            (folder / f'temp{number}_input').write_text(f'{millidegrees}\n')
+            if label:
+                (folder / f'temp{number}_label').write_text(label + '\n')
+
+    @pytest.fixture
+    def hwmon(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setattr(temperature, 'nvidia_celsius', lambda: None)
+        self.chip(tmp_path, 0, 'acpitz', [('', 30000)])
+        self.chip(tmp_path, 1, 'coretemp', [('Core 0', 51000), ('Package id 0', 55000)])
+        self.chip(tmp_path, 2, 'nvme', [('Composite', 38850), ('Sensor 1', 41000)])
+        return str(tmp_path)
+
+    def test_presets_pick_the_best_reading(self, hwmon):
+        assert temperature.read_celsius('cpu', hwmon) == 55.0
+        assert temperature.read_celsius('nvme', hwmon) == 38.85
+
+    def test_a_chip_and_reading_by_name(self, hwmon):
+        assert temperature.read_celsius('nvme/Sensor 1', hwmon) == 41.0
+        assert temperature.read_celsius('acpitz', hwmon) == 30.0
+        assert temperature.read_celsius('k10temp', hwmon) is None
+
+    def test_gpu_falls_back_to_nvidia_smi(self, hwmon, monkeypatch):
+        monkeypatch.setattr(temperature, 'nvidia_celsius', lambda: 63.0)
+        assert temperature.read_celsius('gpu', hwmon) == 63.0
+
+    @pytest.mark.parametrize('celsius, state', [(47.0, 'normal'), (70.0, 'warm'), (85.0, 'hot'), (None, 'unavailable')])
+    def test_states(self, monkeypatch, celsius, state):
+        monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: celsius)
+        driver, widget = started('temperature')
+        assert driver.state == state
+        assert widget.render(driver.ctx).size == (112, 112)
+
+    def test_fahrenheit_badge(self, monkeypatch):
+        monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 50.0)
+        driver, _ = started('temperature', units='fahrenheit')
+        assert driver.badge == '122°'

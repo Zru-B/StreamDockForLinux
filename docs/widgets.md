@@ -96,6 +96,7 @@ can see where it will go.
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
 | Battery | `battery` | `device`, `label`, `low`, `interval`, `color`, `background` |
 | Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
+| Temperature | `temperature` | `sensor`, `label`, `units` (`celsius`/`fahrenheit`), `warm`, `hot`, `interval`, `color`, `background` |
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
@@ -124,6 +125,7 @@ States and badges, for `state_icons` and badge overlays:
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `battery` | `charging`, `discharging`, `full`, `low`, `unavailable` | the charge, e.g. `64%` |
 | `network_speed` | `idle`, `active` | the download speed, e.g. `2.5MB/s` |
+| `temperature` | `normal`, `warm`, `hot`, `unavailable` | the temperature, e.g. `64°` |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
 | `media_playing`, `now_playing` | `playing`, `paused`, `stopped`, `none` | — |
@@ -195,6 +197,25 @@ next one. What's playing moves along to the new output.
 It uses `pactl`, like the volume widgets, and follows changes made elsewhere.
 PipeWire moves playing streams to the new output by itself. On PulseAudio the
 widget moves them, unless `move_streams` is off.
+
+### Temperature
+
+**Temperature** shows a temperature and a thermometer that's green, amber from
+`warm` (70 °C) and red from `hot` (85 °C). The thresholds are always in °C,
+even with `units: fahrenheit`.
+
+`sensor` picks what to show:
+
+| `sensor` | Reads |
+|---|---|
+| `cpu` (default) | Intel `coretemp` package, AMD `k10temp`/`zenpower`, or the board's `cpu_thermal` / `acpitz` |
+| `gpu` | `amdgpu`, `nouveau`, `radeon` or Intel; NVIDIA's own driver through `nvidia-smi` |
+| `nvme` | The SSD's composite temperature |
+| a chip, e.g. `k10temp` | That chip's first reading |
+| a chip and reading, e.g. `nvme/Sensor 1` | That reading |
+
+The chips and readings are the ones `sensors` (from lm-sensors) lists, or the
+`name` and `temp*_label` files under `/sys/class/hwmon`.
 
 ### Volume
 

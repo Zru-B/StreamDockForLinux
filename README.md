@@ -15,7 +15,7 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
   scheme, icons and font - and Adwaita on GNOME, header bar and all. It picks
   the right one on its own.
 - 🎨 **Visuals** - Support for PNG, JPG, GIF, SVG, and dynamic text generation.
-- 🕒 **Widgets** - Live keys: clocks, date, weather, now playing, CPU/RAM, network speed, battery, mic and speaker mute, a volume gauge and a 1x3 volume column, an audio output switcher, Do Not Disturb, a Pomodoro timer, VPN status, Slack/WhatsApp/Telegram unread counts. Show your own image per state, or a count badge over your own icon. Write your own widgets in Python and install them from the app.
+- 🕒 **Widgets** - Live keys: clocks, date, weather, now playing, CPU/RAM, temperatures, network speed, battery, mic and speaker mute, a volume gauge and a 1x3 volume column, an audio output switcher, Do Not Disturb, a Pomodoro timer, VPN status, Slack/WhatsApp/Telegram unread counts. Show your own image per state, or a count badge over your own icon. Write your own widgets in Python and install them from the app.
 - 🛠️ **Hackable** - Pure Python with a plugin-friendly architecture.
 
 ---
