@@ -97,6 +97,7 @@ can see where it will go.
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
+| Pomodoro | `pomodoro` | `work_minutes`, `break_minutes`, `auto_start_work`, `notify`, `show_time`, `work_color`, `break_color`, `background` |
 | Do Not Disturb | `do_not_disturb` | `backend` (`auto`, `kde`, `gnome`, `xfce`, `dunst`, `swaync`), `interval`, `show_caption`, `on_color`, `off_color`, `color` |
 | Volume | `volume` | `step`, `max_volume`, `unmute_on_raise`, `color`, `gauge_color`, `muted_color`, `background` |
 | Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
@@ -114,6 +115,7 @@ States and badges, for `state_icons` and badge overlays:
 |---|---|---|
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
 | `do_not_disturb` | `on`, `off`, `unavailable` | — |
+| `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
 | `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
@@ -216,6 +218,36 @@ switch, which the key can't read.
 | `xfce` | The `xfce4-notifyd` Do Not Disturb setting, through `xfconf-query`. |
 | `dunst` | `dunstctl set-paused`. |
 | `swaync` | `swaync-client --dnd-on` / `--dnd-off`. |
+
+### Pomodoro
+
+**Pomodoro** times work sessions and breaks: 25 minutes of work, then a
+5-minute break, by default. Set `work_minutes` (1-180) and `break_minutes`
+(1-60) to change them.
+
+| Gesture | Does |
+|---|---|
+| Press | Starts a work session; while one is running, pauses it; while paused, resumes |
+| Long press | Resets to idle |
+
+What the key shows:
+
+| State | Key |
+|---|---|
+| Idle | A tomato with watch hands |
+| Work | The same tomato inside an amber ring that shortens as the session runs out |
+| Paused | The tomato, with the ring as it was blinking twice a second |
+| Break | A smiling tomato inside a green ring that shortens as the break runs out |
+
+When the work session ends the break starts on its own. When the break ends
+the timer goes back to idle and waits for a press, unless `auto_start_work` is
+on. Each change of phase sends a desktop notification (`notify-send`); turn
+`notify` off to stop them. `show_time` draws the minutes and seconds left on
+the tomato instead of its hands or face.
+
+The timer keeps running while you switch layouts or lock the screen, and the
+notification still comes on time. Because the key has a long press, a press
+takes effect when you let go of the key.
 
 ### Notification counters
 

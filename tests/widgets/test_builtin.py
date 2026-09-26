@@ -7,7 +7,7 @@ import pytest
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _dnd, _notifications, _pulse, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, pomodoro, system_stats, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -20,6 +20,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
     'do_not_disturb': [{}, {'show_caption': False}],
     'volume': [{}, {'max_volume': 150}],
     'volume_column': [{'button': name} for name in ('up', 'mute', 'down')] + [{'show_level_bar': False}],
@@ -111,7 +112,8 @@ def test_states_report_what_the_widgets_see():
     # These are the names users map images to in state_icons.
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
-             'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off'}
+             'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
+             'pomodoro': 'idle'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -431,3 +433,104 @@ class TestDoNotDisturb:
         assert gnome.read() is True
         gnome.write(False)
         assert calls[-1][-2:] == ('show-banners', 'true')
+
+
+class TestPomodoro:
+    class Timer:
+        """Stands in for threading.Timer; the tests end phases by moving the clock."""
+
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    @pytest.fixture
+    def world(self, monkeypatch):
+        now = [1000.0]
+        notes = []
+        monkeypatch.setattr(pomodoro, 'clock', lambda: now[0])
+        monkeypatch.setattr(pomodoro, 'notify', lambda summary, body: notes.append(summary))
+        monkeypatch.setattr(pomodoro.threading, 'Timer', self.Timer)
+        return now, notes
+
+    def start(self, monkeypatch, **options):
+        driver, widget = started('pomodoro', **options)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None: fn())
+        return driver, widget
+
+    def test_defaults_are_25_and_5_minutes(self):
+        options = {option.key: option.default for option in SPECS['pomodoro'].options}
+        assert (options['work_minutes'], options['break_minutes']) == (25, 5)
+
+    def test_press_starts_pauses_and_resumes(self, world, monkeypatch):
+        now, _ = world
+        driver, widget = self.start(monkeypatch)
+        assert (driver.state, driver.badge) == ('idle', None)
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('work', '25:00')
+        now[0] += 60
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('paused', '24:00')
+        now[0] += 600  # paused time doesn't count
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('work', '24:00')
+
+    def test_long_press_resets(self, world, monkeypatch):
+        driver, widget = self.start(monkeypatch)
+        widget.on_press(driver.ctx)
+        widget.on_long_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('idle', None)
+
+    def test_work_then_break_then_waits(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1)
+        widget.on_press(driver.ctx)
+        now[0] += 120
+        widget.tick(driver.ctx)
+        assert (driver.state, driver.badge, notes) == ('break', '1:00', ['Time for a break'])
+        now[0] += 60
+        widget.tick(driver.ctx)
+        assert (driver.state, notes[-1]) == ('idle', 'Break is over')
+
+    def test_auto_start_work_after_a_break(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1, auto_start_work=True)
+        widget.on_press(driver.ctx)
+        now[0] += 180
+        widget.advance(driver.ctx)
+        assert (driver.state, driver.badge, notes) == ('work', '2:00', ['Back to work'])
+
+    def test_catches_up_after_a_long_sleep(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1)
+        widget.on_press(driver.ctx)
+        now[0] += 3600
+        widget.on_show(driver.ctx)
+        assert driver.state == 'idle'
+        assert notes == ['Break is over']
+
+    def test_notifications_can_be_turned_off(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=1, notify=False)
+        widget.on_press(driver.ctx)
+        now[0] += 60
+        widget.advance(driver.ctx)
+        assert (driver.state, notes) == ('break', [])
+
+    def test_paused_ring_blinks_at_2_hz(self, world, monkeypatch):
+        driver, widget = self.start(monkeypatch)
+        assert [(timer.interval, timer.align) for timer in driver._timers] == [(0.25, True)]
+        widget.on_press(driver.ctx)
+        widget.on_press(driver.ctx)
+        frames = []
+        for _ in range(2):
+            widget.tick(driver.ctx)
+            frames.append(widget.render(driver.ctx).tobytes())
+        assert frames[0] != frames[1]
+        widget.tick(driver.ctx)
+        assert widget.render(driver.ctx).tobytes() == frames[0]
