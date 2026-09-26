@@ -93,6 +93,7 @@ can see where it will go.
 |---|---|---|
 | Digital Clock | `digital_clock` | `format` (`24h`/`12h`), `show_seconds`, `timezone`, `color`, `background` |
 | Analog Clock | `analog_clock` | `show_seconds`, `timezone`, `face_color`, `hand_color`, `second_hand_color`, `background` |
+| Countdown | `countdown` | `target`, `title`, `done_text`, `soon_minutes`, `timezone`, `color`, `soon_color`, `done_color`, `background` |
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
 | Battery | `battery` | `device`, `label`, `low`, `interval`, `color`, `background` |
 | Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
@@ -117,6 +118,7 @@ States and badges, for `state_icons` and badge overlays:
 
 | Widget | States | Badge |
 |---|---|---|
+| `countdown` | `counting`, `soon`, `done`, `invalid` | the time left, e.g. `3d`, `5h`, `12m` |
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
 | `do_not_disturb` | `on`, `off`, `unavailable` | — |
 | `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
@@ -166,6 +168,22 @@ grep . /sys/class/power_supply/*/model_name
 
 Some devices report only a level (critical, low, normal, high, full) rather
 than a percentage; the key then shows the level's name.
+
+### Countdown
+
+**Countdown** shows the time left until `target`, with an optional `title`
+above it:
+
+| `target` | Counts down to |
+|---|---|
+| `2026-12-24` | midnight at the start of that day |
+| `2026-12-24 18:00` | that moment |
+| `17:30` | the next 17:30, every day; the end of the workday, say |
+
+Two days or more show as days, then hours and minutes, and in the last hour
+minutes and seconds. The time turns amber `soon_minutes` before (60 by
+default) and shows `done_text` (`Now!`) in green once it's reached; a date in
+the past stays that way. A `target` it can't read shows **Bad date**.
 
 ### Network Speed
 
