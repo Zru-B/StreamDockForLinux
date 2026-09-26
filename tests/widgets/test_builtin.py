@@ -24,7 +24,7 @@ VARIANTS = {
     'audio_output': [{}, {'show_name': False}, {'outputs': 'hdmi', 'names': 'hdmi=TV'}],
     'countdown': [{}, {'target': '2026-12-24', 'title': 'Christmas'}, {'target': 'garbage'}],
     'temperature': [{}, {'sensor': 'nvme/Composite', 'units': 'fahrenheit', 'label': 'SSD'}],
-    'battery': [{}, {'device': 'MX Master', 'label': 'Mouse'}],
+    'battery': [{}, {'devices': 'mouse', 'label': 'Mouse'}],
     'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
     'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
     'do_not_disturb': [{}, {'show_caption': False}],
@@ -57,6 +57,10 @@ SINKS = [_pulse.Sink('alsa_output.pci.analog-stereo', 'Built-in Audio Analog Ste
          _pulse.Sink('bluez_output.AA_BB', 'Sony WH-1000XM5', 'headphones'),
          _pulse.Sink('alsa_output.pci.hdmi-stereo', 'HDMI / DisplayPort 1 Output', 'hdmi')]
 
+DEVICES = [battery.Device('system', 'Laptop', 'system', battery.Reading(64, 'Discharging')),
+           battery.Device('/org/bluez/hci0/dev_AA', 'WH-1000XM5', 'headphones', battery.Reading(40, 'Charging')),
+           battery.Device('hidpp_battery_0', 'MX Master 3', 'mouse', battery.Reading(15, 'Discharging', True))]
+
 PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Very Long Song Title Indeed',
                               ['Some Artist'])
 
@@ -81,7 +85,7 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(network_speed, 'read_counters', lambda: {'eth0': (1000, 500), 'lo': (9, 9)})
     monkeypatch.setattr(_pulse, 'list_sinks', lambda: list(SINKS))
     monkeypatch.setattr(_pulse, 'default_sink', lambda: SINKS[0].name)
-    monkeypatch.setattr(battery, 'read_battery', lambda device: battery.Reading(64, 'Discharging'))
+    monkeypatch.setattr(battery, 'list_devices', lambda: list(DEVICES))
     monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 47.0)
     monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
@@ -587,6 +591,69 @@ class TestNetworkSpeed:
         assert (driver.state, driver.badge) == ('active', '2.5MB/s')
 
 
+UPOWER_DUMP = """\
+Device: /org/freedesktop/UPower/devices/line_power_AC
+  native-path:          AC
+  power supply:         yes
+  line-power
+    online:              yes
+
+Device: /org/freedesktop/UPower/devices/battery_BAT0
+  native-path:          BAT0
+  vendor:               SMP
+  model:                5B10W13930
+  power supply:         yes
+  battery
+    present:             yes
+    state:               discharging
+    percentage:          81%
+
+Device: /org/freedesktop/UPower/devices/battery_BAT1
+  native-path:          BAT1
+  power supply:         yes
+  battery
+    present:             yes
+    state:               charging
+    percentage:          41.5%
+
+Device: /org/freedesktop/UPower/devices/mouse_hidpp_battery_0
+  native-path:          hidpp_battery_0
+  model:                MX Master 3
+  power supply:         no
+  mouse
+    present:             yes
+    state:               discharging
+    battery-level:       low
+    percentage:          10% (should be ignored)
+
+Device: /org/freedesktop/UPower/devices/headset_dev_AA
+  native-path:          /org/bluez/hci0/dev_AA
+  model:                WH-1000XM5
+  power supply:         no
+  headset
+    present:             yes
+    state:               discharging
+    battery-level:       none
+    percentage:          70%
+
+Device: /org/freedesktop/UPower/devices/keyboard_dev_BB
+  native-path:          /org/bluez/hci0/dev_BB
+  power supply:         no
+  keyboard
+    present:             no
+    percentage:          0%
+
+Device: /org/freedesktop/UPower/devices/DisplayDevice
+  power supply:         yes
+  battery
+    present:             yes
+    percentage:          61%
+
+Daemon:
+  daemon-version:  1.90.2
+"""
+
+
 class TestBattery:
     @staticmethod
     def supply(root, name, **files):
@@ -595,32 +662,56 @@ class TestBattery:
         for key, value in files.items():
             (folder / key).write_text(value + '\n')
 
-    @pytest.fixture
-    def sysfs(self, tmp_path, monkeypatch):
+    def test_upower_lists_the_laptop_first_then_devices(self, monkeypatch):
+        monkeypatch.undo()
+        R = battery.Reading
+        assert battery.parse_upower(UPOWER_DUMP) == [
+            battery.Device('system', 'Laptop', 'system', R(61, 'Charging')),
+            battery.Device('hidpp_battery_0', 'MX Master 3', 'mouse', R(15, 'Discharging', approximate=True)),
+            battery.Device('/org/bluez/hci0/dev_AA', 'WH-1000XM5', 'headset', R(70, 'Discharging')),
+        ]
+
+    def test_sysfs_when_there_is_no_upower(self, tmp_path, monkeypatch):
         monkeypatch.undo()
         self.supply(tmp_path, 'AC', type='Mains', online='1')
         self.supply(tmp_path, 'BAT0', type='Battery', capacity='80', status='Discharging')
-        self.supply(tmp_path, 'BAT1', type='Battery', capacity='40', status='Charging', scope='System')
-        self.supply(tmp_path, 'hidpp_battery_0', type='Battery', scope='Device', capacity_level='Low',
+        self.supply(tmp_path, 'hidpp_battery_0', type='Battery', scope='Device', capacity='55',
                     status='Discharging', model_name='MX Master 3')
-        return str(tmp_path)
+        monkeypatch.setattr(battery, 'upower_devices', lambda: None)
+        monkeypatch.setattr(battery, 'POWER_SUPPLY', str(tmp_path))
+        devices = battery.sysfs_devices(str(tmp_path))
+        assert [(device.name, device.reading.percent) for device in devices] == [('Laptop', 80), ('MX Master 3', 55)]
+        assert battery.sysfs_devices('/nonexistent') == []
 
-    def test_system_batteries_count_as_one(self, sysfs):
-        assert battery.read_battery('', sysfs) == battery.Reading(60, 'Charging')
+    def test_press_cycles_through_the_devices(self, monkeypatch):
+        driver, widget = started('battery')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None: then(fn()))
+        seen = [(driver.state, driver.badge)]
+        for _ in range(3):
+            widget.on_press(driver.ctx)
+            seen.append((driver.state, driver.badge))
+        assert seen == [('discharging', '64%'), ('charging', '40%'), ('low', '15%'), ('discharging', '64%')]
 
-    def test_a_peripheral_by_model_with_only_a_level(self, sysfs):
-        assert battery.read_battery('mx master', sysfs) == battery.Reading(15, 'Discharging', approximate=True)
+    def test_devices_option_picks_and_orders(self):
+        chosen = battery.matching(DEVICES, 'mouse, laptop')
+        assert [device.name for device in chosen] == ['MX Master 3', 'Laptop']
+        assert battery.matching(DEVICES, 'headphones')[0].name == 'WH-1000XM5'
 
-    def test_nothing_found(self, sysfs):
-        assert battery.read_battery('keyboard', sysfs) is None
-        assert battery.read_battery('', '/nonexistent') is None
+    def test_keeps_its_device_when_others_come_and_go(self, monkeypatch):
+        driver, widget = started('battery')
+        widget.on_press(driver.ctx)  # the headphones
+        widget.update(driver.ctx, [DEVICES[2], DEVICES[1]])
+        assert driver.badge == '40%'
+        widget.update(driver.ctx, [DEVICES[0]])  # the headphones went away
+        assert driver.badge == '64%'
 
     @pytest.mark.parametrize('reading, state', [
         (battery.Reading(64, 'Discharging'), 'discharging'), (battery.Reading(12, 'Discharging'), 'low'),
         (battery.Reading(12, 'Charging'), 'charging'), (battery.Reading(100, 'Full'), 'full'),
         (battery.Reading(100, 'Not charging'), 'full'), (None, 'unavailable')])
     def test_states(self, monkeypatch, reading, state):
-        monkeypatch.setattr(battery, 'read_battery', lambda device: reading)
+        devices = [] if reading is None else [battery.Device('system', 'Laptop', 'system', reading)]
+        monkeypatch.setattr(battery, 'list_devices', lambda: devices)
         driver, widget = started('battery')
         assert driver.state == state
         assert driver.badge == (None if reading is None else f'{reading.percent}%')
