@@ -12,8 +12,8 @@ from PIL import Image
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _dnd, _notifications, _pulse, audio_output, battery, network_speed, now_playing, pomodoro, system_stats,
-    temperature, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, audio_output, battery, countdown, network_speed, now_playing, pomodoro,
+    system_stats, temperature, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -27,6 +27,7 @@ VARIANTS = {
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
     'audio_output': [{}, {'show_name': False}, {'outputs': 'hdmi', 'names': 'hdmi=TV'}],
+    'countdown': [{}, {'target': '2026-12-24', 'title': 'Christmas'}, {'target': 'garbage'}],
     'temperature': [{}, {'sensor': 'nvme/Composite', 'units': 'fahrenheit', 'label': 'SSD'}],
     'battery': [{}, {'device': 'MX Master', 'label': 'Mouse'}],
     'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
@@ -135,7 +136,7 @@ def test_states_report_what_the_widgets_see():
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
              'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
              'pomodoro': 'idle', 'battery': 'discharging', 'audio_output': 'speakers',
-             'temperature': 'normal'}
+             'temperature': 'normal', 'countdown': 'soon'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -883,3 +884,38 @@ class TestTemperature:
         assert renders == []
         widget.update(driver.ctx, 51.0)
         assert (renders, driver.badge) == ([1], '51°')
+
+
+class TestCountdown:
+    # frozen_world pins the clock at 2026-09-23 16:05:07.
+    NOW = datetime(2026, 9, 23, 16, 5, 7)
+
+    @pytest.mark.parametrize('text, expected, daily', [
+        ('17:00', datetime(2026, 9, 23, 17, 0), True),
+        ('09:30', datetime(2026, 9, 24, 9, 30), True),
+        ('2026-12-24', datetime(2026, 12, 24), False),
+        ('2026-12-24 18:00', datetime(2026, 12, 24, 18, 0), False),
+    ])
+    def test_targets(self, text, expected, daily):
+        assert countdown.parse_target(text, self.NOW) == (expected, daily)
+
+    @pytest.mark.parametrize('text', ['', 'tomorrow', '25:99'])
+    def test_bad_targets(self, text):
+        assert countdown.parse_target(text, self.NOW) is None
+
+    @pytest.mark.parametrize('seconds, text, badge', [
+        (3 * 86400 + 5, '3 days', '3d'), (86400 + 3600 * 2 + 60 * 5, '26h 05m', '26h'),
+        (3600 + 59, '1h 00m', '1h'), (125, '2:05', '2m'), (9, '0:09', '9s')])
+    def test_remaining_text(self, seconds, text, badge):
+        assert countdown.remaining_text(seconds) == (text, badge)
+
+    @pytest.mark.parametrize('target, state, badge', [
+        ('2026-10-23', 'counting', '29d'), ('16:30', 'soon', '24m'), ('2026-09-01', 'done', None),
+        ('nope', 'invalid', None)])
+    def test_states(self, target, state, badge):
+        driver, _ = started('countdown', target=target)
+        assert (driver.state, driver.badge) == (state, badge)
+
+    def test_ticks_every_second_on_the_second(self):
+        driver, _ = started('countdown')
+        assert [(timer.interval, timer.align) for timer in driver._timers] == [(1, True)]
