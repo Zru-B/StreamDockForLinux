@@ -12,7 +12,7 @@ from PIL import Image
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _dnd, _notifications, _pulse, now_playing, pomodoro, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, network_speed, now_playing, pomodoro, system_stats, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -25,6 +25,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
     'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
     'do_not_disturb': [{}, {'show_caption': False}],
     'volume': [{}, {'max_volume': 150}],
@@ -74,6 +75,8 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(_notifications.HUB, 'subscribe', lambda callback: None)
     monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
     monkeypatch.setattr(_dnd, 'backend', lambda name: FakeDnd())
+    monkeypatch.setattr(network_speed, 'read_counters', lambda: {'eth0': (1000, 500), 'lo': (9, 9)})
+    monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
 
 def test_every_builtin_has_variants_listed():
@@ -680,3 +683,37 @@ class TestPomodoro:
         assert frames[0] != frames[1]
         widget.tick(driver.ctx)
         assert widget.render(driver.ctx).tobytes() == frames[0]
+
+
+class TestNetworkSpeed:
+    def test_proc_net_dev_is_parsed(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        path = tmp_path / 'dev'
+        path.write_text(
+            'Inter-|   Receive                            |  Transmit\n'
+            ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets ...\n'
+            '    lo:  1234      10    0    0    0     0          0         0     1234      10 0 0 0 0 0 0\n'
+            '  eth0: 987654   321    0    0    0     0          0         0   123456     111 0 0 0 0 0 0\n')
+        assert network_speed.read_counters(str(path)) == {'lo': (1234, 1234), 'eth0': (987654, 123456)}
+
+    def test_physical_interfaces_by_default(self):
+        names = ['lo', 'eth0', 'wlan0', 'docker0', 'tun0']
+        physical = {'eth0', 'wlan0'}.__contains__
+        assert network_speed.selected(names, '', physical) == ['eth0', 'wlan0']
+        assert network_speed.selected(names, 'tun*, docker0', physical) == ['docker0', 'tun0']
+
+    @pytest.mark.parametrize('rate, bits, text', [
+        (0, False, '0 B/s'), (999, False, '999 B/s'), (1500, False, '1.5 kB/s'), (2_500_000, False, '2.5 MB/s'),
+        (45_000_000, False, '45 MB/s'), (125_000, True, '1.0 Mb/s'), (3e12, False, '3000 GB/s')])
+    def test_rates_are_short(self, rate, bits, text):
+        assert network_speed.format_rate(rate, bits) == text
+
+    def test_speed_is_the_difference_of_two_readings(self, monkeypatch):
+        readings = iter([{'eth0': (1000, 0), 'lo': (0, 0)}, {'eth0': (5_001_000, 200_000), 'lo': (9e9, 9e9)}])
+        times = iter([100.0, 102.0])
+        monkeypatch.setattr(network_speed, 'read_counters', lambda: next(readings))
+        monkeypatch.setattr(network_speed, 'clock', lambda: next(times))
+        driver, widget = started('network_speed')
+        widget.sample(driver.ctx)
+        assert (widget.down, widget.up) == (2_500_000, 100_000)
+        assert (driver.state, driver.badge) == ('active', '2.5MB/s')
