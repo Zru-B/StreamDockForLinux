@@ -97,6 +97,7 @@ can see where it will go.
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
+| Volume | `volume` | `step`, `max_volume`, `unmute_on_raise`, `color`, `gauge_color`, `muted_color`, `background` |
 | Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
 | VPN Status | `vpn_connected` | `source` (`auto`, `networkmanager`, `interfaces`), `interfaces`, `interval`, colours |
 | Weather | `weather` | `location`, `units` (`celsius`/`fahrenheit`), `refresh_minutes`, `color`, `background` |
@@ -111,7 +112,7 @@ States and badges, for `state_icons` and badge overlays:
 | Widget | States | Badge |
 |---|---|---|
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
-| `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
+| `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
@@ -133,6 +134,27 @@ the key updates it straight away.
 VLC, mpv…) through `busctl`, which comes with systemd. They show the player
 that's playing, or the one named in `player`, e.g. `spotify`. Pressing the key
 plays or pauses.
+
+### Volume
+
+**Volume** puts the default speaker's volume on one key, as a gauge with the
+percentage under a speaker icon.
+
+| Gesture | Does |
+|---|---|
+| Press | Raises the volume by `step` percent (default 5), up to `max_volume` |
+| Double press | Lowers it by `step` percent |
+| Long press | Mutes, or unmutes; the gauge turns red while muted |
+
+`max_volume` is 100 by default; up to 150 amplifies. With `unmute_on_raise`
+(the default), raising the volume also unmutes, as keyboard volume keys do.
+
+Because the key tells a press from a double press and a hold, a press takes
+effect when you let go of the key, after the double-press window
+(`double_press_interval`, 0.3 s by default). Hold the key for
+`long_press_duration` (0.5 s) to mute. If a single, immediate press matters
+more, use the volume column below. [Action Triggers](configuration.md#action-triggers)
+explains the timing.
 
 ### Volume column
 

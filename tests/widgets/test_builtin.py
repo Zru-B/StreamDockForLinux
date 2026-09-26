@@ -25,6 +25,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'volume': [{}, {'max_volume': 150}],
     'volume_column': [{'button': name} for name in ('up', 'mute', 'down')] + [{'show_level_bar': False}],
     'vpn_connected': [{}, {'source': 'interfaces'}],
     'media_playing': [{}, {'player': 'spotify'}],
@@ -483,3 +484,26 @@ class TestVolumeColumn:
         assert (driver.state, driver.badge) == ('unmuted', '40%')
         widget.update(driver.ctx, _pulse.AudioLevel(55, True))
         assert (driver.state, driver.badge) == ('muted', '55%')
+
+
+class TestVolume:
+    def test_press_raises_double_press_lowers(self, monkeypatch):
+        steps = []
+        monkeypatch.setattr(_pulse, 'step_volume',
+                            lambda kind, change, maximum, unmute: steps.append((kind, change, maximum, unmute)))
+        driver, widget = started('volume', step=10, max_volume=120)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: fn())
+        widget.on_press(driver.ctx)
+        widget.on_double_press(driver.ctx)
+        assert steps == [('sink', 10, 120, True), ('sink', -10, 120, True)]
+
+    def test_long_press_toggles_mute(self, monkeypatch):
+        toggled = []
+        monkeypatch.setattr(_pulse, 'toggle_muted', toggled.append)
+        driver, widget = started('volume')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        widget.on_long_press(driver.ctx)
+        assert toggled == ['sink']
+
+    def test_handles_all_three_gestures(self):
+        assert set(SPECS['volume'].events) == {'press', 'double_press', 'long_press'}
