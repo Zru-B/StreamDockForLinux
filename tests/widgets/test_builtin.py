@@ -12,7 +12,8 @@ from PIL import Image
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _dnd, _notifications, _pulse, network_speed, now_playing, pomodoro, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, battery, network_speed, now_playing, pomodoro, system_stats, vpn_connected,
+    weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -25,6 +26,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'battery': [{}, {'device': 'MX Master', 'label': 'Mouse'}],
     'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
     'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
     'do_not_disturb': [{}, {'show_caption': False}],
@@ -76,6 +78,7 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
     monkeypatch.setattr(_dnd, 'backend', lambda name: FakeDnd())
     monkeypatch.setattr(network_speed, 'read_counters', lambda: {'eth0': (1000, 500), 'lo': (9, 9)})
+    monkeypatch.setattr(battery, 'read_battery', lambda device: battery.Reading(64, 'Discharging'))
     monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
 
@@ -122,7 +125,7 @@ def test_states_report_what_the_widgets_see():
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
              'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
-             'pomodoro': 'idle'}
+             'pomodoro': 'idle', 'battery': 'discharging'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -717,3 +720,43 @@ class TestNetworkSpeed:
         widget.sample(driver.ctx)
         assert (widget.down, widget.up) == (2_500_000, 100_000)
         assert (driver.state, driver.badge) == ('active', '2.5MB/s')
+
+
+class TestBattery:
+    @staticmethod
+    def supply(root, name, **files):
+        folder = root / name
+        folder.mkdir()
+        for key, value in files.items():
+            (folder / key).write_text(value + '\n')
+
+    @pytest.fixture
+    def sysfs(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        self.supply(tmp_path, 'AC', type='Mains', online='1')
+        self.supply(tmp_path, 'BAT0', type='Battery', capacity='80', status='Discharging')
+        self.supply(tmp_path, 'BAT1', type='Battery', capacity='40', status='Charging', scope='System')
+        self.supply(tmp_path, 'hidpp_battery_0', type='Battery', scope='Device', capacity_level='Low',
+                    status='Discharging', model_name='MX Master 3')
+        return str(tmp_path)
+
+    def test_system_batteries_count_as_one(self, sysfs):
+        assert battery.read_battery('', sysfs) == battery.Reading(60, 'Charging')
+
+    def test_a_peripheral_by_model_with_only_a_level(self, sysfs):
+        assert battery.read_battery('mx master', sysfs) == battery.Reading(15, 'Discharging', approximate=True)
+
+    def test_nothing_found(self, sysfs):
+        assert battery.read_battery('keyboard', sysfs) is None
+        assert battery.read_battery('', '/nonexistent') is None
+
+    @pytest.mark.parametrize('reading, state', [
+        (battery.Reading(64, 'Discharging'), 'discharging'), (battery.Reading(12, 'Discharging'), 'low'),
+        (battery.Reading(12, 'Charging'), 'charging'), (battery.Reading(100, 'Full'), 'full'),
+        (battery.Reading(100, 'Not charging'), 'full'), (None, 'unavailable')])
+    def test_states(self, monkeypatch, reading, state):
+        monkeypatch.setattr(battery, 'read_battery', lambda device: reading)
+        driver, widget = started('battery')
+        assert driver.state == state
+        assert driver.badge == (None if reading is None else f'{reading.percent}%')
+        assert widget.render(driver.ctx).size == (112, 112)
