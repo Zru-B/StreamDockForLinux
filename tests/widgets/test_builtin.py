@@ -12,7 +12,7 @@ from PIL import Image
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _notifications, _pulse, now_playing, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, now_playing, system_stats, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -25,6 +25,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'do_not_disturb': [{}, {'show_caption': False}],
     'volume': [{}, {'max_volume': 150}],
     'volume_column': [{'button': name} for name in ('up', 'mute', 'down')] + [{'show_level_bar': False}],
     'vpn_connected': [{}, {'source': 'interfaces'}],
@@ -35,6 +36,20 @@ VARIANTS = {
     'whatsapp_notifications': [{}],
     'telegram_notifications': [{}],
 }
+
+
+class FakeDnd:
+    def __init__(self, on=False):
+        self.on = on
+        self.writes = []
+
+    def read(self):
+        return self.on
+
+    def write(self, on):
+        self.writes.append(on)
+        self.on = on
+
 
 PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Very Long Song Title Indeed',
                               ['Some Artist'])
@@ -57,6 +72,7 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(weather, 'fetch', lambda position, units, timeout=0: weather.Reading(21.4, 'rain'))
     monkeypatch.setattr(_notifications.HUB, 'subscribe', lambda callback: None)
     monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
+    monkeypatch.setattr(_dnd, 'backend', lambda name: FakeDnd())
 
 
 def test_every_builtin_has_variants_listed():
@@ -101,7 +117,7 @@ def test_states_report_what_the_widgets_see():
     # These are the names users map images to in state_icons.
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
-             'whatsapp_notifications': 'none', 'telegram_notifications': 'none'}
+             'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -507,3 +523,57 @@ class TestVolume:
 
     def test_handles_all_three_gestures(self):
         assert set(SPECS['volume'].events) == {'press', 'double_press', 'long_press'}
+
+
+class TestDoNotDisturb:
+    def test_each_press_toggles_and_the_state_follows(self, monkeypatch):
+        fake = FakeDnd(on=False)
+        monkeypatch.setattr(_dnd, 'backend', lambda name: fake)
+        driver, widget = started('do_not_disturb')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        assert driver.state == 'off'
+        widget.on_press(driver.ctx)
+        assert (driver.state, fake.writes) == ('on', [True])
+        widget.on_press(driver.ctx)
+        assert (driver.state, fake.writes) == ('off', [True, False])
+
+    def test_picks_up_a_switch_made_elsewhere(self, monkeypatch):
+        fake = FakeDnd(on=False)
+        monkeypatch.setattr(_dnd, 'backend', lambda name: fake)
+        driver, widget = started('do_not_disturb')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        fake.on = True
+        widget.check(driver.ctx)
+        assert driver.state == 'on'
+
+    def test_no_backend_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(_dnd, 'backend', lambda name: None)
+        driver, widget = started('do_not_disturb')
+        widget.on_press(driver.ctx)
+        assert driver.state == 'unavailable'
+        assert driver.widget.render(driver.ctx).size == (112, 112)
+
+    @pytest.mark.parametrize('desktop, expected', [
+        ('KDE', 'kde'), ('ubuntu:GNOME', 'gnome'), ('XFCE', 'xfce'), ('Unity', 'gnome')])
+    def test_desktop_picks_the_backend(self, desktop, expected):
+        assert _dnd.detect(desktop) == expected
+
+    def test_other_desktops_look_for_a_running_daemon(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setattr(_dnd, '_run', lambda *command: 'false' if command[0] == 'dunstctl' else None)
+        assert _dnd.detect('sway') == 'dunst'
+        monkeypatch.setattr(_dnd, '_run', lambda *command: None)
+        assert _dnd.detect('sway') is None
+
+    def test_gnome_dnd_is_banners_off(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+
+        def run(*command):
+            calls.append(command)
+            return 'false'
+        monkeypatch.setattr(_dnd, '_run', run)
+        gnome = _dnd.GnomeBackend()
+        assert gnome.read() is True
+        gnome.write(False)
+        assert calls[-1][-2:] == ('show-banners', 'true')

@@ -97,6 +97,7 @@ can see where it will go.
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
+| Do Not Disturb | `do_not_disturb` | `backend` (`auto`, `kde`, `gnome`, `xfce`, `dunst`, `swaync`), `interval`, `show_caption`, `on_color`, `off_color`, `color` |
 | Volume | `volume` | `step`, `max_volume`, `unmute_on_raise`, `color`, `gauge_color`, `muted_color`, `background` |
 | Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
 | VPN Status | `vpn_connected` | `source` (`auto`, `networkmanager`, `interfaces`), `interfaces`, `interval`, colours |
@@ -112,6 +113,7 @@ States and badges, for `state_icons` and badge overlays:
 | Widget | States | Badge |
 |---|---|---|
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
+| `do_not_disturb` | `on`, `off`, `unavailable` | — |
 | `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
@@ -194,6 +196,26 @@ layouts:
 Give all three keys the same `step`, `max_volume` and colours. The level bar
 reads them per key, so different values split it unevenly. The keys follow
 volume changes made anywhere, through `pactl` like the mute widgets.
+
+### Do Not Disturb
+
+**Do Not Disturb** silences desktop notifications. Each press switches it on or
+off, and the key shows which: a moon on purple while it's on, a bell while
+notifications are shown, a grey bell when no supported desktop was found.
+
+`backend` is `auto` by default: KDE Plasma, GNOME or XFCE by the desktop you're
+running, otherwise a running SwayNotificationCenter or dunst. The key checks
+every `interval` seconds, so Do Not Disturb switched elsewhere shows too. On
+KDE that covers apps that hold notifications back, but not Plasma's own tray
+switch, which the key can't read.
+
+| Backend | How |
+|---|---|
+| `kde` | Asks Plasma's notification server to hold notifications back. Plasma shows this as Do Not Disturb in the tray. Needs `dbus-python` (see [Installation](installation.md)). It ends when StreamDock quits. The key can't switch off a Do Not Disturb that another app asked for. |
+| `gnome` | Turns off notification banners, as GNOME's own Do Not Disturb switch does. |
+| `xfce` | The `xfce4-notifyd` Do Not Disturb setting, through `xfconf-query`. |
+| `dunst` | `dunstctl set-paused`. |
+| `swaync` | `swaync-client --dnd-on` / `--dnd-off`. |
 
 ### Notification counters
 
