@@ -20,6 +20,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'volume_column': [{'button': name} for name in ('up', 'mute', 'down')] + [{'show_level_bar': False}],
     'vpn_connected': [{}, {'source': 'interfaces'}],
     'media_playing': [{}, {'player': 'spotify'}],
     'now_playing': [{}, {'show_art': False}],
@@ -37,6 +38,7 @@ PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Ve
 def frozen_world(monkeypatch):
     monkeypatch.setattr(_common, 'now', lambda zone=None: datetime(2026, 9, 23, 16, 5, 7, tzinfo=zone))
     monkeypatch.setattr(_pulse, 'read_muted', lambda kind: True)
+    monkeypatch.setattr(_pulse, 'read_level', lambda kind: _pulse.AudioLevel(40, False))
     monkeypatch.setattr(_pulse.EventWatcher, 'start', lambda self: None)
     monkeypatch.setattr(vpn_connected, 'networkmanager_vpn', lambda: False)
     monkeypatch.setattr(vpn_connected, 'interface_up', lambda patterns: False)
@@ -261,3 +263,77 @@ def test_pactl_mute_output_is_parsed(monkeypatch):
     assert _pulse.read_muted('sink') is False
     Result.returncode = 1
     assert _pulse.read_muted('sink') is None
+
+
+def test_pactl_volume_output_is_parsed(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = ('Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: 32768 /  50% / -18.06 dB\n'
+                  '        balance 0.10\n')
+
+    monkeypatch.undo()
+    monkeypatch.setattr(_pulse.subprocess, 'run', lambda *args, **kwargs: Result())
+    assert _pulse.read_volume('sink') == 45
+    Result.returncode = 1
+    assert _pulse.read_volume('sink') is None
+
+
+class TestStepVolume:
+    @pytest.fixture
+    def pactl(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+        monkeypatch.setattr(_pulse.subprocess, 'run', lambda command, **kwargs: calls.append(command))
+        monkeypatch.setattr(_pulse, 'read_level', lambda kind: _pulse.AudioLevel(None, None))
+        return calls
+
+    def volume_is(self, monkeypatch, percent):
+        monkeypatch.setattr(_pulse, 'read_volume', lambda kind: percent)
+
+    def test_steps_are_relative_so_the_balance_stays(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 40)
+        _pulse.step_volume('sink', -5, unmute=False)
+        assert pactl == [['pactl', 'set-sink-volume', '--', '@DEFAULT_SINK@', '-5%']]
+
+    def test_raising_stops_at_the_maximum(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 97)
+        _pulse.step_volume('sink', 5, maximum=100, unmute=False)
+        assert pactl == [['pactl', 'set-sink-volume', '--', '@DEFAULT_SINK@', '100%']]
+        pactl.clear()
+        self.volume_is(monkeypatch, 100)
+        _pulse.step_volume('sink', 5, maximum=100, unmute=False)
+        assert pactl == []
+
+    def test_raising_unmutes(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 40)
+        _pulse.step_volume('sink', 5, unmute=True)
+        assert pactl[-1] == ['pactl', 'set-sink-mute', '@DEFAULT_SINK@', '0']
+        pactl.clear()
+        _pulse.step_volume('sink', -5, unmute=True)
+        assert len(pactl) == 1
+
+
+class TestVolumeColumn:
+    @pytest.mark.parametrize('button, step', [('up', 5), ('down', -5)])
+    def test_up_and_down_step_the_volume(self, monkeypatch, button, step):
+        steps = []
+        monkeypatch.setattr(_pulse, 'step_volume',
+                            lambda kind, change, maximum, unmute: steps.append((kind, change, maximum)))
+        driver, widget = started('volume_column', button=button)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None: fn())
+        widget.on_press(driver.ctx)
+        assert steps == [('sink', step, 100)]
+
+    def test_middle_button_toggles_mute(self, monkeypatch):
+        toggled = []
+        monkeypatch.setattr(_pulse, 'toggle_muted', toggled.append)
+        driver, widget = started('volume_column', button='mute')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None: then(fn()))
+        widget.on_press(driver.ctx)
+        assert toggled == ['sink']
+
+    def test_reports_mute_state_and_volume_badge(self, monkeypatch):
+        driver, widget = started('volume_column')
+        assert (driver.state, driver.badge) == ('unmuted', '40%')
+        widget.update(driver.ctx, _pulse.AudioLevel(55, True))
+        assert (driver.state, driver.badge) == ('muted', '55%')

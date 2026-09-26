@@ -7,8 +7,10 @@ the desktop's volume applet - shows on the key at once instead of at the next
 poll.
 """
 
+import re
 import subprocess
 import threading
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from streamdock_sdk import Option, Widget
@@ -41,6 +43,66 @@ def toggle_muted(kind: str) -> Optional[bool]:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return read_muted(kind)
+
+
+@dataclass(frozen=True)
+class AudioLevel:
+    """The default device's volume in percent and its mute; None where pactl can't tell."""
+
+    volume: Optional[int] = None
+    muted: Optional[bool] = None
+
+
+def read_volume(kind: str) -> Optional[int]:
+    """The default source's or sink's volume in percent, averaged over its channels."""
+    try:
+        result = subprocess.run(['pactl', f'get-{kind}-volume', TARGETS[kind]], capture_output=True,
+                                text=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    # "Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 /  40% / ..."
+    first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ''
+    percents = [int(value) for value in re.findall(r'(\d+)%', first_line)]
+    if not percents:
+        return None
+    return round(sum(percents) / len(percents))
+
+
+def read_level(kind: str) -> AudioLevel:
+    return AudioLevel(read_volume(kind), read_muted(kind))
+
+
+def step_volume(kind: str, step: int, maximum: int = 100, unmute: bool = True) -> AudioLevel:
+    """
+    Raise (``step`` > 0) or lower the volume by ``step`` percent, never above ``maximum``.
+
+    A relative change keeps the channels' balance; only the last step up to
+    ``maximum`` sets an absolute value. With ``unmute``, raising the volume
+    also unmutes, as desktop volume keys do.
+    """
+    current = read_volume(kind)
+    if current is None:
+        return read_level(kind)
+    if step > 0 and current >= maximum:
+        change = None
+    elif step > 0 and current + step > maximum:
+        change = f'{maximum}%'
+    else:
+        change = f'{step:+d}%'
+    commands = []
+    if change is not None:
+        # '--' so pactl doesn't read '-5%' as an option.
+        commands.append(['pactl', f'set-{kind}-volume', '--', TARGETS[kind], change])
+    if unmute and step > 0:
+        commands.append(['pactl', f'set-{kind}-mute', TARGETS[kind], '0'])
+    try:
+        for command in commands:
+            subprocess.run(command, capture_output=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return read_level(kind)
 
 
 class EventWatcher:

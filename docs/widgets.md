@@ -97,6 +97,7 @@ can see where it will go.
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
+| Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
 | VPN Status | `vpn_connected` | `source` (`auto`, `networkmanager`, `interfaces`), `interfaces`, `interval`, colours |
 | Weather | `weather` | `location`, `units` (`celsius`/`fahrenheit`), `refresh_minutes`, `color`, `background` |
 | Now Playing | `now_playing` | `player`, `show_art`, `art_brightness`, `toggle_on_press`, `interval`, `color`, `background` |
@@ -110,6 +111,7 @@ States and badges, for `state_icons` and badge overlays:
 | Widget | States | Badge |
 |---|---|---|
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
+| `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
@@ -131,6 +133,45 @@ the key updates it straight away.
 VLC, mpv…) through `busctl`, which comes with systemd. They show the player
 that's playing, or the one named in `player`, e.g. `spotify`. Pressing the key
 plays or pauses.
+
+### Volume column
+
+**Volume Column (1x3)** fills one column of the device with three keys: volume
+up on top, mute in the middle, volume down at the bottom. A key shows one
+widget, so the column is three keys that each use `volume_column` with a
+different `button`. Stack them in one column, top to bottom `up`, `mute`,
+`down`. Each draws its third of a shared level bar, so the column reads as one
+tall meter.
+
+```yaml
+keys:
+  VolumeUp:
+    widget: volume_column
+    widget_options: { button: up }
+  VolumeMute:
+    widget: volume_column
+    widget_options: { button: mute }
+  VolumeDown:
+    widget: volume_column
+    widget_options: { button: down }
+
+layouts:
+  Main:
+    keys:
+      - 5: VolumeUp        # the right-hand column: 5, 10, 15
+      - 10: VolumeMute
+      - 15: VolumeDown
+```
+
+- **up** and **down** change the default speaker's volume by `step` percent
+  (default 5). Raising stops at `max_volume` (default 100; up to 150
+  amplifies). With `unmute_on_raise` (the default), raising also unmutes, as
+  keyboard volume keys do.
+- **mute** toggles the mute and shows the volume, or **MUTED** on red.
+
+Give all three keys the same `step`, `max_volume` and colours. The level bar
+reads them per key, so different values split it unevenly. The keys follow
+volume changes made anywhere, through `pactl` like the mute widgets.
 
 ### Notification counters
 
