@@ -95,7 +95,7 @@ can see where it will go.
 | Analog Clock | `analog_clock` | `show_seconds`, `timezone`, `face_color`, `hand_color`, `second_hand_color`, `background` |
 | Countdown | `countdown` | `target`, `title`, `done_text`, `soon_minutes`, `timezone`, `color`, `soon_color`, `done_color`, `background` |
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
-| Battery | `battery` | `device`, `label`, `low`, `interval`, `color`, `background` |
+| Battery | `battery` | `devices`, `label`, `low`, `interval`, `color`, `background` |
 | Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
 | Temperature | `temperature` | `sensor`, `label`, `units` (`celsius`/`fahrenheit`), `warm`, `hot`, `interval`, `color`, `background` |
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
@@ -151,23 +151,30 @@ plays or pauses.
 
 ### Battery
 
-**Battery** shows a battery's charge: green, amber below 50%, red at or below
-`low` (20% by default), with a bolt while it charges. Pressing the key checks
-at once, otherwise it checks every `interval` seconds.
+**Battery** shows the charge of the laptop and of connected devices: a
+wireless mouse or keyboard, Bluetooth headphones, a game controller. Each
+press shows the next device; the device's name is above the battery and a row
+of dots below shows which one of how many is on show. The battery is green,
+amber below 50% and red at or below `low` (20% by default), with a bolt while
+it charges.
 
-With `device` empty it shows the laptop's battery; a laptop with two counts
-as one. To show a wireless mouse, keyboard or headset instead, set `device` to
-part of its name or model, e.g. `MX Master`, and give it a `label` to show
-above the battery. That works for devices whose driver reports a battery in
-`/sys/class/power_supply`, which includes most Logitech devices. See what's
-there with:
+`devices` limits and orders the devices a press cycles through, by part of
+their name or their kind (`laptop`, `mouse`, `keyboard`, `headset`,
+`headphones`...): `laptop, mouse, WH-1000` shows those three in that order.
+Empty shows every device found, the laptop first. For a key that always shows
+one device, give just that one, e.g. `devices: MX Master`, and a `label` if
+you want another name above it.
 
-```sh
-grep . /sys/class/power_supply/*/model_name
-```
+Devices come from UPower (`upower --dump` lists what it sees), which knows
+Bluetooth headphones through BlueZ. Without UPower they come from
+`/sys/class/power_supply`, which has the laptop and devices whose kernel
+driver reports a battery, such as most Logitech ones, but not Bluetooth
+headphones. The key checks every `interval` seconds, and on each press, so a
+device that just connected turns up.
 
 Some devices report only a level (critical, low, normal, high, full) rather
-than a percentage; the key then shows the level's name.
+than a percentage; the key then shows the level's name. A laptop with two
+batteries counts as one.
 
 ### Countdown
 
