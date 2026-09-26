@@ -94,6 +94,7 @@ can see where it will go.
 | Digital Clock | `digital_clock` | `format` (`24h`/`12h`), `show_seconds`, `timezone`, `color`, `background` |
 | Analog Clock | `analog_clock` | `show_seconds`, `timezone`, `face_color`, `hand_color`, `second_hand_color`, `background` |
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
+| Battery | `battery` | `device`, `label`, `low`, `interval`, `color`, `background` |
 | Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
@@ -119,6 +120,7 @@ States and badges, for `state_icons` and badge overlays:
 | `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
 | `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
+| `battery` | `charging`, `discharging`, `full`, `low`, `unavailable` | the charge, e.g. `64%` |
 | `network_speed` | `idle`, `active` | the download speed, e.g. `2.5MB/s` |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
@@ -140,6 +142,26 @@ the key updates it straight away.
 VLC, mpv…) through `busctl`, which comes with systemd. They show the player
 that's playing, or the one named in `player`, e.g. `spotify`. Pressing the key
 plays or pauses.
+
+### Battery
+
+**Battery** shows a battery's charge: green, amber below 50%, red at or below
+`low` (20% by default), with a bolt while it charges. Pressing the key checks
+at once, otherwise it checks every `interval` seconds.
+
+With `device` empty it shows the laptop's battery; a laptop with two counts
+as one. To show a wireless mouse, keyboard or headset instead, set `device` to
+part of its name or model, e.g. `MX Master`, and give it a `label` to show
+above the battery. That works for devices whose driver reports a battery in
+`/sys/class/power_supply`, which includes most Logitech devices. See what's
+there with:
+
+```sh
+grep . /sys/class/power_supply/*/model_name
+```
+
+Some devices report only a level (critical, low, normal, high, full) rather
+than a percentage; the key then shows the level's name.
 
 ### Network Speed
 
