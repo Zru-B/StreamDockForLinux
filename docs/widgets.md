@@ -94,6 +94,7 @@ can see where it will go.
 | Digital Clock | `digital_clock` | `format` (`24h`/`12h`), `show_seconds`, `timezone`, `color`, `background` |
 | Analog Clock | `analog_clock` | `show_seconds`, `timezone`, `face_color`, `hand_color`, `second_hand_color`, `background` |
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
+| Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
@@ -118,6 +119,7 @@ States and badges, for `state_icons` and badge overlays:
 | `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
 | `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
+| `network_speed` | `idle`, `active` | the download speed, e.g. `2.5MB/s` |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
 | `media_playing`, `now_playing` | `playing`, `paused`, `stopped`, `none` | — |
@@ -138,6 +140,19 @@ the key updates it straight away.
 VLC, mpv…) through `busctl`, which comes with systemd. They show the player
 that's playing, or the one named in `player`, e.g. `spotify`. Pressing the key
 plays or pauses.
+
+### Network Speed
+
+**Network Speed** shows the download (blue, arrow down) and upload (orange,
+arrow up) speed, over a graph of the last 40 readings: download as a filled
+area, upload as a line.
+
+It counts every physical interface (wired and wireless) by default, and
+leaves out tunnels, bridges and containers, so traffic through a VPN isn't
+counted twice. To count something else, set `interfaces` to names or patterns,
+e.g. `wlan0` or `en*, wg0`. `units: bits` shows Mb/s, as speed tests do; the
+default is MB/s, as file managers show. The state is `idle` while both
+directions stay below `idle_below` kB/s.
 
 ### Volume
 
