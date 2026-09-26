@@ -7,7 +7,8 @@ import pytest
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _dnd, battery, _notifications, _pulse, network_speed, pomodoro, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, audio_output, battery, network_speed, pomodoro, system_stats,
+    vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -20,6 +21,7 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'audio_output': [{}, {'show_name': False}, {'outputs': 'hdmi', 'names': 'hdmi=TV'}],
     'battery': [{}, {'device': 'MX Master', 'label': 'Mouse'}],
     'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
     'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
@@ -49,6 +51,10 @@ class FakeDnd:
         self.on = on
 
 
+SINKS = [_pulse.Sink('alsa_output.pci.analog-stereo', 'Built-in Audio Analog Stereo', 'speakers'),
+         _pulse.Sink('bluez_output.AA_BB', 'Sony WH-1000XM5', 'headphones'),
+         _pulse.Sink('alsa_output.pci.hdmi-stereo', 'HDMI / DisplayPort 1 Output', 'hdmi')]
+
 PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Very Long Song Title Indeed',
                               ['Some Artist'])
 
@@ -71,6 +77,8 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
     monkeypatch.setattr(_dnd, 'backend', lambda name: FakeDnd())
     monkeypatch.setattr(network_speed, 'read_counters', lambda: {'eth0': (1000, 500), 'lo': (9, 9)})
+    monkeypatch.setattr(_pulse, 'list_sinks', lambda: list(SINKS))
+    monkeypatch.setattr(_pulse, 'default_sink', lambda: SINKS[0].name)
     monkeypatch.setattr(battery, 'read_battery', lambda device: battery.Reading(64, 'Discharging'))
     monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
@@ -118,7 +126,7 @@ def test_states_report_what_the_widgets_see():
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
              'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
-             'pomodoro': 'idle', 'battery': 'discharging'}
+             'pomodoro': 'idle', 'battery': 'discharging', 'audio_output': 'speakers'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -613,3 +621,60 @@ class TestBattery:
         assert driver.state == state
         assert driver.badge == (None if reading is None else f'{reading.percent}%')
         assert widget.render(driver.ctx).size == (112, 112)
+
+
+class TestAudioOutput:
+    def test_press_cycles_through_the_outputs(self, monkeypatch):
+        switched = []
+        monkeypatch.setattr(_pulse, 'set_default_sink', lambda name, move: switched.append((name, move)))
+        driver, widget = started('audio_output')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None: fn())
+        for _ in range(3):
+            widget.on_press(driver.ctx)
+        assert [name for name, _ in switched] == [SINKS[1].name, SINKS[2].name, SINKS[0].name]
+        assert driver.state == 'speakers'
+
+    def test_outputs_option_picks_and_orders(self):
+        chosen = audio_output.cycle(SINKS, 'hdmi, built-in')
+        assert [sink.kind for sink in chosen] == ['hdmi', 'speakers']
+        assert audio_output.next_sink(chosen, SINKS[1].name) is chosen[0]
+        assert audio_output.next_sink([], None) is None
+
+    def test_short_names(self):
+        assert audio_output.display_name(SINKS[1], 'Built-in=Desk, sony = Buds') == 'Buds'
+        assert audio_output.display_name(SINKS[2], 'Built-in=Desk') == 'HDMI / DisplayPort 1 Output'
+
+    @pytest.mark.parametrize('args, kind', [
+        (('alsa_output.pci-0000_00_1f.3.hdmi-stereo',), 'hdmi'),
+        (('bluez_output.00_11', 'Buds', '', '', 'bluetooth'), 'headphones'),
+        (('alsa_output.usb-headset', 'USB', '', 'headset'), 'headphones'),
+        (('alsa_output.pci.analog-stereo', 'Built-in', 'analog-output-headphones'), 'headphones'),
+        (('alsa_output.pci.analog-stereo', 'Built-in', 'analog-output-speaker'), 'speakers')])
+    def test_kind_of_output(self, args, kind):
+        assert _pulse.sink_kind(*args) == kind
+
+    def test_pactl_json_is_read(self, monkeypatch):
+        monkeypatch.undo()
+        output = ('[{"name": "bluez_output.X", "description": "Buds", "active_port": null,'
+                  ' "properties": {"device.bus": "bluetooth"}}]')
+        monkeypatch.setattr(_pulse, '_pactl_output', lambda *args: output if args[0] == '--format=json' else None)
+        assert _pulse.list_sinks() == [_pulse.Sink('bluez_output.X', 'Buds', 'headphones')]
+
+    def test_old_pactl_falls_back_to_names(self, monkeypatch):
+        monkeypatch.undo()
+        short = '0\talsa_output.pci.hdmi-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n'
+        monkeypatch.setattr(_pulse, '_pactl_output', lambda *args: short if args[0] == 'list' else None)
+        name = 'alsa_output.pci.hdmi-stereo'
+        assert _pulse.list_sinks() == [_pulse.Sink(name, name, 'hdmi')]
+
+    def test_streams_move_on_pulseaudio(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+
+        def pactl(*args):
+            calls.append(args)
+            return '12\t0\t34\tPipeWire\tfloat32le 2ch 48000Hz\n' if args[:2] == ('list', 'short') else ''
+        monkeypatch.setattr(_pulse, '_pactl_output', pactl)
+        _pulse.set_default_sink('sink2')
+        assert calls == [('set-default-sink', 'sink2'), ('list', 'short', 'sink-inputs'),
+                         ('move-sink-input', '12', 'sink2')]
