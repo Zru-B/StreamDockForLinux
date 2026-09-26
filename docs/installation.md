@@ -73,7 +73,7 @@ pip install pillow pyyaml cairosvg pyudev PyQt6 dbus-python PyGObject
 - `PyQt6` - Configuration editor GUI
 
 **System wrappers (require system libraries):**
-- `dbus-python` - D-Bus communication (for Media control & Lock monitor)
+- `dbus-python` - D-Bus communication (for Media control, Lock monitor and the Do Not Disturb widget on KDE)
 - `PyGObject` - GLib main loop (for Lock monitor)
 
 ---
