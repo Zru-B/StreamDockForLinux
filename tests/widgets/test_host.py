@@ -187,6 +187,17 @@ def test_reconfigure_keeps_unchanged_instances(host):
     assert len(host.runners) == 2
 
 
+def test_replaced_instance_on_a_still_shown_key_is_started(host):
+    # A reload that changes a shown key's options must not leave the new runner unstarted.
+    host.configure({'Clock': WidgetKeySpec('clock', {'seconds': False})})
+    host.layout_applied({3: 'Clock'})
+    host.detach()
+    host.configure({'Clock': WidgetKeySpec('clock', {'seconds': True})})
+    host.layout_applied({3: 'Clock'})
+
+    assert host.runners[1].calls == ['start', 'show']
+
+
 def test_unknown_widget_shows_error_tile_without_a_runner(host):
     host.configure({'Gone': WidgetKeySpec('uninstalled')})
     assert host.runners == []
@@ -314,3 +325,45 @@ def test_focus_goes_only_to_running_widgets_that_asked(host):
     clock, counter = host.runners
     assert ('focus', 'slack', 'general - Slack') in counter.calls
     assert not any(isinstance(call, tuple) and call[0] == 'focus' for call in clock.calls)
+
+
+def test_a_frame_arriving_mid_apply_is_still_pushed(host, device):
+    # Layout.apply wrote the old frame; the newer one landed before layout_applied
+    # and was recorded as already on the device, so it was never pushed.
+    host.configure({'Clock': WidgetKeySpec('clock')})
+    written = host.frame_for('Clock')
+    host.runners[0].on_frame(frame('red'))
+    host.layout_applied({2: 'Clock'})
+
+    host._flush('Clock', host._instances['Clock'])
+
+    assert written.getpixel((2, 2)) != (255, 0, 0)
+    assert device.set_key_pil_image.call_args.args == (2, host.frame_for('Clock'))
+    assert centre(device.set_key_pil_image.call_args.args[1]) == (255, 0, 0)
+
+
+def test_the_written_frame_is_not_pushed_again(host, device):
+    host.configure({'Clock': WidgetKeySpec('clock')})
+    host.frame_for('Clock')
+    host.layout_applied({2: 'Clock'})
+    host._flush('Clock', host._instances['Clock'])
+    device.set_key_pil_image.assert_not_called()
+
+
+def test_reconfigure_stops_runners_outside_the_lock(host):
+    # A child process can take seconds to stop; holding the lock froze every push.
+    host.configure({'Clock': WidgetKeySpec('clock')})
+    host.layout_applied({1: 'Clock'})
+    held = []
+    host.runners[0].stop = lambda: held.append(host._lock._is_owned())
+
+    host.configure({})
+
+    assert held == [False]
+
+
+def test_a_missing_base_icon_shows_the_error_tile(host, device, tmp_path):
+    # With an icon the widget draws nothing, so the placeholder stayed up forever.
+    appearance = Appearance(icon=str(tmp_path / 'gone.png'))
+    host.configure({'VPN': WidgetKeySpec('vpn', appearance=appearance)})
+    assert host.frame_for('VPN').getpixel((2, 2)) == (0x5a, 0x10, 0x10)

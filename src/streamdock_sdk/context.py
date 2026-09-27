@@ -68,11 +68,17 @@ class WidgetContext:
         self._driver.call_soon(fn)
 
     def run_in_background(self, fn: Callable[[], Any],
-                          then: Optional[Callable[[Any], None]] = None) -> None:
+                          then: Optional[Callable[[Any], None]] = None, *,
+                          skip_if_running: bool = False) -> None:
         """
         Run blocking ``fn`` off the widget's thread.
 
         ``then(result)`` runs back on the widget's thread; an exception in
         ``fn`` is logged and ``then`` is skipped.
+
+        ``skip_if_running=True`` is for periodic polls: the call does nothing
+        while a job started from the same place in the code (the same lambda
+        or function) is still running, so a slow poll never stacks up. Leave
+        it off for work the user asked for, such as a toggle on a key press.
         """
-        self._driver.run_in_background(fn, then)
+        self._driver.run_in_background(fn, then, skip_if_running)

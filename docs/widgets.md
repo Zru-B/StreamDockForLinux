@@ -183,14 +183,20 @@ Open **Keys → Widgets…** and choose **Install…**. Pick either:
 - the `widget.py` inside a folder. The whole folder is installed, so a widget
   can ship helper modules and images alongside its script.
 
-Before installing, the app checks the widget:
+Installing works on a private copy of the widget, taken first, so what you
+agree to is exactly what gets installed even if the original files change
+meanwhile:
 
-1. **It reads the source without running it.** The script must define exactly
+1. **It reads the copy without running it.** The script must define exactly
    one subclass of `streamdock_sdk.Widget`. Its `id`, `name`, `version` and
    `options` must be plain literals, so the app can list and configure the
    widget without executing it.
-2. **It runs the widget once in a separate process** and checks that it draws
-   a correctly sized frame within 5 seconds.
+2. **It asks you**, listing what the widget can do (below). Nothing of the
+   widget has run yet.
+3. **Only after you agree, it runs the widget once in a separate process** and
+   checks that it draws a correctly sized frame within 5 seconds, and that it
+   didn't change its own files while doing so. Then the checked copy is moved
+   into place.
 
 **Checking a widget doesn't make it safe.** A widget is a program. It runs
 with your user's permissions and can read your files. The install dialog lists
@@ -200,8 +206,13 @@ window you focus). Install
 widgets only from sources you trust.
 
 Installed widgets live in `~/.local/share/streamdock/widgets/<id>/`. If you
-edit one of their files afterwards, the app won't run the widget until you
-choose **Approve Again…**, which checks it again and asks again.
+edit one of their files afterwards, or add a symbolic link or a `__pycache__`
+folder, the app won't run the widget until you choose **Approve Again…**,
+which checks it again, asks again and test-runs it, in the same order as an
+install. The files are checked again each time the widget's process starts,
+so a change is caught even while the app is running. Widgets run with
+Python's bytecode cache turned off, so a `.pyc` file never stands in for the
+source you approved.
 
 Each third-party widget runs in its own process. If it crashes, it is
 restarted after 1, 2, 4… seconds. After five crashes in a row it stays stopped
@@ -307,7 +318,7 @@ declare is ignored, with a warning in the log.
 | `ctx.set_state(name)` | Report one of the declared `states`, or `None`. Keys with `state_icons` switch image. Raises `ValueError` for a name not in `states`. |
 | `ctx.set_badge(text)` | Report a short badge, or `None`/`''` for none. Anything else is turned into a string and cut to 8 characters. |
 | `ctx.every(seconds, fn=None, align=False)` | Call `fn` (by default, redraw) every `seconds` while the key is shown. With `align=True` it fires on wall-clock multiples, so `every(60, align=True)` fires at :00 of each minute. |
-| `ctx.run_in_background(fn, then=None)` | Run blocking `fn` on another thread, then call `then(result)` back on the widget's thread. If `fn` raises, the error is logged and `then` isn't called. |
+| `ctx.run_in_background(fn, then=None, *, skip_if_running=False)` | Run blocking `fn` on another thread, then call `then(result)` back on the widget's thread. If `fn` raises, the error is logged and `then` isn't called. Pass `skip_if_running=True` from a periodic poll: the call is then skipped while a job started from the same line of code is still running, so a poll slower than its interval doesn't pile up. Leave it off for work the user asked for, such as a toggle on a press. |
 | `ctx.call_soon(fn)` | Run `fn` on the widget's thread. Safe to call from any thread. |
 | `ctx.visible` | Whether the key is on the device right now. |
 | `ctx.data_dir` | A folder for the widget's own files (`~/.local/state/streamdock/widgets/<id>/`), created on first use. In editor previews and the install check it's a throwaway folder, deleted afterwards. |
@@ -378,7 +389,7 @@ A third-party widget is refused at install if:
 
 - it isn't a `.py` file or a folder containing `widget.py`;
 - a `.py` file is over 256 KB, the widget is over 5 MB, it has more than 200
-  files, or it contains a symbolic link;
+  files, or it contains a symbolic link (to a file or a folder);
 - any `.py` file doesn't parse;
 - `widget.py` doesn't define exactly one class that subclasses `Widget`
   directly, imported as `from streamdock_sdk import Widget` or used as
@@ -386,6 +397,8 @@ A third-party widget is refused at install if:
 - a class attribute from the table above isn't a plain literal of the right
   kind, `render` is missing, or an option is written other than as
   `Option.<type>(...)` with literal arguments;
+- its `name` is longer than 80 characters or its `author` longer than 200,
+  or either has a line break or another control character;
 - its `id` is already a built-in's;
 - the test run fails: importing, `setup` with default options, and one
   `render` in a separate process must finish within 5 seconds and give a
@@ -396,11 +409,12 @@ spotted from the source, in any of the widget's `.py` files:
 
 | Listed as | Found by |
 |---|---|
-| runs other programs | importing `subprocess`, `pty` or `multiprocessing`; calling `os.system`, `os.popen`, or any `os.exec…`, `os.spawn…` or `os.posix_spawn…` |
+| runs other programs | importing `subprocess`, `pty` or `multiprocessing`; using `os.system`, `os.popen`, or any `os.exec…`, `os.spawn…` or `os.posix_spawn…`, also through `import os as x` or `from os import …` |
 | uses the network | importing `socket`, `ssl`, `urllib`, `http`, `requests`, `httpx`, `aiohttp`, `websocket(s)`, `ftplib`, `smtplib` |
 | loads native code | importing `ctypes` or `cffi` |
 | talks to D-Bus | importing `dbus`, `gi`, `pydbus`, `jeepney`, `dbus_next` |
-| runs code built at runtime | calling `eval`, `exec`, `compile` or `__import__` |
+| runs code built at runtime | calling `eval`, `exec`, `compile` or `__import__`; importing `importlib` or `builtins`; mentioning `__builtins__` |
+| uses the app's own code | importing anything from `StreamDock` (only `streamdock_sdk` is a stable API) |
 | sees which window you focus, and its title | defining `on_window_focus` |
 
 ### Trying a widget without the app
@@ -420,7 +434,7 @@ print('state:', driver.state, 'badge:', driver.badge)
 "
 ```
 
-To run the full install check without installing:
+To run the full install check without installing (this runs the widget):
 
 ```sh
 python -c "
@@ -433,7 +447,7 @@ print(report.errors or 'OK', report.capabilities)
 ### How it runs
 
 Built-in widgets run inside the app. A third-party widget runs as
-`python -m streamdock_sdk.host widget.py`. It exchanges JSON lines with the
+`python -B -m streamdock_sdk.host widget.py`. It exchanges JSON lines with the
 app: commands (`start`, `render_once`, `event`, `focus`, `show`, `hide`, `stop`) go to it on stdin,
 and it sends back `ready`, `frame` (a base64 PNG), `state`, `badge` and
 `error` on stdout. The app composes your images and the badge itself: a widget

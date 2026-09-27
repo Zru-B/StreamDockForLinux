@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -25,6 +26,25 @@ from PyQt6.QtWidgets import (
 from StreamDock.ui.theme import Flavor, button_icon, current_theme
 
 CANCEL_TEXT = "Cancel"
+
+
+def plain_message_box(parent, icon: QMessageBox.Icon, title: str, text: str,
+                      informative: str = "") -> QMessageBox:
+    """
+    A message box that shows its text literally.
+
+    QMessageBox guesses rich text from a leading tag, so an exception, a
+    device string or a window title could otherwise inject markup and links.
+    """
+    box = QMessageBox(parent)
+    box.setIcon(icon)
+    box.setWindowTitle(title)
+    box.setText(text)
+    if informative:
+        box.setInformativeText(informative)
+    for label in box.findChildren(QLabel):
+        label.setTextFormat(Qt.TextFormat.PlainText)
+    return box
 
 
 def make_button(text: str, role: str = "") -> QPushButton:
@@ -72,6 +92,11 @@ class ThemedDialog(QDialog):
         super().__init__(parent)
         if title:
             self.setWindowTitle(title)
+        # Parented to the main window, a closed dialog otherwise lives as long
+        # as the window does - every edit leaked one. The deletion is deferred
+        # to the event loop, so a caller reading results right after exec()
+        # still has the dialog; one that spins an event loop first does not.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         metrics = current_theme().metrics
         self._outer = QVBoxLayout(self)

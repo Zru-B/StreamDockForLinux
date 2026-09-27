@@ -11,6 +11,7 @@ deliberately free of Qt, so it can be tested without a display.
 
 import copy
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
@@ -22,6 +23,8 @@ from StreamDock.application.configuration_manager import (
     ConfigValidationError,
     StreamDockConfig,
     read_streamdock_section,
+    relativize_icon_path,
+    resolve_icon_path,
 )
 
 # Single source of truth. The editor used to default to 15 and the runtime to
@@ -154,8 +157,8 @@ class KeyDefinition:
         """Serialise back to a YAML key definition, preserving unknown fields."""
         result: Dict[str, Any] = dict(self.extra)
 
-        # widget, icon and text are mutually exclusive: the runtime validator
-        # rejects a key carrying more than one.
+        # A widget excludes icon and text; an icon may carry a text label drawn
+        # over it, styled like a text key.
         if self.widget:
             result['widget'] = self.widget
             if self.widget_options:
@@ -166,18 +169,12 @@ class KeyDefinition:
                 result['state_icons'] = dict(self.state_icons)
             if self.badge is not None:
                 result['badge'] = copy.deepcopy(self.badge)
-        elif self.icon:
-            result['icon'] = self.icon
-        elif self.text:
-            result['text'] = self.text
-            for field, default in (('text_color', DEFAULT_TEXT_COLOR),
-                                   ('background_color', DEFAULT_BACKGROUND_COLOR),
-                                   ('font_size', DEFAULT_FONT_SIZE),
-                                   ('bold', DEFAULT_BOLD),
-                                   ('text_position', DEFAULT_TEXT_POSITION)):
-                value = getattr(self, field)
-                if value != default or field in self._explicit:
-                    result[field] = value
+        elif self.icon or self.text:
+            if self.icon:
+                result['icon'] = self.icon
+            if self.text:
+                result['text'] = self.text
+                self._write_style(result)
 
         for field in ACTION_FIELDS:
             actions = getattr(self, field)
@@ -185,6 +182,16 @@ class KeyDefinition:
                 result[field] = copy.deepcopy(actions)
 
         return result
+
+    def _write_style(self, result: Dict[str, Any]) -> None:
+        for field, default in (('text_color', DEFAULT_TEXT_COLOR),
+                               ('background_color', DEFAULT_BACKGROUND_COLOR),
+                               ('font_size', DEFAULT_FONT_SIZE),
+                               ('bold', DEFAULT_BOLD),
+                               ('text_position', DEFAULT_TEXT_POSITION)):
+            value = getattr(self, field)
+            if value != default or field in self._explicit:
+                result[field] = value
 
     def is_widget(self) -> bool:
         """True if a widget draws this key."""
@@ -218,6 +225,11 @@ class Layout:
         self.clear_all: bool = False
         self.keys: Dict[int, Optional[str]] = {}
         self.extra: Dict[str, Any] = {}
+        # What the file held that this model cannot represent, worded as the
+        # runtime would reject it. The model normalises those entries away, so
+        # without this the editor would call the file valid and quietly
+        # rewrite it on save.
+        self.load_issues: List[str] = []
 
         if data:
             self.load_from_dict(data)
@@ -229,16 +241,31 @@ class Layout:
         self.extra = _extras(data, self.KNOWN_FIELDS)
 
         self.keys = {}
-        for item in data.get('keys', []) or []:
-            if isinstance(item, dict):
-                for key_num, key_name in item.items():
-                    try:
-                        position = int(key_num)
-                    except (TypeError, ValueError) as e:
-                        raise ConfigValidationError(
-                            f"Layout '{self.name}': key position {key_num!r} "
-                            "is not a number") from e
-                    self.keys[position] = key_name
+        self.load_issues = []
+        for index, item in enumerate(data.get('keys', []) or []):
+            if not isinstance(item, dict):
+                self.load_issues.append(
+                    f"Layout '{self.name}' key at index {index} must be a dictionary")
+                continue
+            if len(item) != 1:
+                self.load_issues.append(
+                    f"Layout '{self.name}' key at index {index} must have exactly one "
+                    "key-value pair")
+            for key_num, key_name in item.items():
+                try:
+                    position = int(key_num)
+                except (TypeError, ValueError) as e:
+                    raise ConfigValidationError(
+                        f"Layout '{self.name}': key position {key_num!r} "
+                        "is not a number") from e
+                if not isinstance(key_num, int):
+                    self.load_issues.append(
+                        f"Layout '{self.name}': invalid key number {key_num!r}. "
+                        "Must be between 1 and 15")
+                if position in self.keys:
+                    self.load_issues.append(
+                        f"Layout '{self.name}': duplicate key number {position}")
+                self.keys[position] = key_name
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise back to a YAML layout definition, preserving unknown fields."""
@@ -420,6 +447,62 @@ def _renamed(mapping: Dict[str, Any], old: str, new: str) -> Dict[str, Any]:
     return {new if name == old else name: value for name, value in mapping.items()}
 
 
+def _rebase_path(path, old_dir: str, new_dir: str):
+    """
+    A relative icon path from old_dir re-expressed for new_dir.
+
+    Absolute, ~ and $VAR paths mean the same file from anywhere and are left
+    as written, as is anything that is not a non-empty string.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return path
+    if os.path.isabs(os.path.expanduser(os.path.expandvars(path.strip()))):
+        return path
+    return relativize_icon_path(resolve_icon_path(path, old_dir), new_dir)
+
+
+def _rebase_key_paths(key_def: "KeyDefinition", old_dir: str, new_dir: str) -> None:
+    """
+    Rebase every relative path a key carries, in place.
+
+    The same set the runtime resolves (expand_icon_paths): the icon, the
+    widget state images, and the images CHANGE_KEY_IMAGE and CHANGE_KEY_TEXT
+    swap in.
+    """
+    key_def.icon = _rebase_path(key_def.icon, old_dir, new_dir)
+    if isinstance(key_def.state_icons, dict):
+        key_def.state_icons = {state: _rebase_path(path, old_dir, new_dir)
+                               for state, path in key_def.state_icons.items()}
+    for field_name in ACTION_FIELDS:
+        actions = getattr(key_def, field_name)
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            for name, param in list(action.items()):
+                action_type = name.upper() if isinstance(name, str) else name
+                if action_type == 'CHANGE_KEY_IMAGE':
+                    action[name] = _rebase_path(param, old_dir, new_dir)
+                elif action_type == 'CHANGE_KEY_TEXT' and isinstance(param, dict) \
+                        and 'icon' in param:
+                    param['icon'] = _rebase_path(param['icon'], old_dir, new_dir)
+
+
+def _fsync_directory(directory: str) -> None:
+    """Make a rename in directory durable; not every filesystem allows it."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 class ConfigDocument:
     """
     A configuration file being edited.
@@ -561,9 +644,22 @@ class ConfigDocument:
         target = os.path.abspath(target)
         directory = os.path.dirname(target) or '.'
         os.makedirs(directory, exist_ok=True)
+        # Written through a symlinked config rather than over the link.
+        real_target = os.path.realpath(target)
+        real_directory = os.path.dirname(real_target)
+
+        # Relative icon paths mean the config file's directory, so a Save As
+        # elsewhere must rewrite them or every icon breaks. Kept to put back
+        # should the write fail and the document stay where it was.
+        old_dir = os.path.abspath(self.config_dir)
+        original_keys = None
+        if old_dir != directory:
+            original_keys = copy.deepcopy(self.keys)
+            for key_def in self.keys.values():
+                _rebase_key_paths(key_def, old_dir, directory)
 
         handle = tempfile.NamedTemporaryFile(
-            mode='w', dir=directory, prefix='.config-', suffix='.yml',
+            mode='w', dir=real_directory, prefix='.config-', suffix='.yml',
             delete=False, encoding='utf-8')
         try:
             with handle:
@@ -571,16 +667,26 @@ class ConfigDocument:
                 # tags that safe_load() then refuses to read back.
                 yaml.safe_dump(self.to_dict(), handle, default_flow_style=False,
                                sort_keys=False, allow_unicode=True)
-            os.replace(handle.name, target)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.path.exists(real_target):
+                shutil.copymode(real_target, handle.name)
+            os.replace(handle.name, real_target)
+            _fsync_directory(real_directory)
         except BaseException:
             try:
                 os.unlink(handle.name)
             except OSError:
                 pass
+            if original_keys is not None:
+                self.keys = original_keys
             raise
 
         self._path = target
         self._dirty = False
+        # The file on disk now holds the normalised layouts.
+        for layout in self.layouts.values():
+            layout.load_issues = []
 
     # ── validation ────────────────────────────────────────────────────────
 
@@ -594,7 +700,8 @@ class ConfigDocument:
         Returns:
             Problems found, empty when the configuration is valid
         """
-        return ConfigurationManager.collect_issues(
+        loaded = [issue for layout in self.layouts.values() for issue in layout.load_issues]
+        return loaded + ConfigurationManager.collect_issues(
             self.to_dict()['streamdock'], self._validation_path, widgets)
 
     def to_stream_dock_config(self) -> StreamDockConfig:
@@ -665,6 +772,22 @@ class ConfigDocument:
                 usage.changed_to_by.append(other_name)
         return usage
 
+    def all_key_usage(self) -> Dict[str, KeyUsage]:
+        """key_usage for every key, in one pass over layouts and actions."""
+        usage = {name: KeyUsage() for name in self.keys}
+        for layout_name, layout in self.layouts.items():
+            for key_name in dict.fromkeys(name for name in layout.keys.values()
+                                          if isinstance(name, str)):
+                if key_name in usage:
+                    usage[key_name].layouts.append(layout_name)
+        for other_name, other in self.keys.items():
+            targets = dict.fromkeys(action['CHANGE_KEY'] for action in _actions_of(other)
+                                    if isinstance(action.get('CHANGE_KEY'), str))
+            for target in targets:
+                if target in usage and target != other_name:
+                    usage[target].changed_to_by.append(other_name)
+        return usage
+
     def replace_key(self, old_name: str, key_def: KeyDefinition) -> None:
         """
         Store an edited key; a new name follows it into every layout and CHANGE_KEY.
@@ -716,6 +839,20 @@ class ConfigDocument:
             rules=[name for name, rule in self.window_rules.items() if rule.layout == layout_name],
             keys=[name for name, key_def in self.keys.items()
                   if any(_layout_target(action) == layout_name for action in _actions_of(key_def))])
+
+    def all_layout_usage(self) -> Dict[str, LayoutUsage]:
+        """layout_usage for every layout, in one pass over rules and actions."""
+        usage = {name: LayoutUsage(is_default=bool(layout.is_default))
+                 for name, layout in self.layouts.items()}
+        for rule_name, rule in self.window_rules.items():
+            if rule.layout in usage:
+                usage[rule.layout].rules.append(rule_name)
+        for key_name, key_def in self.keys.items():
+            targets = dict.fromkeys(_layout_target(action) for action in _actions_of(key_def))
+            for target in targets:
+                if target in usage:
+                    usage[target].keys.append(key_name)
+        return usage
 
     def rename_layout(self, old_name: str, new_name: str) -> None:
         """Rename a layout where it stands, and repoint its rules and CHANGE_LAYOUT actions."""

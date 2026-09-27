@@ -16,7 +16,7 @@ echo ""
 # ── udev rule ───────────────────────────────────────────────────────────────
 
 echo "[1/3] Removing udev rule"
-sudo rm -f /etc/udev/rules.d/99-streamdock.rules
+sudo rm -f /etc/udev/rules.d/70-streamdock.rules /etc/udev/rules.d/99-streamdock.rules
 sudo udevadm control --reload-rules
 
 # ── Desktop entry ───────────────────────────────────────────────────────────

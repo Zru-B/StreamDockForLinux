@@ -19,7 +19,7 @@ Commands:
 - "CLE" - keyClear: [12]=KeyIndex (255 for all keys)
 - "DIS" - wakeScreen
 - "STP" - refresh
-- "LOG" - setBackgroundImg/setKeyImg: [9-12]=Size (BE), [13]=Target (1 for BG, KeyIndex for keys)
+- "LOG" - setKeyImg: [9-12]=Size (BE), [13]=Target (KeyIndex)
 - "MOD" - switchMode: [11]=Mode+'1' (ASCII)
 - Disconnected: "CLE" with [11]='D', [12]='C'
 """
@@ -98,7 +98,13 @@ _hidapi.hid_read_timeout.restype = c_int
 _hidapi.hid_read_timeout.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t, c_int]
 
 # Initialize hidapi
-_hidapi.hid_init()
+if _hidapi.hid_init() != 0:
+    logging.getLogger(__name__).warning(
+        "hid_init() failed; USB device access will probably not work")
+
+
+class HIDReadError(OSError):
+    """A read failed outright (e.g. the device was unplugged), as opposed to timing out."""
 
 
 def _serialized(method):
@@ -185,21 +191,22 @@ class HIDTransport:
 
         return packet
 
-    def _write_packet(self, packet: bytearray) -> int:
+    def _write_packet(self, packet: bytearray) -> bool:
         """
         Write a packet to the HID device.
 
         Returns:
-            Number of bytes written, or -1 on error
+            True only if hidapi wrote the whole packet: a short write leaves
+            the device mid-sequence just like a failed one.
         """
         if not self._device:
-            return -1
+            return False
 
         try:
-            data = (c_ubyte * len(packet))(*packet)
-            return _hidapi.hid_write(self._device, data, len(packet))
+            data = (c_ubyte * len(packet)).from_buffer_copy(packet)
+            return _hidapi.hid_write(self._device, data, len(packet)) == len(packet)
         except Exception:
-            return -1
+            return False
 
     @_serialized
     def open(self, path: bytes) -> int:
@@ -221,7 +228,9 @@ class HIDTransport:
                 self._get_logger().debug(f"hid_open_path failed for {path}")
                 return -1
 
-            _hidapi.hid_set_nonblocking(self._device, 0)
+            if _hidapi.hid_set_nonblocking(self._device, 0) != 0:
+                # Blocking is hidapi's default, so reads still work; say so anyway.
+                self._get_logger().warning("hid_set_nonblocking(0) failed for %s", path)
             return 1
         except Exception as e:
             self._get_logger().debug(f"open exception: {e}")
@@ -271,20 +280,28 @@ class HIDTransport:
             timeout_ms: Timeout in milliseconds (-1 for infinite)
 
         Returns:
-            Tuple of (raw_bytes, ack_response, ok_response, key, status) or None
+            Tuple of (raw_bytes, ack_response, ok_response, key, status), or
+            None when the read timed out without data
+
+        Raises:
+            HIDReadError: no device is open or hidapi reported an error. After
+            an unplug hid_read_timeout() fails at once instead of waiting, so a
+            caller that treated this as a timeout would spin.
         """
         MAX_LENGTH = 13
-        if not self._device:
-            return None
+        device = self._device
+        if not device:
+            raise HIDReadError("no HID device open")
+
+        buffer = (c_ubyte * MAX_LENGTH)()
+        if timeout_ms == -1:
+            result = _hidapi.hid_read(device, buffer, MAX_LENGTH)
+        else:
+            result = _hidapi.hid_read_timeout(device, buffer, MAX_LENGTH, timeout_ms)
+        if result < 0:
+            raise HIDReadError(f"hid_read failed ({result})")
 
         try:
-            buffer = (c_ubyte * MAX_LENGTH)()
-
-            if timeout_ms == -1:
-                result = _hidapi.hid_read(self._device, buffer, MAX_LENGTH)
-            else:
-                result = _hidapi.hid_read_timeout(self._device, buffer, MAX_LENGTH, timeout_ms)
-
             if result > 0:
                 result_bytes = bytes(buffer[:result])
                 self._last_read = result_bytes
@@ -317,14 +334,9 @@ class HIDTransport:
         Returns:
             Number of bytes written, or -1 on error
         """
-        if not self._device:
-            return -1
-
-        try:
-            buffer = (c_ubyte * length)(*data[:length])
-            return _hidapi.hid_write(self._device, buffer, length)
-        except Exception:
-            return -1
+        packet = bytearray(data[:length])
+        packet.extend(bytes(length - len(packet)))
+        return length if self._write_packet(packet) else -1
 
     def enumerate(self, vid: int, pid: int) -> List[Dict]:
         """
@@ -347,10 +359,14 @@ class HIDTransport:
                         path = current_device.contents.path
                         if isinstance(path, bytes):
                             path = path.decode('utf-8')
+                        # ctypes converts the wchar_t* strings to str, or None when NULL.
                         device_list.append({
                             'path': path,
                             'vendor_id': current_device.contents.vendor_id,
                             'product_id': current_device.contents.product_id,
+                            'serial_number': current_device.contents.serial_number or '',
+                            'manufacturer_string': current_device.contents.manufacturer_string or '',
+                            'product_string': current_device.contents.product_string or '',
                         })
                     current_device = current_device.contents.next
                 _hidapi.hid_free_enumeration(device_enumeration)
@@ -391,177 +407,7 @@ class HIDTransport:
         packet[10] = 0
         packet[11] = percent
 
-        result = self._write_packet(packet)
-        return 1 if result == self.PACKET_SIZE else -1
-
-    @_serialized
-    def set_background_img(self, buffer: bytes, size: int) -> int:
-        """
-        Set background image from raw data.
-
-        Args:
-            buffer: Image data bytes
-            size: Size of image data
-
-        Returns:
-            1 on success, -1 on failure
-        """
-        # Create header packet with LOG command
-        packet = bytearray(self.PACKET_SIZE)
-        packet[0] = 0  # Report ID
-        packet[1:4] = self.SIGNATURE  # "CRT"
-        packet[4] = 0
-        packet[5] = 0
-        packet[6] = ord('L')
-        packet[7] = ord('O')
-        packet[8] = ord('G')
-        # Size in big-endian (bytes 9-12)
-        packet[9] = (size >> 24) & 0xFF
-        packet[10] = (size >> 16) & 0xFF
-        packet[11] = (size >> 8) & 0xFF
-        packet[12] = size & 0xFF
-        packet[13] = 1  # Target: 1 for background
-
-        if self._write_packet(packet) == -1:
-            return -1
-
-        # Send data in chunks
-        chunk_size = self.DATA_CHUNK_SIZE
-        offset = 0
-
-        while offset < size:
-            data_packet = bytearray(self.PACKET_SIZE)
-            data_packet[0] = 0  # Report ID
-
-            # Calculate how much data to copy
-            remaining = size - offset
-            copy_size = min(chunk_size, remaining)
-
-            # Copy data starting at byte 1
-            data_packet[1:1+copy_size] = buffer[offset:offset+copy_size]
-
-            if self._write_packet(data_packet) == -1:
-                return -1
-
-            offset += chunk_size
-
-        return 1
-
-    @_serialized
-    def set_background_img_from_file(self, path: bytes) -> int:
-        """
-        Set background image from file path (513-byte packets).
-
-        Args:
-            path: File path to image
-
-        Returns:
-            1 on success, -1 on failure
-        """
-        try:
-            # Handle various path types (bytes, str, c_char_p)
-            if hasattr(path, 'value'):
-                path = path.value  # c_char_p
-            if isinstance(path, bytes):
-                path = path.decode('utf-8')
-
-            file_size = os.path.getsize(path)
-
-            # Create header packet with LOG command
-            packet = bytearray(self.PACKET_SIZE)
-            packet[0] = 0  # Report ID
-            packet[1:4] = self.SIGNATURE  # "CRT"
-            packet[4] = 0
-            packet[5] = 0
-            packet[6] = ord('L')
-            packet[7] = ord('O')
-            packet[8] = ord('G')
-            # Size in big-endian (bytes 9-12)
-            packet[9] = (file_size >> 24) & 0xFF
-            packet[10] = (file_size >> 16) & 0xFF
-            packet[11] = (file_size >> 8) & 0xFF
-            packet[12] = file_size & 0xFF
-            packet[13] = 1  # Target: 1 for background
-
-            if self._write_packet(packet) == -1:
-                return -1
-
-            # Read and send file in chunks
-            with open(path, 'rb') as f:
-                chunk_size = self.DATA_CHUNK_SIZE  # 512 bytes
-                while True:
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-
-                    data_packet = bytearray(self.PACKET_SIZE)
-                    data_packet[0] = 0  # Report ID
-                    data_packet[1:1+len(data)] = data
-
-                    if self._write_packet(data_packet) == -1:
-                        return -1
-
-            return 1
-        except Exception:
-            return -1
-
-    @_serialized
-    def set_background_img_dual_device(self, path: bytes) -> int:
-        """
-        Set background image from file path (for dual device).
-
-        Args:
-            path: File path to image
-
-        Returns:
-            1 on success, -1 on failure
-        """
-        try:
-            # Handle various path types (bytes, str, c_char_p)
-            if hasattr(path, 'value'):
-                path = path.value  # c_char_p
-            if isinstance(path, bytes):
-                path = path.decode('utf-8')
-
-            file_size = os.path.getsize(path)
-
-            # DualDevice background uses "LOG" command with 1025-byte packets
-            packet = bytearray(self.DUAL_PACKET_SIZE)
-            packet[0] = 0  # Report ID
-            packet[1:4] = self.SIGNATURE  # "CRT"
-            packet[4] = 0
-            packet[5] = 0
-            packet[6] = ord('L')  # "LOG" command for background
-            packet[7] = ord('O')
-            packet[8] = ord('G')
-            # Size in big-endian (bytes 9-12)
-            packet[9] = (file_size >> 24) & 0xFF
-            packet[10] = (file_size >> 16) & 0xFF
-            packet[11] = (file_size >> 8) & 0xFF
-            packet[12] = file_size & 0xFF
-            packet[13] = 1  # Target: 1 for background
-
-            if self._write_packet(packet) == -1:
-                return -1
-
-            # Read and send file in chunks (1024 bytes for DualDevice)
-            with open(path, 'rb') as f:
-                chunk_size = self.DUAL_DATA_CHUNK_SIZE  # 1024 bytes
-                while True:
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-
-                    data_packet = bytearray(self.DUAL_PACKET_SIZE)
-                    data_packet[0] = 0  # Report ID
-                    data_packet[1:1+len(data)] = data
-
-                    if self._write_packet(data_packet) == -1:
-                        return -1
-
-            return 1
-        except Exception:
-            return -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def set_key_img(self, path: bytes, key: int) -> int:
@@ -600,7 +446,7 @@ class HIDTransport:
             packet[12] = file_size & 0xFF
             packet[13] = key  # Target: key index
 
-            if self._write_packet(packet) == -1:
+            if not self._write_packet(packet):
                 return -1
 
             # Read and send file in chunks
@@ -615,7 +461,7 @@ class HIDTransport:
                     data_packet[0] = 0
                     data_packet[1:1+len(data)] = data
 
-                    if self._write_packet(data_packet) == -1:
+                    if not self._write_packet(data_packet):
                         return -1
 
             return 1
@@ -659,7 +505,7 @@ class HIDTransport:
             packet[12] = file_size & 0xFF
             packet[13] = key  # Target: key index
 
-            if self._write_packet(packet) == -1:
+            if not self._write_packet(packet):
                 return -1
 
             # Read and send file in chunks (1024 bytes for DualDevice)
@@ -674,7 +520,7 @@ class HIDTransport:
                     data_packet[0] = 0  # Report ID
                     data_packet[1:1+len(data)] = data
 
-                    if self._write_packet(data_packet) == -1:
+                    if not self._write_packet(data_packet):
                         return -1
 
             return 1
@@ -720,8 +566,7 @@ class HIDTransport:
         packet[11] = 0
         packet[12] = index & 0xFF
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def key_all_clear(self) -> int:
@@ -744,8 +589,7 @@ class HIDTransport:
         packet[11] = 0
         packet[12] = 0xFF  # 255 = all keys
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def wake_screen(self) -> int:
@@ -764,8 +608,7 @@ class HIDTransport:
         packet[7] = ord('I')
         packet[8] = ord('S')
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def refresh(self) -> int:
@@ -784,8 +627,7 @@ class HIDTransport:
         packet[7] = ord('T')
         packet[8] = ord('P')
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def screen_off(self) -> int:
@@ -808,8 +650,7 @@ class HIDTransport:
         packet[10] = 0
         packet[11] = 0  # Off state
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def screen_on(self) -> int:
@@ -832,8 +673,7 @@ class HIDTransport:
         packet[10] = 0
         packet[11] = 1  # On state
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def disconnected(self) -> int:
@@ -856,8 +696,7 @@ class HIDTransport:
         packet[11] = ord('D')  # 'D' for disconnect
         packet[12] = ord('C')  # 'C' for clear/disconnect
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
     @_serialized
     def switch_mode(self, mode: int) -> int:
@@ -885,8 +724,7 @@ class HIDTransport:
         packet[10] = 0
         packet[11] = ord('1') + mode  # Mode as ASCII: '1', '2', or '3'
 
-        result = self._write_packet(packet)
-        return 1 if result != -1 else -1
+        return 1 if self._write_packet(packet) else -1
 
 
 # Alias for backward compatibility

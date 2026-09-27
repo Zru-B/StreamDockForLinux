@@ -8,7 +8,7 @@ that can be used by the application.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from StreamDock.business_logic.action_type import ActionType
+from StreamDock.business_logic.action_executor import parse_action_list
 from StreamDock.domain.key import Key
 from StreamDock.domain.layout import Layout
 from StreamDock.domain.widget_key import WidgetKey
@@ -82,6 +82,21 @@ class LayoutFactory:
                     f"(icon={key.image_path or 'none'}, text={key.text or 'none'})"
                 )
 
+    def build_key(self, key_name: str, key_number: int) -> Optional[Key]:
+        """
+        Build the configured key ``key_name`` for slot ``key_number``.
+
+        CHANGE_KEY names a key from the config, and the runtime resolves that
+        name through here so the swapped-in key gets the same parsed actions,
+        action executor and resolved icon path as one placed by a layout.
+
+        Returns None when no key of that name is configured.
+        """
+        key_data = self._config.get('keys', {}).get(key_name)
+        if not isinstance(key_data, dict):
+            return None
+        return self._build_key(key_name, key_data, key_number)
+
     def _build_key(self, key_name: str, key_data: Dict, position: int = 0) -> Optional[Key]:
         """Build a single Key object from its configuration dict."""
         actions = self._parse_key_actions(key_data)
@@ -151,9 +166,15 @@ class LayoutFactory:
             clear_all = layout_data.get('clear_all', False)
 
             keys_for_layout: List[Key] = []
+            clear_keys: List[int] = []
             for key_entry in keys_list_config:
                 for position_str, key_name in key_entry.items():
-                    if key_name in self._keys:
+                    if key_name is None:
+                        # A null slot is documented as an explicitly empty key:
+                        # without clearing it, whatever the previous layout put
+                        # there stays visible and keeps firing its actions.
+                        clear_keys.append(int(position_str))
+                    elif key_name in self._keys:
                         # A Key per slot: one shared instance would carry the
                         # position of whichever layout was built last.
                         position = int(position_str)
@@ -169,6 +190,7 @@ class LayoutFactory:
             layout = Layout(
                 device=self._device,
                 keys=keys_for_layout,
+                clear_keys=clear_keys,
                 clear_all=clear_all,
                 name=layout_name,
                 on_applied=self._report_widget_slots if self._widget_host else None,
@@ -232,42 +254,5 @@ class LayoutFactory:
         return actions
 
     def _parse_action_list(self, action_configs: List[Dict]) -> List[Tuple]:
-        """
-        Parse a list of action configurations into (ActionType, parameter) tuples.
-
-        Args:
-            action_configs: List of {ACTION_TYPE: parameter} dicts
-
-        Returns:
-            List of (ActionType, parameter) tuples
-        """
-        actions: List[Tuple] = []
-
-        if not action_configs:
-            return actions
-
-        for action_config in action_configs:
-            if not isinstance(action_config, dict):
-                logger.warning(f"Skipping non-dict action entry: {action_config!r}")
-                continue
-            for action_type_str, param in action_config.items():
-                # Handle CHANGE_LAYOUT shorthand: string value → dict with layout name
-                if action_type_str == 'CHANGE_LAYOUT' and isinstance(param, str):
-                    param = {'layout': param}
-
-                # Resolve layout references inside CHANGE_LAYOUT
-                if action_type_str == 'CHANGE_LAYOUT' and isinstance(param, dict):
-                    layout_name = param.get('layout')
-                    if layout_name and isinstance(layout_name, str):
-                        # We can't resolve the Layout object here yet (layouts aren't
-                        # fully built), so we leave as a name string and the
-                        # orchestrator / action executor will look it up at runtime.
-                        pass
-
-                try:
-                    action_type = ActionType[action_type_str]
-                    actions.append((action_type, param))
-                except KeyError:
-                    logger.warning(f"Unknown action type: {action_type_str!r}")
-
-        return actions
+        """Parse a list of {ACTION_TYPE: parameter} dicts into (ActionType, parameter) tuples."""
+        return parse_action_list(action_configs)

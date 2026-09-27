@@ -1,13 +1,18 @@
 """Every built-in widget draws a key-sized frame with its defaults and variants."""
 
+import os
+import sys
+import threading
+import time
 from datetime import datetime
 
 import pytest
+from PIL import Image
 
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _notifications, _pulse, system_stats, vpn_connected, weather)
+    _common, _notifications, _pulse, now_playing, system_stats, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -37,7 +42,8 @@ PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Ve
 def frozen_world(monkeypatch):
     monkeypatch.setattr(_common, 'now', lambda zone=None: datetime(2026, 9, 23, 16, 5, 7, tzinfo=zone))
     monkeypatch.setattr(_pulse, 'read_muted', lambda kind: True)
-    monkeypatch.setattr(_pulse.EventWatcher, 'start', lambda self: None)
+    monkeypatch.setattr(_pulse.HUB, 'subscribe', lambda callback: None)
+    monkeypatch.setattr(_pulse.HUB, 'unsubscribe', lambda callback: None)
     monkeypatch.setattr(vpn_connected, 'networkmanager_vpn', lambda: False)
     monkeypatch.setattr(vpn_connected, 'interface_up', lambda patterns: False)
     monkeypatch.setattr(system_stats, 'read_cpu_times', lambda: (50, 100))
@@ -191,6 +197,8 @@ class TestNotificationCounters:
     ('{"sender":":1.5","member":"CloseNotification","payload":{"data":[7]}}', ('close', ':1.5', '', '', 0)),
     ('{"member":"GetServerInformation","payload":{"data":[]}}', None),
     ('not json', None),
+    ('{"sender":":1.5","member":"Notify","payload":{"data":["Slack","x","","t","b",[],{},-1]}}', None),
+    ('{"sender":":1.5","member":"Notify","payload":{"data":["Slack",[1],"","t","b",[],{},-1]}}', None),
 ])
 def test_monitor_lines_are_parsed(line, expected):
     event = _notifications.parse_event(line)
@@ -216,27 +224,85 @@ def test_coordinates_skip_geocoding(monkeypatch):
 
 def test_mpris_prefers_the_playing_player(monkeypatch):
     replies = {
-        ('call', 'ListNames'): [['org.mpris.MediaPlayer2.firefox', 'org.mpris.MediaPlayer2.spotify', ':1.5']],
-        ('get-property', 'org.mpris.MediaPlayer2.firefox', 'PlaybackStatus'): 'Paused',
-        ('get-property', 'org.mpris.MediaPlayer2.spotify', 'PlaybackStatus'): 'Playing',
-        ('get-property', 'org.mpris.MediaPlayer2.spotify', 'Metadata'): {
-            'xesam:title': {'type': 's', 'data': 'Song'},
-            'xesam:artist': {'type': 'as', 'data': ['A', 'B']},
-            'mpris:artUrl': {'type': 's', 'data': 'file:///tmp/art.png'},
-        },
+        'ListNames': [['org.mpris.MediaPlayer2.firefox', 'org.mpris.MediaPlayer2.spotify', ':1.5']],
+        'org.mpris.MediaPlayer2.firefox': [{'PlaybackStatus': {'type': 's', 'data': 'Paused'}}],
+        'org.mpris.MediaPlayer2.spotify': [{
+            'PlaybackStatus': {'type': 's', 'data': 'Playing'},
+            'Metadata': {'type': 'a{sv}', 'data': {
+                'xesam:title': {'type': 's', 'data': 'Song'},
+                'xesam:artist': {'type': 'as', 'data': ['A', 'B']},
+                'mpris:artUrl': {'type': 's', 'data': 'file:///tmp/art.png'},
+            }},
+        }],
     }
+    calls = []
 
     def busctl(*args):
-        key = ('call', args[-1]) if args[0] == 'call' else (args[0], args[1], args[-1])
-        return replies.get(key)
+        calls.append(args)
+        return replies.get(args[-1] if args[-1] == 'ListNames' else args[1])
 
     monkeypatch.undo()
     monkeypatch.setattr(_mpris, '_busctl', busctl)
+    _mpris.invalidate()
     status = _mpris.current()
     assert (status.player, status.status, status.title, status.artist) == \
         ('org.mpris.MediaPlayer2.spotify', 'playing', 'Song', 'A, B')
     assert _mpris.current('firefox', with_metadata=False).status == 'paused'
     assert _mpris.current('vlc').status == 'none'
+    # Two widgets polling together share one ListNames and one GetAll per player.
+    assert len(calls) == 3
+    assert all(args[3:5] == ('org.freedesktop.DBus.Properties', 'GetAll') for args in calls[1:])
+    _mpris.invalidate()
+
+
+def test_art_is_scaled_and_only_successes_are_cached(tmp_path, monkeypatch):
+    # A missing file used to be cached as "no art" for the rest of the session.
+    monkeypatch.undo()
+    monkeypatch.setattr(now_playing, '_art_cache', type(now_playing._art_cache)())
+    path = tmp_path / 'art.png'
+    url = path.as_uri()
+    assert now_playing.fetch_art(url) is None
+    Image.new('RGB', (1000, 800), 'red').save(path)
+    art = now_playing.fetch_art(url)
+    assert art is not None and max(art.size) <= max(now_playing.ART_SIZE)
+    path.unlink()
+    assert now_playing.fetch_art(url) is art
+
+
+def test_art_is_read_only_from_plain_files(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    fifo = tmp_path / 'fifo'
+    os.mkfifo(fifo)
+    assert now_playing.fetch_art(fifo.as_uri()) is None
+    (tmp_path / 'art.bmp').write_bytes(b'BM' + b'\0' * 100)
+    assert now_playing.fetch_art((tmp_path / 'art.bmp').as_uri()) is None
+
+
+def test_vpn_skips_nmcli_when_an_interface_is_up(monkeypatch):
+    monkeypatch.setattr(vpn_connected, 'interface_up', lambda patterns: True)
+    monkeypatch.setattr(vpn_connected, 'networkmanager_vpn', lambda: pytest.fail('nmcli not needed'))
+    assert vpn_connected.VpnConnected.detect({'source': 'auto', 'interfaces': 'tun*'}) is True
+
+
+def test_odd_weather_data_does_not_fail_setup(monkeypatch):
+    # A reply of an unexpected shape raised TypeError out of setup and killed the widget.
+    monkeypatch.setattr(weather, 'fetch', lambda position, units, timeout=0: None + 1)
+    driver, widget = started('weather')
+    assert widget.reading is None and widget.failed
+
+
+def test_stats_redraw_only_when_the_shown_numbers_change(monkeypatch):
+    monkeypatch.setattr(system_stats, 'read_memory_percent', lambda: 42.2)
+    driver, widget = started('system_stats', metric='ram')
+    renders = []
+    monkeypatch.setattr(driver, 'request_render', lambda: renders.append(1))
+    widget.sample(driver.ctx)
+    monkeypatch.setattr(system_stats, 'read_memory_percent', lambda: 42.4)
+    widget.sample(driver.ctx)
+    assert renders == []
+    monkeypatch.setattr(system_stats, 'read_memory_percent', lambda: 43.0)
+    widget.sample(driver.ctx)
+    assert renders == [1]
 
 
 def test_interface_detection_uses_the_up_flag(tmp_path, monkeypatch):
@@ -261,3 +327,83 @@ def test_pactl_mute_output_is_parsed(monkeypatch):
     assert _pulse.read_muted('sink') is False
     Result.returncode = 1
     assert _pulse.read_muted('sink') is None
+
+
+class TestProcessHub:
+    """The shared monitor processes behind the notification and mute widgets."""
+
+    def hub(self, tmp_path, body):
+        script = tmp_path / 'monitor.py'
+        script.write_text('import sys, time\n' + body)
+        hub = _common.ProcessHub([sys.executable, str(script)], 'test-hub')
+        hub.RESTART_DELAY = 0.05
+        return hub
+
+    def wait(self, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return predicate()
+
+    def test_a_bad_line_does_not_kill_the_reader(self, tmp_path):
+        # An exception from parsing one line used to end the thread and every counter with it.
+        hub = self.hub(tmp_path, "print('bad', flush=True); print('good', flush=True); time.sleep(30)")
+        hub._parse = lambda line: 1 / 0 if line.startswith('bad') else line.strip()
+        got = []
+        hub.subscribe(got.append)
+        try:
+            assert self.wait(lambda: 'good' in got)
+        finally:
+            hub.unsubscribe(got.append)
+
+    def test_a_stopped_generation_never_publishes_to_the_next(self, tmp_path):
+        hub = self.hub(tmp_path, "time.sleep(30)")
+        first = []
+        hub.subscribe(first.append)
+        old = hub._stopping
+        hub.unsubscribe(first.append)
+        second = []
+        hub.subscribe(second.append)
+        try:
+            hub._publish(old, 'stale')
+            assert second == []
+        finally:
+            hub.unsubscribe(second.append)
+
+    def test_a_process_started_after_stop_is_killed(self, tmp_path, monkeypatch):
+        # unsubscribe() during Popen saw no process to stop, and the monitor ran on unowned.
+        hub = self.hub(tmp_path, "time.sleep(30)")
+        spawned = []
+        real_popen = _common.subprocess.Popen
+
+        def slow_popen(*args, **kwargs):
+            hub.unsubscribe(callback)
+            process = real_popen(*args, **kwargs)
+            spawned.append(process)
+            return process
+
+        monkeypatch.setattr(_common.subprocess, 'Popen', slow_popen)
+        callback = lambda event: None  # noqa: E731
+        hub.subscribe(callback)
+        assert self.wait(lambda: spawned and spawned[0].poll() is not None)
+        assert hub._process is None
+
+
+def test_mute_events_are_coalesced(monkeypatch):
+    reads = []
+    monkeypatch.setattr(_pulse, 'read_muted', lambda kind: reads.append(kind) or False)
+    subscribed = []
+    monkeypatch.setattr(_pulse.HUB, 'subscribe', subscribed.append)
+    driver, widget = started('mic_muted')
+    reads.clear()
+    widget.on_show(driver.ctx)
+    listener = subscribed[-1]
+    done = threading.Event()
+    monkeypatch.setattr(driver.ctx, 'call_soon', lambda fn: done.set())
+    for _ in range(20):
+        listener("Event 'change' on source #5")
+    assert done.wait(2)
+    time.sleep(0.2)
+    # One read from on_show's refresh at most, plus one for the whole burst.
+    assert reads.count('source') <= 2
+    widget.stop_watching()

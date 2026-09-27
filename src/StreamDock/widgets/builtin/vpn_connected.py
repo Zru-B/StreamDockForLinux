@@ -73,16 +73,20 @@ class VpnConnected(Widget):
         self.check(ctx)
 
     def check(self, ctx):
-        ctx.run_in_background(lambda: self.detect(ctx.options), then=lambda state: self.update(ctx, state))
+        ctx.run_in_background(lambda: self.detect(ctx.options), then=lambda state: self.update(ctx, state),
+                              skip_if_running=True)
 
     @staticmethod
     def detect(options) -> Optional[bool]:
         source = options['source']
-        manager = networkmanager_vpn() if source in ('auto', 'networkmanager') else None
+        # Reading /sys is cheap; nmcli is a process start, needed only when it isn't conclusive.
         interfaces = interface_up(options['interfaces']) if source in ('auto', 'interfaces') else None
+        if interfaces:
+            return True
+        manager = networkmanager_vpn() if source in ('auto', 'networkmanager') else None
         if manager is None and interfaces is None:
             return None
-        return bool(manager) or bool(interfaces)
+        return bool(manager)
 
     def state_name(self) -> str:
         return 'unknown' if self.connected is None else 'connected' if self.connected else 'disconnected'

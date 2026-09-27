@@ -6,13 +6,18 @@ a built-in in a worker thread, a third-party widget in a throwaway child
 process, the same way it would run on the device.
 """
 
+import html
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Mapping, Optional
+import math
+import os
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from decimal import Decimal
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from PIL import Image
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -41,14 +46,17 @@ from StreamDock.ui.chrome import ThemedDialog, make_button
 from StreamDock.ui.widgets import ToggleSwitch
 from StreamDock.widgets.appearance import BADGE_POSITIONS, Appearance, BadgeStyle, compose
 from StreamDock.widgets.host import KEY_SIZE, error_tile
-from StreamDock.widgets.installer import InstallError, WidgetInstaller
-from StreamDock.widgets.registry import ENTRY_FILE, WidgetRegistry, WidgetSpec
+from StreamDock.widgets.installer import InstallError, StagedWidget, WidgetInstaller
+from StreamDock.widgets.registry import CHANGED_PROBLEM, ENTRY_FILE, WidgetRegistry, WidgetSpec
 from StreamDock.widgets.runners import render_in_subprocess
 from StreamDock.widgets.validator import ValidationReport
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_TIMEOUT = 3.0
+PREVIEW_CACHE_SIZE = 256
+# The most decimals a float option's editor shows.
+MAX_DECIMALS = 6
 DEFAULT_BADGE = {'position': BadgeStyle.position, 'color': BadgeStyle.color, 'text_color': BadgeStyle.text_color}
 
 _registry: Optional[WidgetRegistry] = None
@@ -73,8 +81,19 @@ def pil_to_pixmap(image: Image.Image) -> QPixmap:
 SAMPLE_BADGE = '3'
 
 
+def _mtime(path: str) -> Optional[float]:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
 def _cache_key(widget_id: str, options: Mapping[str, Any], appearance: Optional[Appearance]) -> str:
-    return json.dumps([widget_id, dict(options), repr(appearance)], sort_keys=True, default=str)
+    # The images' mtimes are part of the key, so re-saving an icon under the
+    # same name shows up without restarting the editor.
+    paths = [] if appearance is None else [appearance.icon] + [path for _, path in appearance.state_icons]
+    mtimes = [_mtime(path) for path in paths if path]
+    return json.dumps([widget_id, dict(options), repr(appearance), mtimes], sort_keys=True, default=str)
 
 
 def render_preview(spec: Optional[WidgetSpec], widget_id: str, options: Mapping[str, Any],
@@ -88,29 +107,42 @@ def render_preview(spec: Optional[WidgetSpec], widget_id: str, options: Mapping[
             driver = WidgetDriver(spec.widget_cls, resolved, KEY_SIZE)
             frame, state, badge = driver.render_once(), driver.state, driver.badge
         else:
+            if spec.changed_since_approval():
+                logger.warning("Preview of widget '%s' refused: %s", widget_id, CHANGED_PROBLEM)
+                return error_tile(widget_id)
             snapshot = render_in_subprocess(spec.script_path, resolved, KEY_SIZE, PREVIEW_TIMEOUT)
             frame, state, badge = snapshot.frame, snapshot.state, snapshot.badge
+        if appearance is None or not appearance.uses_images:
+            return frame
+        if badge is None and spec.supports_badge:
+            badge = SAMPLE_BADGE
+        return compose(appearance, state, badge, frame, KEY_SIZE) or frame
     except Exception:  # pylint: disable=broad-exception-caught
         logger.warning("Preview of widget '%s' failed", widget_id, exc_info=True)
         return error_tile(widget_id)
-    if appearance is None or not appearance.uses_images:
-        return frame
-    if badge is None and spec.supports_badge:
-        badge = SAMPLE_BADGE
-    return compose(appearance, state, badge, frame, KEY_SIZE) or frame
 
 
 class WidgetPreviewService(QObject):
-    """Cached widget snapshots; ``preview_ready`` fires when a requested one arrives."""
+    """
+    Cached widget snapshots; ``preview_ready`` fires when a requested one arrives.
+
+    Every request ends in ``preview_ready`` - with the error tile if drawing
+    failed - so a caller showing a placeholder never waits forever.
+    """
 
     preview_ready = pyqtSignal(str)
-    _rendered = pyqtSignal(str, object)
+    _rendered = pyqtSignal(str, object, object)
 
     def __init__(self, registry: Optional[WidgetRegistry] = None, parent=None):
         super().__init__(parent)
         self._registry = registry or shared_registry()
-        self._cache: Dict[str, QPixmap] = {}
+        self._cache: 'OrderedDict[str, QPixmap]' = OrderedDict()
         self._pending = set()
+        # Bumped by clear(): a snapshot drawn before it is stale.
+        self._generation = 0
+        # The queued request of each requester, cancelled when it asks again.
+        self._queued: Dict[int, Tuple[str, Future]] = {}
+        self._closed = False
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='widget-preview')
         self._rendered.connect(self._store)
 
@@ -119,26 +151,72 @@ class WidgetPreviewService(QObject):
         return _cache_key(widget_id, options, appearance)
 
     def pixmap(self, widget_id: str, options: Mapping[str, Any],
-               appearance: Optional[Appearance] = None) -> Optional[QPixmap]:
-        """The cached snapshot, or None after starting to draw one."""
+               appearance: Optional[Appearance] = None, requester: Any = None) -> Optional[QPixmap]:
+        """
+        The cached snapshot, or None after starting to draw one.
+
+        A ``requester`` (e.g. the key editor) that asks for a new snapshot
+        drops its earlier one if that hasn't started drawing yet, so typing
+        in an option doesn't queue a preview per keystroke.
+        """
         key = _cache_key(widget_id, options, appearance)
         if key in self._cache:
+            self._cache.move_to_end(key)
             return self._cache[key]
-        if key not in self._pending:
+        if key not in self._pending and not self._closed:
+            self._supersede(requester, key)
             self._pending.add(key)
             spec = self._registry.get(widget_id)
             options = dict(options)
-            self._pool.submit(
-                lambda: self._rendered.emit(key, render_preview(spec, widget_id, options, appearance)))
+            generation = self._generation
+            future = self._pool.submit(self._render, key, generation, spec, widget_id, options, appearance)
+            if requester is not None:
+                self._queued[id(requester)] = (key, future)
         return None
+
+    def _supersede(self, requester: Any, key: str) -> None:
+        queued = self._queued.pop(id(requester), None) if requester is not None else None
+        if queued is None or queued[0] == key or not queued[1].cancel():
+            return
+        self._pending.discard(queued[0])
+        # Another caller may be waiting on the same snapshot; let it ask again.
+        QTimer.singleShot(0, lambda: self.preview_ready.emit(queued[0]))
+
+    def _render(self, key: str, generation: int, spec, widget_id: str, options, appearance) -> None:
+        """Runs on the pool; always answers, so the key never stays pending."""
+        if generation != self._generation:
+            return
+        try:
+            image = render_preview(spec, widget_id, options, appearance)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("Preview of widget '%s' failed", widget_id, exc_info=True)
+            image = error_tile(widget_id)
+        self._rendered.emit(key, generation, image)
 
     def clear(self) -> None:
         """Forget every snapshot, e.g. after a widget was installed or removed."""
+        self._generation += 1
         self._cache.clear()
+        self._pending.clear()
 
-    def _store(self, key: str, image: Image.Image) -> None:
+    def shutdown(self) -> None:
+        """Drop queued previews and stop the workers; called when the app quits."""
+        self._closed = True
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def _store(self, key: str, generation: int, image: Image.Image) -> None:
+        if generation != self._generation:
+            return
         self._pending.discard(key)
-        self._cache[key] = pil_to_pixmap(image)
+        try:
+            pixmap = pil_to_pixmap(image)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning('Preview could not be shown', exc_info=True)
+            pixmap = pil_to_pixmap(error_tile(''))
+        self._cache[key] = pixmap
+        self._cache.move_to_end(key)
+        while len(self._cache) > PREVIEW_CACHE_SIZE:
+            self._cache.popitem(last=False)
         self.preview_ready.emit(key)
 
 
@@ -149,6 +227,9 @@ def shared_previews() -> WidgetPreviewService:
     global _shared_previews  # pylint: disable=global-statement
     if _shared_previews is None:
         _shared_previews = WidgetPreviewService(shared_registry())
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(_shared_previews.shutdown)
     return _shared_previews
 
 
@@ -172,9 +253,12 @@ class WidgetOptionsForm(QWidget):
         form.setContentsMargins(0, 0, 0, 0)
         for option in options:
             editor = self._editor_for(option)
+            # Tooltips and labels would render a widget's own text as rich text.
             if option.description:
-                editor.setToolTip(option.description)
-            form.addRow(f'{option.display_label}:', editor)
+                editor.setToolTip(rich_text(option.description))
+            label = QLabel(f'{option.display_label}:')
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            form.addRow(label, editor)
         if not options:
             form.addRow(QLabel('This widget has no options.'))
 
@@ -192,13 +276,16 @@ class WidgetOptionsForm(QWidget):
             editor.toggled.connect(self.changed)
         elif kind == 'int':
             editor = QSpinBox()
-            editor.setRange(int(option.minimum) if option.minimum is not None else -1_000_000,
-                            int(option.maximum) if option.maximum is not None else 1_000_000)
+            # int() would truncate a fractional bound towards zero, admitting a value outside it.
+            editor.setRange(math.ceil(option.minimum) if option.minimum is not None else -1_000_000,
+                            math.floor(option.maximum) if option.maximum is not None else 1_000_000)
             editor.setValue(int(value))
             editor.valueChanged.connect(self.changed)
         elif kind == 'float':
             editor = QDoubleSpinBox()
-            editor.setDecimals(2)
+            # Enough places to show the default and the value exactly, or an
+            # untouched form would round them and write the result to config.yml.
+            editor.setDecimals(_decimals(option.default, option.minimum, option.maximum, value))
             editor.setRange(option.minimum if option.minimum is not None else -1e6,
                             option.maximum if option.maximum is not None else 1e6)
             editor.setValue(float(value))
@@ -258,9 +345,30 @@ class WidgetOptionsForm(QWidget):
         result = {key: value for key, value in self._initial.items() if key not in known}
         for option in self._options:
             value = self._raw(option)
+            if option.type == 'float' and option.key not in self._initial and \
+                    _same_shown(value, option.default, self._editors[option.key].decimals()):
+                continue
             if value != option.default or option.key in self._initial:
                 result[option.key] = value
         return result
+
+
+def _decimals(*values: Any) -> int:
+    """The decimal places needed to show every finite number in ``values``, between 2 and MAX_DECIMALS."""
+    places = 2
+    for value in values:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            exponent = Decimal(repr(float(value))).as_tuple().exponent
+            places = max(places, -exponent)
+    return min(places, MAX_DECIMALS)
+
+
+def _same_shown(value: float, default: Any, decimals: int) -> bool:
+    """Whether ``value`` is ``default`` as rounded for an editor with ``decimals`` places."""
+    try:
+        return round(float(default), decimals) == round(value, decimals)
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def color_field(value: str, on_change) -> QWidget:
@@ -403,6 +511,11 @@ class WidgetImagesForm(QWidget):
                                            'badge': True if badge is None else badge}, self._config_dir)
 
 
+def rich_text(text: str) -> str:
+    """Plain text for a label that renders rich text, such as a tooltip."""
+    return '<p>' + html.escape(text).replace('\n', '<br>') + '</p>'
+
+
 def describe_spec(spec: WidgetSpec) -> str:
     lines = [spec.description or 'No description.']
     if spec.manifest.get('author'):
@@ -481,8 +594,9 @@ class WidgetManagerDialog(ThemedDialog):
 
     def _show_details(self, *_args) -> None:
         spec = self.selected()
-        self.details.setText(f'<b>{spec.name}</b> <i>{spec.id}</i><br>'
-                             + describe_spec(spec).replace('\n', '<br>') if spec else '')
+        self.details.setText(f'<b>{html.escape(spec.name)}</b> <i>{html.escape(spec.id)}</i><br>'
+                             + '<br>'.join(html.escape(line) for line in describe_spec(spec).split('\n'))
+                             if spec else '')
         third_party = spec is not None and not spec.builtin
         self.remove_btn.setEnabled(third_party)
         self.approve_btn.setVisible(third_party and spec.problem is not None)
@@ -490,29 +604,59 @@ class WidgetManagerDialog(ThemedDialog):
     # ── actions ───────────────────────────────────────────────────────────
 
     def choose_source(self) -> Optional[str]:
-        """A .py file; picking a folder's widget.py installs the whole folder."""
+        """A .py file; picking a folder's widget.py installs the whole folder, once the user agrees."""
         path, _ = QFileDialog.getOpenFileName(self, 'Install Widget', '', 'Python widget (*.py)')
         if not path:
             return None
-        return path.rsplit('/', 1)[0] if path.endswith('/' + ENTRY_FILE) else path
+        if os.path.basename(path) != ENTRY_FILE:
+            return path
+        folder = os.path.dirname(path)
+        return folder if self.confirm_folder(folder) else None
+
+    def confirm_folder(self, folder: str) -> bool:
+        """
+        Everything beside a widget.py is copied and approved with it.
+
+        Picking ~/Downloads/widget.py would otherwise take the whole Downloads
+        folder along, so the user sees what is about to be copied.
+        """
+        count = sum(len(files) for _root, _dirs, files in os.walk(folder))
+        box = self._box(QMessageBox.Icon.Question, 'Install Widget',
+                        f'Install the whole folder {folder} ({count} files)?')
+        box.setInformativeText(f'A file named {ENTRY_FILE} is installed together with everything '
+                               'in its folder.')
+        self._plain(box)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        return box.exec() == QMessageBox.StandardButton.Yes
 
     def install(self) -> None:
         source = self.choose_source()
         if not source:
             return
-        report = self._busy(lambda: self.installer.validate(source))
-        if not self._report_errors(report, 'Cannot install this widget'):
-            return
-        manifest = report.manifest
-        existing = self.installer.installed(manifest['id'])
-        replacing = f"\n\nThis replaces the installed version {existing.version}." if existing else ''
-        if not self.confirm_consent(report, f"Install {manifest['name']} {manifest['version']}?", replacing):
+        staged = self._stage(lambda: self.installer.stage(source))
+        if staged is None:
             return
         try:
-            self.installer.install(source, report)
-        except (InstallError, OSError) as exc:
-            QMessageBox.critical(self, 'Install failed', str(exc))
-            return
+            title = 'Cannot install this widget'
+            if not self._report_errors(staged.report, title):
+                return
+            manifest = staged.report.manifest
+            existing = self.installer.installed(manifest['id'])
+            replacing = f"\n\nThis replaces the installed version {existing.version}." if existing else ''
+            if not self.confirm_consent(staged.report, f"Install {manifest['name']} {manifest['version']}?",
+                                        replacing):
+                return
+            # The test run executes the widget, so it waits for consent.
+            self._busy(lambda: self.installer.test_run(staged))
+            if not self._report_errors(staged.report, title):
+                return
+            try:
+                self.installer.install(staged)
+            except (InstallError, OSError) as exc:
+                self._message(QMessageBox.Icon.Critical, 'Install failed', str(exc))
+                return
+        finally:
+            self.installer.discard(staged)
         self.refresh(select=manifest['id'])
         self.widgets_changed.emit()
 
@@ -520,12 +664,26 @@ class WidgetManagerDialog(ThemedDialog):
         spec = self.selected()
         if spec is None or spec.builtin:
             return
-        report = self._busy(lambda: self.installer.revalidate(spec.id))
-        if not self._report_errors(report, 'The changed widget does not pass validation'):
+        staged = self._stage(lambda: self.installer.stage_installed(spec.id))
+        if staged is None:
             return
-        if not self.confirm_consent(report, f'Approve the changed files of {spec.name}?', ''):
-            return
-        self.installer.approve(spec.id, report)
+        try:
+            title = 'The changed widget does not pass validation'
+            if not self._report_errors(staged.report, title):
+                return
+            if not self.confirm_consent(staged.report, f'Approve the changed files of {spec.name}?', '',
+                                        'Approve'):
+                return
+            self._busy(lambda: self.installer.test_run(staged))
+            if not self._report_errors(staged.report, title):
+                return
+            try:
+                self.installer.approve(spec.id, staged)
+            except (InstallError, OSError) as exc:
+                self._message(QMessageBox.Icon.Critical, 'Approval failed', str(exc))
+                return
+        finally:
+            self.installer.discard(staged)
         self.refresh(select=spec.id)
         self.widgets_changed.emit()
 
@@ -533,16 +691,27 @@ class WidgetManagerDialog(ThemedDialog):
         spec = self.selected()
         if spec is None or spec.builtin:
             return
-        answer = QMessageBox.question(
-            self, 'Remove Widget',
-            f'Remove {spec.name}? Keys that use it will show an error tile until you pick another widget.')
-        if answer != QMessageBox.StandardButton.Yes:
+        box = self._box(QMessageBox.Icon.Question, 'Remove Widget',
+                        f'Remove {spec.name}? Keys that use it will show an error tile until you pick another widget.')
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
             return
-        self.installer.remove(spec.id)
+        try:
+            self.installer.remove(spec.id)
+        except (InstallError, OSError) as exc:
+            self._message(QMessageBox.Icon.Critical, 'Remove failed', str(exc))
         self.refresh()
         self.widgets_changed.emit()
 
-    def confirm_consent(self, report: ValidationReport, question: str, extra: str) -> bool:
+    def _stage(self, work) -> Optional[StagedWidget]:
+        try:
+            return self._busy(work)
+        except (InstallError, OSError) as exc:
+            self._message(QMessageBox.Icon.Critical, 'Cannot read this widget', str(exc))
+            return None
+
+    def confirm_consent(self, report: ValidationReport, question: str, extra: str,
+                        accept_label: str = 'Install') -> bool:
         """Ask before running third-party code; a method so tests can answer it."""
         manifest = report.manifest
         lines = [f"{manifest['name']} by {manifest.get('author') or 'an unknown author'}.",
@@ -553,27 +722,41 @@ class WidgetManagerDialog(ThemedDialog):
             lines += ['', 'This one also:'] + [f'  • {capability}' for capability in report.capabilities]
         if report.warnings:
             lines += ['', 'Warnings:'] + [f'  • {warning}' for warning in report.warnings]
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle('Third-party Widget')
-        box.setText(question)
+        box = self._box(QMessageBox.Icon.Warning, 'Third-party Widget', question)
         box.setInformativeText('\n'.join(lines) + extra)
+        self._plain(box)
         box.setStandardButtons(QMessageBox.StandardButton.Cancel)
-        accept = box.addButton('Install' if 'Install' in question else 'Approve',
-                               QMessageBox.ButtonRole.AcceptRole)
+        accept = box.addButton(accept_label, QMessageBox.ButtonRole.AcceptRole)
         box.exec()
         return box.clickedButton() is accept
 
     def _report_errors(self, report: ValidationReport, title: str) -> bool:
         if report.ok:
             return True
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Critical)
-        box.setWindowTitle(title)
-        box.setText(report.errors[0])
+        box = self._box(QMessageBox.Icon.Critical, title, report.errors[0])
         box.setDetailedText('\n'.join(report.errors))
         box.exec()
         return False
+
+    def _box(self, icon: QMessageBox.Icon, title: str, text: str) -> QMessageBox:
+        """A message box that shows its text as typed: names and errors come from the widget."""
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        self._plain(box)
+        return box
+
+    @staticmethod
+    def _plain(box: QMessageBox) -> None:
+        # The informative label is created lazily and doesn't always follow
+        # setTextFormat, so it is set directly as well.
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        for label in box.findChildren(QLabel):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+
+    def _message(self, icon: QMessageBox.Icon, title: str, text: str) -> None:
+        self._box(icon, title, text).exec()
 
     @staticmethod
     def _busy(work):

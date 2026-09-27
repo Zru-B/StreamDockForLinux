@@ -25,7 +25,6 @@ not. That is why Application takes a plain callable for layout changes rather
 than importing Qt.
 """
 
-import copy
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +49,10 @@ STATE_CONNECTING = "connecting"
 STATE_CONNECTED = "connected"
 STATE_ERROR = "error"
 
+# Consecutive failed connects after which hotplug stops retrying on its own;
+# the next Connect the user presses arms it again.
+MAX_AUTO_RECONNECT_FAILURES = 2
+
 
 class DeviceService(QObject):
     """
@@ -64,6 +67,9 @@ class DeviceService(QObject):
     config_applied = pyqtSignal(str)               # config path, '' when unsaved
     layout_changed = pyqtSignal(str)               # layout name
     error_occurred = pyqtSignal(str, str)          # title, message
+    # A failure nobody asked for - a hotplug reconnect - worth a status line,
+    # not a modal dialog popping up over whatever the user is doing.
+    background_error = pyqtSignal(str, str)        # title, message
     busy_changed = pyqtSignal(bool)
     device_attached = pyqtSignal(str)              # label of a device just plugged in
     device_detached = pyqtSignal(str)              # label of the device that vanished
@@ -92,8 +98,13 @@ class DeviceService(QObject):
         # configuration without asking the window again.
         self._config_path: str = ""
         self._requested_device_id: str = ""
+        # The dock last connected to; hotplug only ever reconnects to it.
+        self._connected_device_id: str = ""
         # An explicit Disconnect must not be undone by the next udev event.
         self._user_disconnected: bool = False
+        self._failed_connects: int = 0
+        self._discovery_failed: bool = False
+        self._shutting_down: bool = False
 
         self._devices_changed.connect(self._on_devices_changed)
 
@@ -122,6 +133,7 @@ class DeviceService(QObject):
     @pyqtSlot()
     def refresh_devices(self) -> None:
         """Re-enumerate and publish the device list."""
+        self._discovery_failed = False
         try:
             if self._watcher is not None:
                 self._watcher.refresh()
@@ -133,6 +145,7 @@ class DeviceService(QObject):
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error enumerating devices: %s", e)
             self._devices = []
+            self._discovery_failed = True
             self.error_occurred.emit("Device discovery failed", str(e))
 
         self.devices_discovered.emit(list(self._devices))
@@ -146,11 +159,20 @@ class DeviceService(QObject):
             device_id: Key from device_key(), or '' for the first discovered
             config_path: Configuration to apply
         """
+        # Pressing Connect is the user taking charge again, failures and all.
+        self._failed_connects = 0
+        self._connect(device_id, config_path, background=False)
+
+    def _connect(self, device_id: str, config_path: str, background: bool) -> None:
+        if self._shutting_down:
+            return
+        report = self.background_error.emit if background else self.error_occurred.emit
+
         if self._app is not None:
             self.disconnect_device()
 
         if not config_path:
-            self.error_occurred.emit(
+            report(
                 "No configuration",
                 "Load or create a configuration before connecting.")
             self.connection_state_changed.emit(STATE_DISCONNECTED, "No configuration")
@@ -160,7 +182,7 @@ class DeviceService(QObject):
         self._requested_device_id = device_id
         self._user_disconnected = False
 
-        device_info = self._resolve(device_id)
+        device_info = self._resolve(device_id, report)
         if device_info is None:
             self.connection_state_changed.emit(STATE_DISCONNECTED, "No device found")
             return
@@ -186,6 +208,8 @@ class DeviceService(QObject):
                     "using it, or you may lack permission to access it.")
 
             self._app = app
+            self._failed_connects = 0
+            self._connected_device_id = device_key(device_info)
             self.connection_state_changed.emit(STATE_CONNECTED, device_label(device_info))
             self.config_applied.emit(config_path)
 
@@ -200,7 +224,8 @@ class DeviceService(QObject):
                 except Exception:  # pylint: disable=broad-exception-caught
                     logger.exception("Error releasing the device after a failed connect")
             self._app = None
-            self.error_occurred.emit("Could not connect", str(e))
+            self._failed_connects += 1
+            report("Could not connect", str(e))
             self.connection_state_changed.emit(STATE_ERROR, str(e))
 
         finally:
@@ -259,9 +284,13 @@ class DeviceService(QObject):
 
         self.busy_changed.emit(True)
         try:
-            applied = self._app.reload(
-                config_path or None, raw_document=copy.deepcopy(raw_document))
+            # The window already hands over a private copy.
+            applied = self._app.reload(config_path or None, raw_document=raw_document)
             if applied:
+                # Hotplug reconnects with this path; left at the file first
+                # connected, a replug would load that one and report it applied.
+                if config_path:
+                    self._config_path = config_path
                 self.config_applied.emit(config_path)
             else:
                 self.error_occurred.emit(
@@ -272,30 +301,6 @@ class DeviceService(QObject):
             self.error_occurred.emit("Could not apply configuration", str(e))
         finally:
             self.busy_changed.emit(False)
-
-    @pyqtSlot(int)
-    def set_brightness(self, percent: int) -> None:
-        """
-        Change screen brightness on the connected device.
-
-        Args:
-            percent: Brightness 0-100
-        """
-        if self._app is None:
-            return
-
-        device = self._app.get_device()
-        orchestrator = self._app.get_orchestrator()
-        if device is None or orchestrator is None:
-            return
-
-        try:
-            # Through the orchestrator's lock: a bare device call could
-            # interleave its packets with a layout render.
-            orchestrator.run_exclusive(lambda: device.set_brightness(percent))
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.exception("Error setting brightness: %s", e)
-            self.error_occurred.emit("Could not set brightness", str(e))
 
     @pyqtSlot()
     def start_watching(self) -> None:
@@ -323,6 +328,13 @@ class DeviceService(QObject):
         self._devices = list(devices)
         self.devices_discovered.emit(list(devices))
 
+        # Announced first: one udev batch can carry a new dock and the loss of
+        # the connected one, and the detach below returns early.
+        for key, device in current.items():
+            if key not in previous:
+                logger.info("Device attached: %s", device_label(device))
+                self.device_attached.emit(device_label(device))
+
         connected = self.current_device()
         if connected is not None and device_key(connected) not in current:
             logger.info("Connected device was unplugged: %s", device_label(connected))
@@ -331,11 +343,6 @@ class DeviceService(QObject):
             self._release(detail=f"{device_label(connected)} was unplugged")
             self._reconnect_if_possible(current)
             return
-
-        for key, device in current.items():
-            if key not in previous:
-                logger.info("Device attached: %s", device_label(device))
-                self.device_attached.emit(device_label(device))
 
         if self._app is None:
             self._reconnect_if_possible(current)
@@ -349,25 +356,26 @@ class DeviceService(QObject):
         """
         if self._app is not None or self._user_disconnected or not self._config_path:
             return
-        if not current:
+        if self._shutting_down or not current:
+            return
+        if self._failed_connects >= MAX_AUTO_RECONNECT_FAILURES:
+            logger.info("Not reconnecting after %d failed attempts", self._failed_connects)
             return
 
-        # A device the user picked explicitly is the only one worth
-        # reconnecting to; silently moving to a different dock would be
-        # surprising. With no explicit choice, any device will do.
-        if self._requested_device_id:
-            if self._requested_device_id not in current:
-                return
-            target = self._requested_device_id
-        else:
-            target = ""
+        # The dock the user picked, or failing that the one that was in use,
+        # is the only one worth reconnecting to; silently moving to a
+        # different dock would be surprising. Never connected, any will do.
+        target = self._requested_device_id or self._connected_device_id
+        if target and target not in current:
+            return
 
         logger.info("Device available again; reconnecting")
-        self.connect_device(target, self._config_path)
+        self._connect(target, self._config_path, background=True)
 
     @pyqtSlot()
     def shutdown(self) -> None:
         """Release everything ahead of the worker thread stopping."""
+        self._shutting_down = True
         if self._watcher is not None:
             self._watcher.stop()
             self._watcher = None
@@ -375,12 +383,16 @@ class DeviceService(QObject):
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _resolve(self, device_id: str) -> Optional[DeviceInfo]:
+    def _resolve(self, device_id: str, report) -> Optional[DeviceInfo]:
         """
         Find the device to open, re-enumerating if the cache is stale.
 
+        An explicit device that is not attached is an error, never a reason
+        to open whichever dock happens to be first.
+
         Args:
             device_id: Key from device_key(), or '' for the first discovered
+            report: Where a failure goes, as (title, message)
 
         Returns:
             The device, or None when nothing matches
@@ -389,19 +401,23 @@ class DeviceService(QObject):
             self.refresh_devices()
 
         if not self._devices:
-            self.error_occurred.emit(
-                "No device found",
-                "No Stream Dock is attached. Plug one in and press refresh.")
+            # A failed enumeration has already said so.
+            if not self._discovery_failed:
+                report("No device found",
+                       "No Stream Dock is attached. Plug one in and press refresh.")
             return None
 
         if not device_id:
             return self._devices[0]
 
-        for device in self._devices:
-            if device_key(device) == device_id:
-                return device
+        match = self._find(device_id)
+        if match is None:
+            self.refresh_devices()
+            match = self._find(device_id)
+        if match is None and not self._discovery_failed:
+            report("Device not found", f"{device_id} is not attached.")
+        return match
 
-        self.error_occurred.emit(
-            "Device not found",
-            f"{device_id} is no longer attached; using the first available device.")
-        return self._devices[0]
+    def _find(self, device_id: str) -> Optional[DeviceInfo]:
+        return next((device for device in self._devices
+                     if device_key(device) == device_id), None)

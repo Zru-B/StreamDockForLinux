@@ -55,3 +55,13 @@ def test_duplicate_picks_a_free_name_and_copies_deeply():
     doc.keys["MuteCopy"].on_press_actions.append({"KEY_PRESS": "b"})
     assert doc.keys["Mute"].on_press_actions == [{"CHANGE_KEY": "Unmute"}]
     assert doc.key_usage("MuteCopy").unused
+
+
+def test_all_key_usage_matches_key_usage_for_every_key():
+    """Manage Keys builds usage in one pass; it must agree with the per-key answer."""
+    doc = document()
+    doc.keys["Spare"].on_press_actions = [{"CHANGE_KEY": "Spare"}, {"CHANGE_KEY": ["odd"]}]
+
+    all_usage = doc.all_key_usage()
+
+    assert all_usage == {name: doc.key_usage(name) for name in doc.keys}

@@ -131,6 +131,38 @@ class W(Widget):
     assert report.capabilities == ['runs other programs']
 
 
+@pytest.mark.parametrize('imports, call, capability', [
+    ('from os import system', 'system("x")', 'runs other programs'),
+    ('from os import execvp as go', 'go("x", ["x"])', 'runs other programs'),
+    ('from os import *', 'popen("x")', 'runs other programs'),
+    ('import os as o', 'o.system("x")', 'runs other programs'),
+    ('import os as o', 'run = o.popen', 'runs other programs'),
+    ('import importlib', 'importlib.import_module("subprocess")', 'runs code built at runtime'),
+    ('import builtins', 'getattr(builtins, "ev" + "al")("1")', 'runs code built at runtime'),
+    ('import os', 'getattr(__builtins__, "ev" + "al")("1")', 'runs code built at runtime'),
+    ('from StreamDock.infrastructure import mpris', 'mpris.current()', "uses the app's own code"),
+])
+def test_indirect_spellings_are_capabilities(tmp_path, imports, call, capability):
+    # Only a bare "os.system(...)" was noticed; an alias or a from-import slipped past.
+    script = tmp_path / 'w.py'
+    script.write_text(f"""{imports}
+from streamdock_sdk import Widget, draw
+
+
+class W(Widget):
+    id = 'fixture_indirect'
+    name = 'W'
+    version = '1'
+
+    def render(self, ctx):
+        return draw.text_key('x', size=ctx.size)
+
+    def later(self):
+        {call}
+""")
+    assert capability in validate_widget(str(script), dry_run=False).capabilities
+
+
 def test_reading_os_paths_is_not_a_capability(tmp_path):
     script = tmp_path / 'w.py'
     script.write_text("""import os
@@ -147,3 +179,66 @@ class W(Widget):
         return draw.text_key(os.getcwd()[:1], size=ctx.size)
 """)
     assert validate_widget(str(script), dry_run=False).capabilities == []
+
+
+def widget_source(tmp_path, attributes):
+    script = tmp_path / 'w.py'
+    script.write_text(f"""from streamdock_sdk import Widget, draw
+
+
+class W(Widget):
+{attributes}
+
+    def render(self, ctx):
+        return draw.text_key('x', size=ctx.size)
+""")
+    return str(script)
+
+
+@pytest.mark.parametrize('attributes', [
+    "    id = {[1]: 2}\n    name = 'W'\n    version = '1'",
+    "    id = 'fixture_x'\n    name = 'W'\n    version = '1'\n    states = [{[]: 1}]",
+    "    id = 'fixture_x'\n    name = 'W'\n    version = '1'\n    options = [Option.int('n', {[]: 1})]",
+])
+def test_unhashable_literals_are_errors_not_crashes(tmp_path, attributes):
+    report = validate_widget(widget_source(tmp_path, attributes), dry_run=False)
+    assert not report.ok
+
+
+def test_deeply_nested_source_is_an_error_not_a_crash(tmp_path):
+    script = tmp_path / 'w.py'
+    script.write_text('x = ' + '(' * 100000 + ')' * 100000 + '\n')
+    assert not validate_widget(str(script), dry_run=False).ok
+
+
+@pytest.mark.parametrize('field, value', [
+    ('id', "'fixture_x\\n'"),
+    ('states', "['on\\n']"),
+])
+def test_patterns_do_not_accept_a_trailing_newline(tmp_path, field, value):
+    attributes = {'id': "'fixture_x'", 'name': "'W'", 'version': "'1'", field: value}
+    body = '\n'.join(f'    {key} = {val}' for key, val in attributes.items())
+    assert not validate_widget(widget_source(tmp_path, body), dry_run=False).ok
+
+
+@pytest.mark.parametrize('field, value', [
+    ('name', "'Clock\\nInstalled by the app'"),
+    ('name', repr('x' * 81)),
+    ('name', "'evil\\u202e'"),
+    ('author', "'a\\tb'"),
+    ('author', repr('a' * 201)),
+])
+def test_name_and_author_are_single_short_lines(tmp_path, field, value):
+    attributes = {'id': "'fixture_x'", 'name': "'W'", 'version': "'1'", field: value}
+    body = '\n'.join(f'    {key} = {val}' for key, val in attributes.items())
+    report = validate_widget(widget_source(tmp_path, body), dry_run=False)
+    assert any('single line' in error for error in report.errors), report.errors
+
+
+def test_symlinked_folder_is_refused(tmp_path):
+    folder = tmp_path / 'widget'
+    folder.mkdir()
+    (folder / 'widget.py').write_text(open(os.path.join(FIXTURES, 'good.py'), encoding='utf-8').read())
+    os.symlink(tmp_path, folder / 'elsewhere')
+    report = validate_widget(str(folder), dry_run=False)
+    assert any('symbolic links' in error for error in report.errors), report.errors

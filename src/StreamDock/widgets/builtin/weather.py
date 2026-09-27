@@ -170,17 +170,23 @@ class Weather(Widget):
             return fetch(self.position, options['units'], timeout)
         return work
 
-    def refresh(self, ctx):
+    def refresh(self, ctx, poll=True):
         ctx.run_in_background(self._guarded(ctx, self._work(ctx, TIMEOUT)),
-                              then=lambda reading: self.update(ctx, reading))
+                              then=lambda reading: self.update(ctx, reading), skip_if_running=poll)
 
     @staticmethod
     def _guarded(ctx, work):
-        """Network trouble keeps the last reading rather than raising into the log each time."""
+        """
+        Network trouble keeps the last reading rather than raising into the log each time.
+
+        Anything goes: a reply of an unexpected shape (a list for a dict, a
+        null temperature) raising out of setup() would fail the widget for
+        good, where the next refresh may well succeed.
+        """
         def run():
             try:
                 return work()
-            except (OSError, ValueError, KeyError, LookupError) as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 ctx.log.warning('weather update failed: %s', exc)
                 return None
         return run
@@ -198,7 +204,7 @@ class Weather(Widget):
         ctx.request_render()
 
     def on_press(self, ctx):
-        self.refresh(ctx)
+        self.refresh(ctx, poll=False)
 
     def on_show(self, ctx):
         # Timers stop while the key is hidden; catch up if the reading went stale.

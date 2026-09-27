@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional
 
 from StreamDock.application.configuration_manager import ConfigurationManager, StreamDockConfig
 from StreamDock.application.device_discovery import device_key, device_label, discover_devices
+from StreamDock.domain.Models import WindowInfo
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
@@ -260,6 +261,7 @@ class Application:
         )
 
         self._action_executor = ActionExecutor(self._system, self._windows)
+        self._action_executor.set_default_brightness(self._config.brightness)
 
         self._configure_window_rules()
 
@@ -311,11 +313,20 @@ class Application:
             # Give ActionExecutor the layouts dict so CHANGE_LAYOUT can resolve names at runtime
             self._action_executor.set_layouts(all_layouts)
             self._action_executor.set_layout_switcher(self._orchestrator.apply_layout)
+            self._action_executor.set_run_exclusive(self._orchestrator.run_exclusive)
+            self._action_executor.set_key_builder(factory.build_key)
 
-            # Apply default layout. Under the device lock: widgets kept
-            # running across a reload may already be pushing frames.
-            self._orchestrator.run_exclusive(default_layout.apply)
-            logger.info("✓ Applied default layout: %s", default_layout.name)
+            # Draw the layout for the focused window straight away: drawing
+            # the default first and switching on the first window poll
+            # rendered every key twice on each start and Apply.
+            initial_layout = self._initial_layout(all_layouts, default_layout)
+
+            # Under the device lock: widgets kept running across a reload may
+            # already be pushing frames. Rendered first, so the lock is held
+            # only for the writes.
+            initial_layout.prepare()
+            self._orchestrator.run_exclusive(initial_layout.apply)
+            logger.info("✓ Applied layout: %s", initial_layout.name)
 
             # Store layouts
             self._layouts = all_layouts
@@ -324,13 +335,33 @@ class Application:
             # Register device and layouts with the orchestrator so window
             # changes can switch between them.
             self._orchestrator.attach_device(
-                self.DEVICE_ID, self._device, current_layout=default_layout.name)
+                self.DEVICE_ID, self._device, current_layout=initial_layout.name)
 
             for layout_name, layout in all_layouts.items():
                 self._orchestrator.register_layout(layout_name, layout)
 
             logger.info("✓ Registered device and %d layouts with orchestrator", len(all_layouts))
-            self._notify_layout_changed(default_layout.name)
+            self._notify_layout_changed(initial_layout.name)
+
+    def _initial_layout(self, layouts: dict, default_layout):
+        """
+        The layout for the window focused right now, or the default.
+
+        Also hands that window to the event monitor, so its first poll does
+        not report it as a change, and to the widgets, which would otherwise
+        only learn of it from that poll.
+        """
+        try:
+            window = self._windows.get_active_window() if self._windows else None
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.debug("Could not read the focused window: %s", e)
+            return default_layout
+        if not isinstance(window, WindowInfo) or not window.class_:
+            return default_layout
+
+        self._event_monitor.seed_window(window)
+        self._on_window_focus(None)
+        return layouts.get(self._layout_manager.select_layout(window), default_layout)
 
     def _on_window_focus(self, _event) -> None:
         window = self._event_monitor.current_window if self._event_monitor else None
@@ -449,8 +480,10 @@ class Application:
                 reading from disk.
 
         Returns:
-            True if the new configuration was applied. False leaves the
-            previous configuration running untouched.
+            True if the new configuration was applied. False means the
+            previous configuration is running: either it was never touched
+            (invalid configuration), or building the new one failed and the
+            previous one was rebuilt and put back on the device.
         """
         if not self._initialized:
             logger.error("Cannot reload before initialize()")
@@ -476,33 +509,66 @@ class Application:
         logger.info("Applying configuration: %s", self._config_path)
 
         was_running = self._running
-        if self._orchestrator:
-            # Keep the HID handle, its reader thread and its workers alive.
-            self._orchestrator.stop(release_devices=False)
-
-        self._config = new_config
-
-        if self._widget_host is not None:
-            self._widget_host.detach()
-
-        if self._device:
-            # Drop stale callbacks and images first: set_per_key_callback only
-            # overwrites the keys the new layout defines, so a key removed
-            # from the config would keep firing its old action.
+        try:
+            self._replace_runtime(new_config)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception("Could not apply configuration, restoring the previous one: %s", e)
+            (self._config_path, self._raw_document, _,
+             self._config_manager) = previous
             try:
-                self._device.clear_all_callbacks()
-                self._device.clear_all_icons()
-                self._device.set_brightness(self._config.brightness)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.exception("Error preparing device for new configuration: %s", e)
-
-        self._build_runtime()
+                self._replace_runtime(previous[2])
+            except Exception as restore_error:  # pylint: disable=broad-exception-caught
+                logger.exception("Could not restore the previous configuration: %s",
+                                 restore_error)
+            if was_running and self._orchestrator:
+                self._orchestrator.start()
+            return False
 
         if was_running and self._orchestrator:
             self._orchestrator.start()
 
         logger.info("✓ Configuration applied")
         return True
+
+    def _replace_runtime(self, config: StreamDockConfig) -> None:
+        """
+        Tear down everything above the device and build it again for config.
+
+        Raises whatever building the new runtime raises; the old one is gone
+        by then, so the caller must build a working one in its place.
+        """
+        old_orchestrator = self._orchestrator
+        if old_orchestrator:
+            # Keep the HID handle, its reader thread and its workers alive.
+            old_orchestrator.stop(release_devices=False)
+
+        self._config = config
+
+        if self._widget_host is not None:
+            self._widget_host.detach()
+
+        if self._device:
+            device = self._device
+
+            # Drop stale callbacks and images first: set_per_key_callback only
+            # overwrites the keys the new layout defines, so a key removed
+            # from the config would keep firing its old action.
+            def prepare_device():
+                device.clear_all_callbacks()
+                device.clear_all_icons()
+                device.set_brightness(config.brightness)
+
+            # Under the old device lock: a key action already running on a
+            # worker still writes through it.
+            try:
+                if old_orchestrator:
+                    old_orchestrator.run_exclusive(prepare_device)
+                else:
+                    prepare_device()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.exception("Error preparing device for new configuration: %s", e)
+
+        self._build_runtime()
 
     def _notify_layout_changed(self, layout_name: str) -> None:
         """Forward a layout change to the caller-supplied hook."""

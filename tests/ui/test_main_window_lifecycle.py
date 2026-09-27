@@ -109,6 +109,20 @@ class TestQuit:
         assert window.isVisible()
         assert window._quitting is False
 
+    def test_cancelling_while_hidden_in_the_tray_aborts_the_quit(self, window):
+        """A tray-hidden window is invisible either way; visibility lied."""
+        window.tray_available = True
+        window.modified = True
+        window.ask_about_unsaved_changes = Mock(
+            return_value=QMessageBox.StandardButton.Cancel)
+        emitted = []
+        window.quit_requested.connect(lambda: emitted.append(True))
+
+        window.request_quit()
+
+        assert emitted == []
+        assert window._quitting is False
+
 
 class TestValidationGate:
     """Nothing invalid reaches the device."""
@@ -272,4 +286,51 @@ class TestApplyGate:
         window.set_default_layout('Main')
 
         assert window.modified is True
+        assert window._needs_apply is True
+
+
+class TestAppliedMatchesTheDocument:
+    """config_applied only closes the gate when the device runs what is open."""
+
+    def test_connecting_with_unsaved_edits_keeps_the_gate_open(self, window,
+                                                              config_path):
+        """A connect loads the file on disk, not the edits in the window."""
+        window.load_config(config_path)
+        window.mark_modified()
+
+        window.on_config_applied(config_path)
+
+        assert window._needs_apply is True
+
+    def test_a_reconnect_to_another_file_keeps_the_gate_open(self, window,
+                                                             config_path, tmp_path):
+        """Hotplug reconnect with a stale path must not claim the device is current."""
+        window.load_config(config_path)
+        other = tmp_path / "other.yml"
+        other.write_text(CONFIG)
+
+        window.on_config_applied(str(other))
+
+        assert window._needs_apply is True
+
+    def test_applying_unsaved_edits_closes_the_gate(self, window, config_path):
+        """Apply sends the in-memory document, edits included."""
+        window.load_config(config_path)
+        window.mark_modified()
+        window.on_apply_requested()
+
+        window.on_config_applied(config_path)
+
+        assert window._needs_apply is False
+
+    def test_a_failed_apply_does_not_leak_into_the_next_reconnect(self, window,
+                                                                  config_path):
+        window.load_config(config_path)
+        window.mark_modified()
+        window.on_apply_requested()
+        with patch('StreamDock.ui.main_window.plain_message_box'):
+            window.on_device_error("Could not apply configuration", "boom")
+
+        window.on_config_applied(config_path)
+
         assert window._needs_apply is True

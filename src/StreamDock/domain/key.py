@@ -1,10 +1,44 @@
 import logging
 import os
-import tempfile
+import threading
+from collections import OrderedDict
 
-from StreamDock.image_helpers.pil_helper import render_key_image
+from StreamDock.image_helpers.pil_helper import load_image, render_key_image
 
 logger = logging.getLogger(__name__)
+
+KEY_IMAGE_SIZE = (112, 112)
+
+# Rendered key images, shared by every Key: a layout is rebuilt per slot and on
+# every reload, and switching windows re-applies layouts constantly. Keyed by
+# the icon's mtime as well as its path, so an icon edited on disk is picked up.
+_IMAGE_CACHE_SIZE = 256
+_image_cache: "OrderedDict[tuple, object]" = OrderedDict()
+_image_cache_lock = threading.Lock()
+
+
+def _cached_image(cache_key, build):
+    with _image_cache_lock:
+        image = _image_cache.get(cache_key)
+        if image is not None:
+            _image_cache.move_to_end(cache_key)
+            return image
+    image = build()
+    with _image_cache_lock:
+        _image_cache[cache_key] = image
+        while len(_image_cache) > _IMAGE_CACHE_SIZE:
+            _image_cache.popitem(last=False)
+    return image
+
+
+def _load_icon(path):
+    image, temp_file = load_image(path, target_size=KEY_IMAGE_SIZE)
+    try:
+        image.load()
+        return image.resize(KEY_IMAGE_SIZE) if image.size != KEY_IMAGE_SIZE else image.copy()
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            os.remove(temp_file)
 
 
 class Key:
@@ -94,77 +128,79 @@ class Key:
         # Get the logical key number for callback registration
         self.logical_key = self.KEY_MAPPING.get(key_number, key_number)
 
-        # Track temp file created by _render_image so we can clean it up
-        self._rendered_temp_path: str = ''
-
     # ------------------------------------------------------------------
     # Image rendering
     # ------------------------------------------------------------------
 
-    def _render_image(self) -> str:
+    def _render_image(self):
         """
-        Render the key image and return the file path that should be sent to
-        the device.
+        The PIL image this key shows, from the shared cache when possible.
 
-        Returns the original ``image_path`` when no text is involved and the
-        file already exists, otherwise generates a temporary JPEG file with
-        the correct pixel content and returns its path.
-
-        The caller is responsible for honouring ``_rendered_temp_path`` for
-        cleanup (set on this instance after the call).
-
-        :return: Absolute path to the image file to hand to the device.
+        Returns None when the icon cannot be read; the caller then hands the
+        raw path to the device, which reports the missing or broken file.
         """
         has_text = bool(self.text and self.text.strip())
+        mtime = None
+        if self.image_path:
+            try:
+                mtime = os.stat(self.image_path).st_mtime_ns
+            except OSError:
+                mtime = None
 
-        # No text overlay needed → send the image path directly.
-        # Let the device transport decide what to do with the path (it may not exist
-        # yet in tests or when using mock devices).
         if not has_text:
-            return self.image_path
+            if mtime is None:
+                return None
+            try:
+                return _cached_image(('icon', self.image_path, mtime),
+                                     lambda: _load_icon(self.image_path))
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.debug("Key %s: cannot load icon %r", self.key_number, self.image_path,
+                             exc_info=True)
+                return None
 
-        has_icon = bool(self.image_path and os.path.exists(self.image_path))
-
-
+        icon_path = self.image_path if mtime is not None else ''
+        params = (self.text, self.text_color, self.background_color, self.font_size,
+                  self.bold, self.text_position)
         try:
-            pil_image = render_key_image(
-                size=(112, 112),
-                icon_path=self.image_path if has_icon else '',
-                text=self.text,
-                text_color=self.text_color,
-                background_color=self.background_color,
-                font_size=self.font_size,
-                bold=self.bold,
-                text_position=self.text_position,
-            )
-        except Exception:
+            return _cached_image(
+                ('text', icon_path, mtime) + params,
+                lambda: render_key_image(
+                    size=KEY_IMAGE_SIZE,
+                    icon_path=icon_path,
+                    text=self.text,
+                    text_color=self.text_color,
+                    background_color=self.background_color,
+                    font_size=self.font_size,
+                    bold=self.bold,
+                    text_position=self.text_position,
+                ))
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception(
                 "Key %s: failed to render image (icon=%r, text=%r)",
                 self.key_number, self.image_path, self.text
             )
-            return self.image_path  # Fall back to raw icon path (may be empty)
+            return None
 
-        # Save to a temp file so the device transport can read it by path
-        try:
-            fd, tmp_path = tempfile.mkstemp(suffix='.jpg', prefix='sdkey_')
-            os.close(fd)
-            pil_image.save(tmp_path, format='JPEG', quality=95)
-            # Clean up any previous temp file for this key
-            self._cleanup_temp()
-            self._rendered_temp_path = tmp_path
-            return tmp_path
-        except Exception:
-            logger.exception("Key %s: failed to save rendered image to temp file", self.key_number)
-            return self.image_path
+    def prepare(self) -> None:
+        """
+        Render this key's image ahead of applying it.
 
-    def _cleanup_temp(self) -> None:
-        """Remove any previously created temporary rendered image file."""
-        if self._rendered_temp_path and os.path.exists(self._rendered_temp_path):
-            try:
-                os.remove(self._rendered_temp_path)
-            except Exception:
-                pass
-            self._rendered_temp_path = ''
+        Called outside the device lock, so decoding and text rendering never
+        hold up another thread's writes to the device.
+        """
+        self._render_image()
+
+    def _show_image(self) -> None:
+        image = self._render_image()
+        if image is not None:
+            self.device.set_key_pil_image(self.key_number, image)
+        elif self.image_path:
+            self.device.set_key_image(self.key_number, self.image_path)
+        else:
+            logger.warning(
+                "Key %s has no image or text to display – skipping image set",
+                self.key_number
+            )
 
     # ------------------------------------------------------------------
     # Callback helpers
@@ -205,15 +241,7 @@ class Key:
 
     def _configure(self):
         """Configure the key by setting its image and callbacks on the device."""
-        rendered_path = self._render_image()
-
-        if rendered_path:
-            self.device.set_key_image(self.key_number, rendered_path)
-        else:
-            logger.warning(
-                "Key %s has no image or text to display – skipping image set",
-                self.key_number
-            )
+        self._show_image()
 
         if self._has_callbacks():
             self._register_callbacks()
@@ -242,9 +270,7 @@ class Key:
         :param new_image_path: Path to the new image file
         """
         self.image_path = new_image_path
-        rendered_path = self._render_image()
-        if rendered_path:
-            self.device.set_key_image(self.key_number, rendered_path)
+        self._show_image()
 
     def update_text(
         self,
@@ -273,9 +299,7 @@ class Key:
         if bold is not None:
             self.bold = bold
 
-        rendered_path = self._render_image()
-        if rendered_path:
-            self.device.set_key_image(self.key_number, rendered_path)
+        self._show_image()
 
     def update_callbacks(self, on_press=None, on_release=None, on_double_press=None,
                          on_long_press=None):
@@ -309,10 +333,3 @@ class Key:
         self.device = new_device
         if self._has_callbacks():
             self._register_callbacks()
-
-    def __del__(self):
-        """Clean up any temporary rendered image files."""
-        try:
-            self._cleanup_temp()
-        except Exception:
-            pass

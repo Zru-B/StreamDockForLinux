@@ -24,8 +24,10 @@ from StreamDock.application.config_document import (
     Layout,
     WindowRule,
 )
-from StreamDock.ui.chrome import SEPARATOR, ChromeModel, MenuSpec, make_chrome
+from StreamDock.ui.chrome import (SEPARATOR, ChromeModel, MenuSpec, make_chrome,
+                                  plain_message_box)
 from StreamDock.ui.device_bar import DeviceBar
+from StreamDock.ui.device_service import STATE_CONNECTING
 from StreamDock.ui.settings_store import (
     get_default_config_path,
     get_design,
@@ -52,7 +54,7 @@ from StreamDock.ui.theme import (
     theme_manager,
     themed_icon,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -89,6 +91,19 @@ SCHEME_CHOICES = (("Follow the d&esktop", "auto"),
 
 NO_LAYOUT_TITLE = "No layout selected"
 NO_LAYOUT_CAPTION = "Choose a layout on the left, or add one"
+
+# Keyboard steps on the brightness slider count as an edit once they pause.
+BRIGHTNESS_COMMIT_MS = 400
+
+
+def _settings_controls(document: ConfigDocument) -> tuple:
+    """
+    The brightness slider value and lock switch state for a document.
+
+    The validator accepts a float brightness, the slider does not; a file
+    dimmer than the slider allows lands on its minimum.
+    """
+    return int(document.settings.brightness), bool(document.settings.lock_monitor)
 
 
 class KeySelectionDialog(QMessageBox):
@@ -204,8 +219,12 @@ class MainWindow(QMainWindow):
         # do until something changes or a different file is opened.
         self._applied_path = None
         self._needs_apply = False
+        self._apply_pending = False
+        # Set by the application while another process holds the device.
+        self.device_locked = False
 
         self._chrome = None
+        self._chrome_flavor = None
 
         self.setMinimumSize(1200, 800)
 
@@ -342,7 +361,14 @@ class MainWindow(QMainWindow):
         # A form layout stretches its fields; a percentage does not need the
         # full width of the window.
         self.brightness_slider.setFixedWidth(200)
+        # The readout follows every tick; the document only takes the value
+        # once the drag ends, or keyboard steps pause.
         self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
+        self.brightness_slider.sliderReleased.connect(self.commit_brightness)
+        self._brightness_timer = QTimer(self)
+        self._brightness_timer.setSingleShot(True)
+        self._brightness_timer.setInterval(BRIGHTNESS_COMMIT_MS)
+        self._brightness_timer.timeout.connect(self.commit_brightness)
 
         self.brightness_value = QLabel()
         self.brightness_value.setObjectName("brightnessValue")
@@ -361,7 +387,7 @@ class MainWindow(QMainWindow):
 
         self.lock_monitor_toggle = ToggleSwitch("Turn off when the computer locks")
         self.lock_monitor_toggle.setChecked(True)
-        self.lock_monitor_toggle.toggled.connect(self.on_settings_changed)
+        self.lock_monitor_toggle.toggled.connect(self.on_lock_monitor_changed)
         self.settings_form.addRow("Screen:", self.lock_monitor_toggle)
 
         self.settings_layout.addLayout(self.settings_form)
@@ -540,6 +566,7 @@ class MainWindow(QMainWindow):
             self._chrome.remove()
 
         self._chrome = make_chrome(self, self.chrome_model)
+        self._chrome_flavor = current_theme().flavor
         self._chrome.install()
         self._place_device_bar()
         self.update_window_title()
@@ -603,7 +630,11 @@ class MainWindow(QMainWindow):
         the menus, the messages, the device controls and every margin.
         """
         self._apply_layout_metrics()
-        self.install_chrome()
+        # Light and dark share an arrangement; only a design switch moves it.
+        if current_theme().flavor is not self._chrome_flavor:
+            self.install_chrome()
+        elif self._chrome is not None:
+            self._chrome.restyle()
         self.show_status("Appearance updated", 4000)
 
     def new_config(self):
@@ -618,12 +649,10 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self.config = ConfigDocument.new_empty()
             self.config_file_path = None  # No file path for new config
-            self.current_layout = None
             self.modified = False  # Start as unmodified
-            self.update_layout_list()
-            self.update_window_rules_list()
-            self.clear_key_grid()
-            self.update_window_title()
+            # Whatever the device runs, it is not this.
+            self.set_needs_apply(True)
+            self._present_document(*_settings_controls(self.config), None)
 
     def open_config(self):
         """Open a configuration file"""
@@ -634,8 +663,8 @@ class MainWindow(QMainWindow):
             "YAML Files (*.yml *.yaml);;All Files (*)"
         )
 
-        if file_path:
-            self.load_config(file_path)
+        # A file that failed to load is no candidate for the startup default.
+        if file_path and self.load_config(file_path):
             self.offer_as_default_config(file_path)
 
     def offer_as_default_config(self, file_path: str) -> None:
@@ -662,68 +691,86 @@ class MainWindow(QMainWindow):
             self.show_status(
                 f"{Path(file_path).name} is now the default configuration", 5000)
 
-    def load_config(self, file_path: str, set_as_current_file: bool = True):
+    def load_config(self, file_path: str, set_as_current_file: bool = True) -> bool:
         """Load configuration from file
 
         Args:
             file_path: Path to the config file
             set_as_current_file: If True, set this as the current file path for saving
+
+        Returns:
+            True when the file was loaded; False when it was reported and the
+            previous document is still open.
         """
         try:
-            # Parsed before anything is swapped in: a failure part way through
-            # would otherwise leave the new document beside the old grid and
-            # layout list.
+            # Everything that can fail on the new document is worked out before
+            # anything is swapped in: a failure part way through would otherwise
+            # leave the new document beside the old grid and layout list.
             document = ConfigDocument.load(file_path)
+            brightness, lock_monitor = _settings_controls(document)
+            default_layout = document.get_default_layout()
+        except Exception as e:
+            self._error("Failed to load configuration", e)
+            return False
 
+        previous = (self.config, self.config_file_path, self.current_layout,
+                    self.modified, self._needs_apply)
+        try:
             self.config = document
+            # Loading as a template leaves no file path to save back to.
+            self.config_file_path = file_path if set_as_current_file else None
+            self.modified = False
             self.set_needs_apply(
                 os.path.abspath(file_path) != (self._applied_path or ""))
-
-            if set_as_current_file:
-                self.config_file_path = file_path
-                self.modified = False
-                self.update_window_title()
-            else:
-                # Loading as template - no file path set
-                self.config_file_path = None
-                self.modified = False
-                self.update_window_title()
-
-            # Block signals to prevent mark_modified from being called during load
-            self.brightness_slider.blockSignals(True)
-            self.lock_monitor_toggle.blockSignals(True)
-
-            # The validator accepts a float brightness, the slider does not.
-            # A file dimmer than the slider allows lands on its minimum.
-            self.brightness_slider.setValue(int(self.config.settings.brightness))
-            self.lock_monitor_toggle.setChecked(bool(self.config.settings.lock_monitor))
-
-            self.brightness_slider.blockSignals(False)
-            self.lock_monitor_toggle.blockSignals(False)
-            self.show_brightness(self.brightness_slider.value())
-
-            self.update_layout_list()
-            self.update_window_rules_list()
-
-            # Select default layout
-            default_layout = self.config.get_default_layout()
-            if default_layout:
-                self.current_layout = default_layout
-                self.display_layout(default_layout)
-            else:
-                self.current_layout = None
-                self.clear_key_grid()
-
-            # Ensure modified flag is correct after loading
-            if set_as_current_file:
-                self.modified = False
-                self.update_window_title()
-            else:
-                self.modified = False
-                self.update_window_title()
-
+            self._present_document(brightness, lock_monitor, default_layout)
+            return True
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
+            (self.config, self.config_file_path, self.current_layout,
+             self.modified, needs_apply) = previous
+            self.set_needs_apply(needs_apply)
+            try:
+                self._present_document(*_settings_controls(self.config), self.current_layout)
+            except Exception:  # pylint: disable=broad-exception-caught
+                self.clear_key_grid()
+            self._error("Failed to load configuration", e)
+            return False
+
+    def _error(self, what: str, error) -> None:
+        """Report a failure whose text comes from outside, shown literally."""
+        plain_message_box(self, QMessageBox.Icon.Critical, "Error", f"{what}:\n{error}").exec()
+
+    def _present_document(self, brightness: int, lock_monitor: bool,
+                          layout) -> None:
+        """
+        Show the open document's settings, lists and a layout.
+
+        Args:
+            brightness: Slider value
+            lock_monitor: Toggle state
+            layout: Layout to display, or None for an empty grid
+        """
+        self.update_window_title()
+
+        # Blocked so loading is not mistaken for an edit; the blockers undo
+        # themselves even when a setter raises.
+        slider_blocker = QSignalBlocker(self.brightness_slider)
+        toggle_blocker = QSignalBlocker(self.lock_monitor_toggle)
+        try:
+            self.brightness_slider.setValue(brightness)
+            self.lock_monitor_toggle.setChecked(lock_monitor)
+        finally:
+            slider_blocker.unblock()
+            toggle_blocker.unblock()
+        self.show_brightness(self.brightness_slider.value())
+
+        self.update_layout_list()
+        self.update_window_rules_list()
+
+        self.current_layout = layout
+        if layout:
+            self.display_layout(layout)
+        else:
+            self.clear_key_grid()
 
     def save_config(self) -> bool:
         """Save configuration to current file. Returns True if saved successfully."""
@@ -758,7 +805,7 @@ class MainWindow(QMainWindow):
             self.show_status(f"Saved {Path(file_path).name}", 5000)
             return True
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
+            self._error("Failed to save configuration", e)
             return False
 
     def mark_modified(self):
@@ -841,10 +888,8 @@ class MainWindow(QMainWindow):
         if not issues:
             return True
 
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Critical)
-        box.setWindowTitle("Configuration is invalid")
-        box.setText(issues[0])
+        box = plain_message_box(self, QMessageBox.Icon.Critical,
+                                "Configuration is invalid", issues[0])
         box.setDetailedText("\n".join(issues))
 
         if allow_override:
@@ -865,6 +910,10 @@ class MainWindow(QMainWindow):
             return
 
         self.show_status("Applying configuration to device...")
+        self.device_bar.set_busy(True)
+        # The next config_applied carries this in-memory document, edits and
+        # all, rather than whatever file a (re)connect read from disk.
+        self._apply_pending = True
         # Deep-copied at the boundary so the window stays editable while the
         # worker thread applies it.
         self.apply_config_requested.emit(
@@ -873,6 +922,9 @@ class MainWindow(QMainWindow):
 
     def on_connect_requested(self, device_id: str) -> None:
         """Connect, using the open configuration."""
+        if self.device_locked:
+            self.show_status("Another StreamDock process controls the device", 5000)
+            return
         if not self.config.path:
             QMessageBox.warning(
                 self, "Save the configuration first",
@@ -880,7 +932,13 @@ class MainWindow(QMainWindow):
                 "an existing configuration, then connect.")
             return
 
+        self.device_bar.set_busy(True)
         self.connect_requested.emit(device_id, self.config.path)
+
+    def on_disconnect_requested(self) -> None:
+        """Release the device."""
+        self.device_bar.set_busy(True)
+        self.disconnect_requested.emit()
 
     def on_devices_discovered(self, devices) -> None:
         """Populate the device picker."""
@@ -890,19 +948,38 @@ class MainWindow(QMainWindow):
 
     def on_connection_state_changed(self, state: str, detail: str) -> None:
         """Reflect the connection state in the bar and the status line."""
+        if state != STATE_CONNECTING:
+            # Whatever command was in flight has settled.
+            self.device_bar.set_busy(False)
         self.device_bar.set_state(state, detail)
         self.show_status(
             f"{state.capitalize()}{f' — {detail}' if detail else ''}", 5000)
 
     def on_config_applied(self, config_path: str) -> None:
-        """Record that the device now matches the open configuration."""
+        """Record what the device now runs, and whether that is the open document."""
         self._applied_path = os.path.abspath(config_path) if config_path else None
-        self.set_needs_apply(False)
+        from_apply, self._apply_pending = self._apply_pending, False
+        # A connect or hotplug reconnect loads the file from disk: that matches
+        # the open document only when it is the same file with no unsaved edits.
+        on_disk_match = (
+            self._applied_path is not None and not self.modified
+            and self._applied_path == os.path.abspath(self.config.path or ""))
+        if from_apply or on_disk_match:
+            self.set_needs_apply(False)
         self.show_status("Configuration applied to device", 5000)
 
     def on_device_error(self, title: str, message: str) -> None:
         """Report a device-side failure."""
-        QMessageBox.critical(self, title, message)
+        # A failed Apply never produces config_applied; the flag must not
+        # outlive it and claim a later reconnect.
+        self._apply_pending = False
+        self.device_bar.set_busy(False)
+        plain_message_box(self, QMessageBox.Icon.Critical, title, message).exec()
+        self.show_status(f"{title}: {message}", 10000)
+
+    def on_background_error(self, title: str, message: str) -> None:
+        """Report a failure nobody asked for, such as a hotplug reconnect, without a dialog."""
+        self.device_bar.set_busy(False)
         self.show_status(f"{title}: {message}", 10000)
 
     def on_layout_changed(self, layout_name: str) -> None:
@@ -945,8 +1022,10 @@ class MainWindow(QMainWindow):
         Reached from File > Quit and the tray's Quit entry.
         """
         self._quitting = True
-        self.close()
-        if not self.isVisible():
+        # close() reports whether closeEvent accepted. isVisible() cannot:
+        # a window hidden in the tray is invisible even when the user
+        # cancelled the prompt.
+        if self.close():
             self.quit_requested.emit()
         else:
             # closeEvent refused (the user cancelled the save prompt).
@@ -957,14 +1036,23 @@ class MainWindow(QMainWindow):
         self.brightness_value.setText(f"{percent}%")
 
     def on_brightness_changed(self, percent: int):
-        """Handle a move of the brightness slider"""
+        """Keep the readout live; commit once the drag ends or keys pause."""
         self.show_brightness(percent)
-        self.on_settings_changed()
+        if not self.brightness_slider.isSliderDown():
+            self._brightness_timer.start()
 
-    def on_settings_changed(self):
-        """Handle settings changes"""
-        self.config.settings.brightness = self.brightness_slider.value()
-        self.config.settings.lock_monitor = self.lock_monitor_toggle.isChecked()
+    def commit_brightness(self):
+        """Write the slider to the document, leaving the file's own value if it did not move."""
+        self._brightness_timer.stop()
+        value = self.brightness_slider.value()
+        if value == _settings_controls(self.config)[0]:
+            return
+        self.config.settings.brightness = value
+        self.mark_modified()
+
+    def on_lock_monitor_changed(self, checked: bool):
+        """Write only the lock switch, so a brightness like 42.5 is not rewritten."""
+        self.config.settings.lock_monitor = checked
         self.mark_modified()
 
     def show_advanced_settings(self):
@@ -973,8 +1061,14 @@ class MainWindow(QMainWindow):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             settings = dialog.get_settings()
-            self.config.settings.double_press_interval = settings['double_press_interval']
-            self.config.settings.long_press_duration = settings['long_press_duration']
+            current = self.config.settings
+            # OK without a change is not an edit: it would dirty the document
+            # and reopen the Apply gate for nothing.
+            if (settings['double_press_interval'] == current.double_press_interval
+                    and settings['long_press_duration'] == current.long_press_duration):
+                return
+            current.double_press_interval = settings['double_press_interval']
+            current.long_press_duration = settings['long_press_duration']
             self.mark_modified()
 
     def update_layout_list(self):
@@ -983,8 +1077,9 @@ class MainWindow(QMainWindow):
         default_name = default_layout.name if default_layout else None
         slots = len(self.key_squares) or 15
         captions, tooltips, unreachable = {}, {}, []
+        all_usage = self.config.all_layout_usage()
         for name, layout in self.config.layouts.items():
-            usage = self.config.layout_usage(name)
+            usage = all_usage[name]
             used = sum(1 for key_name in layout.keys.values() if key_name)
             parts = [f"{used} / {slots} keys"]
             if usage.rules:
@@ -1026,7 +1121,7 @@ class MainWindow(QMainWindow):
 
         # Set keys according to layout
         for position, key_name in layout.keys.items():
-            if key_name and 1 <= position <= 15:
+            if key_name and 1 <= position <= len(self.key_squares):
                 square = self.key_squares[position - 1]
                 if key_name in self.config.keys:
                     key_def = self.config.keys[key_name]
@@ -1177,18 +1272,19 @@ class MainWindow(QMainWindow):
         """Handle click on empty square - show context menu"""
         menu = QMenu(self)
 
-        create_action = QAction(themed_icon('list-add'), "Create New Key", self)
+        create_action = QAction(themed_icon('list-add'), "Create New Key", menu)
         create_action.triggered.connect(lambda: self.create_and_assign_key(position, square))
         menu.addAction(create_action)
 
-        choose_action = QAction(themed_icon('input-keyboard'), "Choose Existing Key…", self)
+        choose_action = QAction(themed_icon('input-keyboard'), "Choose Existing Key…", menu)
         choose_action.setEnabled(bool(self.config.keys))
         choose_action.triggered.connect(
             lambda: self.pick_key_for_position(position, square, "Assign Key"))
         menu.addAction(choose_action)
 
-        # Show menu at cursor position
+        # Show menu at cursor position; the menu and its actions go with it.
         menu.exec(QCursor.pos())
+        menu.deleteLater()
 
     def pick_key_for_position(self, position: int, square: KeySquare, title: str):
         """Let the user pick an existing key by its thumbnail and put it at a position"""
@@ -1204,18 +1300,18 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
 
         # Edit Key action
-        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Key", self)
+        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Key", menu)
         edit_action.triggered.connect(lambda: self.edit_key(square.key_name))
         menu.addAction(edit_action)
 
         # Replace with Existing action
         replace_action = QAction(themed_icon('document-replace', 'edit-copy'),
-                                 "Replace with Existing", self)
+                                 "Replace with Existing", menu)
         replace_action.triggered.connect(lambda: self.replace_key(position, square))
         menu.addAction(replace_action)
 
         # Create & Replace action
-        create_replace_action = QAction(themed_icon('list-add'), "Create && Replace", self)
+        create_replace_action = QAction(themed_icon('list-add'), "Create && Replace", menu)
         create_replace_action.triggered.connect(lambda: self.create_and_assign_key(position, square))
         menu.addAction(create_replace_action)
 
@@ -1223,12 +1319,13 @@ class MainWindow(QMainWindow):
 
         # Remove from Layout action
         remove_action = QAction(themed_icon('list-remove', 'edit-delete'),
-                                "Remove from Layout", self)
+                                "Remove from Layout", menu)
         remove_action.triggered.connect(lambda: self.remove_key_from_position(position, square))
         menu.addAction(remove_action)
 
-        # Show menu at cursor position
+        # Show menu at cursor position; the menu and its actions go with it.
         menu.exec(QCursor.pos())
+        menu.deleteLater()
 
     def create_and_assign_key(self, position: int, square: KeySquare):
         """Create a new key and assign it to a position"""
@@ -1282,6 +1379,8 @@ class MainWindow(QMainWindow):
         """
         if not self.current_layout or from_position == to_position:
             return
+        if not all(self._on_grid(p) for p in (from_position, to_position)):
+            return
 
         moved = self.current_layout.keys.get(from_position)
         if not moved or moved not in self.config.keys:
@@ -1305,6 +1404,8 @@ class MainWindow(QMainWindow):
         Args:
             position: Key position, 1-15
         """
+        if not self._on_grid(position):
+            return
         square = self.key_squares[position - 1]
         key_name = self.current_layout.keys.get(position) if self.current_layout else None
         key_def = self.config.keys.get(key_name) if key_name else None
@@ -1312,6 +1413,9 @@ class MainWindow(QMainWindow):
             square.set_key(key_name, key_def)
         else:
             square.set_empty()
+
+    def _on_grid(self, position) -> bool:
+        return isinstance(position, int) and 1 <= position <= len(self.key_squares)
 
     def manage_widgets(self):
         """List, install and remove widgets."""

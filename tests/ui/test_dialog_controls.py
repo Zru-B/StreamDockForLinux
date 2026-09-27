@@ -74,12 +74,14 @@ class TestSegmentedControl:
 class TestKeyEditorDisplayType:
     """The segmented control drives which half of the form is shown."""
 
-    def test_a_new_key_starts_on_icon(self, qtbot):
+    def test_a_new_key_starts_on_icon_with_an_empty_label(self, qtbot):
         dialog = open_key_editor(qtbot)
 
         assert dialog.display_type.current() == DISPLAY_ICON
         assert not dialog.icon_widget.isHidden()
-        assert dialog.text_widget.isHidden()
+        assert dialog.text_row_label.text() == "Label:"
+        # The label's style only once there is a label.
+        assert not dialog.text_form.isRowVisible(dialog.font_size_spin)
 
     def test_a_text_key_opens_on_text(self, qtbot, text_key):
         dialog = open_key_editor(qtbot, text_key)
@@ -99,10 +101,60 @@ class TestKeyEditorDisplayType:
     def test_the_chosen_type_decides_what_is_saved(self, qtbot, text_key):
         dialog = open_key_editor(qtbot, text_key)
         dialog.display_type.set_current(DISPLAY_ICON)
+        dialog.text_edit.setText("")
 
         key_def = dialog.get_key_definition()
 
         assert key_def.text is None
+
+
+class TestKeyEditorIconLabel:
+    """An icon key may carry a text label, drawn over the icon on the device."""
+
+    @pytest.fixture
+    def labelled(self):
+        return KeyDefinition("Web", {"icon": "web.png", "text": "Web", "text_position": "top",
+                                     "text_color": "#ff0000", "font_size": 14})
+
+    def test_it_opens_on_icon_with_the_label_and_its_style(self, qtbot, labelled):
+        dialog = open_key_editor(qtbot, labelled)
+
+        assert dialog.display_type.current() == DISPLAY_ICON
+        assert dialog.text_edit.text() == "Web"
+        assert dialog.text_position_combo.currentText() == "top"
+        assert dialog.font_size_spin.value() == 14
+        assert dialog.text_form.isRowVisible(dialog.text_position_combo)
+
+    def test_it_round_trips(self, qtbot, labelled):
+        dialog = open_key_editor(qtbot, labelled)
+
+        saved = dialog.get_key_definition().to_dict()
+
+        assert saved["icon"] == "web.png" and saved["text"] == "Web"
+        assert saved["text_position"] == "top" and saved["text_color"] == "#ff0000"
+        assert saved["font_size"] == 14
+
+    def test_a_label_can_be_added_to_an_icon_key(self, qtbot):
+        dialog = open_key_editor(qtbot, KeyDefinition("Web", {"icon": "web.png"}))
+        dialog.text_edit.setText("Web")
+        dialog.text_position_combo.setCurrentText("center")
+
+        saved = dialog.get_key_definition().to_dict()
+
+        assert saved["text"] == "Web" and saved["text_position"] == "center"
+
+    def test_clearing_the_label_leaves_a_plain_icon_key(self, qtbot, labelled):
+        dialog = open_key_editor(qtbot, labelled)
+        dialog.text_edit.setText("")
+
+        saved = dialog.get_key_definition().to_dict()
+
+        assert "text" not in saved and "text_position" not in saved
+
+    def test_the_position_row_is_for_icons_only(self, qtbot, text_key):
+        dialog = open_key_editor(qtbot, text_key)
+
+        assert not dialog.text_form.isRowVisible(dialog.text_position_combo)
 
 
 class TestKeyEditorBoldSwitch:

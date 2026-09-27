@@ -3,17 +3,24 @@ Media players over MPRIS, through ``busctl --json``.
 
 busctl ships with systemd, so this needs no Python D-Bus binding. Every call
 is a short subprocess; widgets make them from ``ctx.run_in_background``.
+
+Several media keys poll at once, so what the bus said is shared for
+``CACHE_TTL`` seconds: one ListNames and one GetAll per player serve them all.
 """
 
 import json
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 BUS_PREFIX = 'org.mpris.MediaPlayer2.'
 OBJECT_PATH = '/org/mpris/MediaPlayer2'
 PLAYER_INTERFACE = 'org.mpris.MediaPlayer2.Player'
+PROPERTIES_INTERFACE = 'org.freedesktop.DBus.Properties'
 TIMEOUT = 2
+CACHE_TTL = 1.0
 _RANK = {'playing': 0, 'paused': 1}
 
 
@@ -39,8 +46,11 @@ def list_players() -> List[str]:
     return sorted(name for name in names[0] if name.startswith(BUS_PREFIX))
 
 
-def _property(player: str, name: str) -> Optional[Any]:
-    return _busctl('get-property', player, OBJECT_PATH, PLAYER_INTERFACE, name)
+def _properties(player: str) -> Dict[str, Any]:
+    """Every Player property in one call, variants unwrapped."""
+    reply = _busctl('call', player, OBJECT_PATH, PROPERTIES_INTERFACE, 'GetAll', 's', PLAYER_INTERFACE)
+    props = reply[0] if isinstance(reply, list) and reply else None
+    return {name: _variant(value) for name, value in props.items()} if isinstance(props, dict) else {}
 
 
 def _variant(value: Any) -> Any:
@@ -75,28 +85,55 @@ def parse_metadata(status: PlayerStatus, metadata: Any) -> PlayerStatus:
     return status
 
 
+_cache_lock = threading.Lock()
+_cache: Tuple[float, List[Tuple[str, Dict[str, Any]]]] = (float('-inf'), [])
+
+
+def _snapshot() -> List[Tuple[str, Dict[str, Any]]]:
+    """(player, properties) for every player, at most CACHE_TTL seconds old."""
+    global _cache  # pylint: disable=global-statement
+    # Held while asking the bus, so keys polling together wait for one answer
+    # instead of each starting their own busctl calls.
+    with _cache_lock:
+        taken, players = _cache
+        if time.monotonic() - taken < CACHE_TTL:
+            return players
+        players = [(player, _properties(player)) for player in list_players()]
+        _cache = (time.monotonic(), players)
+        return players
+
+
+def invalidate() -> None:
+    """Forget the shared snapshot, e.g. after pressing play, so the next look sees the change."""
+    global _cache  # pylint: disable=global-statement
+    with _cache_lock:
+        _cache = (float('-inf'), [])
+
+
 def current(player_filter: str = '', with_metadata: bool = True) -> PlayerStatus:
     """
     The player to show: one matching ``player_filter`` (a substring of its bus
     name, e.g. 'spotify'), preferring one that is playing, then paused.
     """
-    statuses = []
-    for player in list_players():
+    candidates = []
+    for player, props in _snapshot():
         if player_filter.lower() not in player.lower():
             continue
-        raw = _property(player, 'PlaybackStatus')
-        statuses.append(PlayerStatus(player, raw.lower() if isinstance(raw, str) else 'stopped'))
-    best = min(statuses, key=lambda status: _RANK.get(status.status, 2), default=None)
+        raw = props.get('PlaybackStatus')
+        candidates.append((PlayerStatus(player, raw.lower() if isinstance(raw, str) else 'stopped'), props))
+    best = min(candidates, key=lambda candidate: _RANK.get(candidate[0].status, 2), default=None)
     if best is None:
         return PlayerStatus()
+    status, props = best
     if with_metadata:
-        parse_metadata(best, _property(best.player, 'Metadata'))
-    return best
+        parse_metadata(status, props.get('Metadata'))
+    return status
 
 
 def call(player: str, method: str) -> None:
     """Run a Player method such as PlayPause, Next or Previous."""
     _busctl('call', player, OBJECT_PATH, PLAYER_INTERFACE, method)
+    invalidate()
 
 
 PLAYER_OPTION_DESCRIPTION = 'Part of the player\'s name, e.g. spotify or firefox. Empty: whichever is playing.'

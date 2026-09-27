@@ -1,6 +1,6 @@
 pillow
 pyyaml
-cairosvg
+cairosvg>=2.7.0
 pyudev
 PyQt6
 

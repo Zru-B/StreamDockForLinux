@@ -6,10 +6,14 @@ query and control windows.  All subprocess commands are non-interactive —
 the haircross bug (requiring mouse input) cannot occur here.
 """
 
+import atexit
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
+import time
+import uuid
 from typing import List, Optional, Tuple
 
 from StreamDock.domain.Models import WindowInfo
@@ -44,6 +48,45 @@ APP_PATTERNS: List[Tuple[list, str, Optional[list]]] = [
     (["zoom", "zoom workplace"],    "Zoom",          None),
 ]
 
+# After a kdotool timeout, stop calling it for this long, then probe again.
+KDOTOOL_RETRY_SECONDS = 60.0
+
+# kdotool's error when KWin has no active window (e.g. on the lock screen).
+_KDOTOOL_NULL_WINDOW = "of null"
+
+# The fixed lines `getwindowgeometry --shell` prints before the chained name/class.
+_XDOTOOL_SHELL_KEYS = ("WINDOW", "X", "Y", "WIDTH", "HEIGHT", "SCREEN")
+
+
+def _qdbus_env() -> dict:
+    """qdbus6 prints a multi-line locale warning on every call unless LC_ALL is set."""
+    return {**os.environ, "LC_ALL": "C.UTF-8"}
+
+
+# KWin script files still on disk; normally each call removes its own, this
+# covers an interpreter exit in the middle of a call.
+_live_kwin_scripts: set = set()
+
+
+def _remove_leftover_kwin_scripts() -> None:
+    for path in list(_live_kwin_scripts):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    _live_kwin_scripts.clear()
+
+
+atexit.register(_remove_leftover_kwin_scripts)
+
+
+def _kwin_script_dir() -> str:
+    """$XDG_RUNTIME_DIR is private to the user; /tmp is only the fallback."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        return runtime_dir
+    return tempfile.gettempdir()
+
 
 class LinuxWindowManager(WindowInterface):
     """
@@ -65,25 +108,9 @@ class LinuxWindowManager(WindowInterface):
 
     def __init__(self) -> None:
         self._kdotool_available: Optional[bool] = None
+        self._kdotool_retry_at: Optional[float] = None
         self._xdotool_available: Optional[bool] = None
         self._qdbus_available: Optional[bool] = None
-        self._kwin_script_path: Optional[str] = None
-        self._kwin_script_id: str = "streamdock_detect"
-
-    def __del__(self) -> None:
-        """Cleanup temporary KWin script files and unload from DBus."""
-        try:
-            if self._qdbus_available and self._kwin_script_path:
-                # Unload script
-                subprocess.run(
-                    ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", self._kwin_script_id],
-                    capture_output=True, check=False, timeout=1
-                )
-                # Remove file
-                if os.path.exists(self._kwin_script_path):
-                    os.remove(self._kwin_script_path)
-        except Exception:
-            pass  # Best effort during interpreter shutdown
 
     # ------------------------------------------------------------------ #
     # Public helpers                                                       #
@@ -92,10 +119,14 @@ class LinuxWindowManager(WindowInterface):
     def reset_tool_cache(self) -> None:
         """Clear cached tool-availability flags (useful in tests)."""
         self._kdotool_available = None
+        self._kdotool_retry_at = None
         self._xdotool_available = None
 
     def is_kdotool_available(self) -> bool:
         """Return ``True`` if kdotool is installed and functional."""
+        if self._kdotool_retry_at is not None and time.monotonic() >= self._kdotool_retry_at:
+            self._kdotool_available = None
+            self._kdotool_retry_at = None
         if self._kdotool_available is not None:
             return self._kdotool_available
         if shutil.which("kdotool") is None:
@@ -106,10 +137,36 @@ class LinuxWindowManager(WindowInterface):
                 ["kdotool", "getactivewindow"],
                 capture_output=True, text=True, timeout=1, check=False,
             )
-            self._kdotool_available = result.returncode == 0
+            self._kdotool_available = (
+                result.returncode == 0 or self._is_kdotool_null_window(result)
+            )
+        except subprocess.TimeoutExpired:
+            self._suspend_kdotool("probe")
         except Exception:
             self._kdotool_available = False
         return self._kdotool_available
+
+    def _suspend_kdotool(self, what: str) -> None:
+        """
+        Stop using kdotool after a timeout, but only for a while: a busy KWin
+        stalls it transiently, and giving up for the session would push every
+        later poll onto the qdbus path, which writes captions to the journal.
+        """
+        logger.warning("kdotool %s timed out — retrying it in %.0f s", what, KDOTOOL_RETRY_SECONDS)
+        self._kdotool_available = False
+        self._kdotool_retry_at = time.monotonic() + KDOTOOL_RETRY_SECONDS
+
+    def _qdbus_fallback_allowed(self) -> bool:
+        """The KWin-script fallback is for a kdotool that does not work, not one backing off."""
+        return (
+            bool(os.environ.get("WAYLAND_DISPLAY"))
+            and self._kdotool_retry_at is None
+            and self.is_qdbus_kwin_available()
+        )
+
+    @staticmethod
+    def _is_kdotool_null_window(result) -> bool:
+        return _KDOTOOL_NULL_WINDOW in f"{result.stderr or ''}{result.stdout or ''}"
 
     def is_xdotool_available(self) -> bool:
         """Return ``True`` if xdotool is installed."""
@@ -141,6 +198,7 @@ class LinuxWindowManager(WindowInterface):
             r = subprocess.run(
                 ["qdbus6", "org.kde.KWin", "/Scripting"],
                 capture_output=True, text=True, timeout=1, check=False,
+                env=_qdbus_env(),
             )
             self._qdbus_available = r.returncode == 0
         except Exception:
@@ -156,17 +214,19 @@ class LinuxWindowManager(WindowInterface):
         Return the currently focused window.
 
         Tries kdotool first (Wayland/KDE), falls back to qdbus scripting if Wayland
-        and kdotool panics (KWin 6.3 bug). Falls back to xdotool (X11/XWayland).
+        and kdotool does not work at all (KWin 6.3 panic). Falls back to xdotool (X11/XWayland).
         Both explicit tool paths use ``getactivewindow`` — no mouse interaction required.
+
+        When kdotool works, a failed query is not handed to the fallbacks: KWin
+        having no active window (lock screen) is a real answer, and the qdbus
+        path would write a caption into the journal on every poll.
         """
         try:
             if self.is_kdotool_available():
-                window = self._kdotool_get_active_window()
-                if window:
-                    return window
-            
+                return self._kdotool_get_active_window()
+
             # If in Wayland, prefer qdbus6 KWin scripting fallback over xdotool
-            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+            if self._qdbus_fallback_allowed():
                 window = self._qdbus_get_active_window()
                 if window:
                     return window
@@ -186,7 +246,7 @@ class LinuxWindowManager(WindowInterface):
                 if wid:
                     return wid
                     
-            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+            if self._qdbus_fallback_allowed():
                 wid = self._qdbus_search_by_class(class_name)
                 if wid:
                     return wid
@@ -216,11 +276,10 @@ class LinuxWindowManager(WindowInterface):
                         if lines:
                             return lines[0].strip()
                 except subprocess.TimeoutExpired:
-                    logger.warning("kdotool search timed out — disabling kdotool")
-                    self._kdotool_available = False
+                    self._suspend_kdotool("search")
 
             # Fallback to qdbus scripting if Wayland native and kdotool is busted
-            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+            if self._qdbus_fallback_allowed():
                 wid = self._qdbus_search_by_name(name)
                 if wid:
                     return wid
@@ -245,7 +304,7 @@ class LinuxWindowManager(WindowInterface):
             if self.is_kdotool_available() and self._kdotool_activate(window_id):
                 return True
                 
-            if os.environ.get("WAYLAND_DISPLAY") and self.is_qdbus_kwin_available():
+            if self._qdbus_fallback_allowed():
                 if self._qdbus_activate_window(window_id):
                     return True
 
@@ -330,39 +389,38 @@ class LinuxWindowManager(WindowInterface):
     # ------------------------------------------------------------------ #
 
     def _kdotool_get_active_window(self) -> Optional[WindowInfo]:
+        """
+        One chained kdotool call per poll; it prints the id, the title and the
+        class on separate lines (getactivewindow itself prints nothing when chained).
+        """
         try:
             r = subprocess.run(
-                ["kdotool", "getactivewindow"],
+                ["kdotool", "getactivewindow", "getwindowid", "getwindowname", "getwindowclassname"],
                 capture_output=True, text=True, timeout=1, check=False,
             )
-            if r.returncode != 0 or not r.stdout.strip():
-                return None
-            window_id = r.stdout.strip()
-
-            r_name = subprocess.run(
-                ["kdotool", "getactivewindow", "getwindowname"],
-                capture_output=True, text=True, timeout=1, check=False,
-            )
-            title = r_name.stdout.strip() if r_name.returncode == 0 else ""
-
-            r_class = subprocess.run(
-                ["kdotool", "getactivewindow", "getwindowclassname"],
-                capture_output=True, text=True, timeout=1, check=False,
-            )
-            if r_class.returncode == 0 and r_class.stdout.strip():
-                class_ = self.normalize_class_name(r_class.stdout.strip(), title)
-            else:
-                class_ = self.extract_app_from_title(title)
-
-            logger.debug("kdotool: title=%s class=%s", title, class_)
-            return WindowInfo(title=title, class_=class_, raw=title,
-                              method="kdotool", window_id=window_id)
         except subprocess.TimeoutExpired:
-            logger.warning(
-                "kdotool timed out — disabling for this session; falling back to qdbus/xdotool"
-            )
-            self._kdotool_available = False
+            self._suspend_kdotool("getactivewindow")
             return None
+        if r.returncode != 0:
+            if self._is_kdotool_null_window(r):
+                logger.debug("kdotool: no active window")
+            else:
+                logger.debug("kdotool getactivewindow failed: %s", (r.stderr or "").strip())
+            return None
+        lines = r.stdout.rstrip("\n").split("\n")
+        if len(lines) < 3 or not lines[0].strip():
+            return None
+        window_id = lines[0].strip()
+        class_raw = lines[-1].strip()
+        title = "\n".join(lines[1:-1]).strip()
+        if class_raw:
+            class_ = self.normalize_class_name(class_raw, title)
+        else:
+            class_ = self.extract_app_from_title(title)
+
+        logger.debug("kdotool: title=%s class=%s", title, class_)
+        return WindowInfo(title=title, class_=class_, raw=title,
+                          method="kdotool", window_id=window_id)
 
     @staticmethod
     def _to_case_insensitive_regex(text: str) -> str:
@@ -379,8 +437,7 @@ class LinuxWindowManager(WindowInterface):
                 capture_output=True, text=True, timeout=2, check=False,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("kdotool search timed out — disabling kdotool")
-            self._kdotool_available = False
+            self._suspend_kdotool("search")
             return None
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip().split("\n")[0]
@@ -393,8 +450,7 @@ class LinuxWindowManager(WindowInterface):
                 capture_output=True, text=True, timeout=2, check=False,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("kdotool windowactivate timed out — disabling kdotool")
-            self._kdotool_available = False
+            self._suspend_kdotool("windowactivate")
             return False
         return r.returncode == 0
 
@@ -403,26 +459,35 @@ class LinuxWindowManager(WindowInterface):
     # ------------------------------------------------------------------ #
 
     def _xdotool_get_active_window(self) -> Optional[WindowInfo]:
+        """
+        One chained xdotool call per poll. xdotool has no getwindowid and a chained
+        getactivewindow prints nothing, so the id comes from the WINDOW= line of
+        ``getwindowgeometry --shell``; the title and class follow on their own lines.
+        """
         r = subprocess.run(
-            ["xdotool", "getactivewindow"],
+            ["xdotool", "getactivewindow", "getwindowgeometry", "--shell",
+             "getwindowname", "getwindowclassname"],
             capture_output=True, text=True, timeout=1, check=False,
         )
-        if r.returncode != 0 or not r.stdout.strip():
+        if r.returncode != 0:
             return None
-        window_id = r.stdout.strip()
-
-        r_name = subprocess.run(
-            ["xdotool", "getactivewindow", "getwindowname"],
-            capture_output=True, text=True, timeout=1, check=False,
-        )
-        title = r_name.stdout.strip() if r_name.returncode == 0 else ""
-
-        r_class = subprocess.run(
-            ["xdotool", "getactivewindow", "getwindowclassname"],
-            capture_output=True, text=True, timeout=1, check=False,
-        )
-        if r_class.returncode == 0 and r_class.stdout.strip():
-            class_ = self.normalize_class_name(r_class.stdout.strip(), title)
+        lines = r.stdout.rstrip("\n").split("\n")
+        shell = {}
+        while lines and "=" in lines[0]:
+            key, _, value = lines[0].partition("=")
+            if key not in _XDOTOOL_SHELL_KEYS or key in shell:
+                break
+            shell[key] = value
+            lines.pop(0)
+        window_id = shell.get("WINDOW", "").strip()
+        if not window_id:
+            return None
+        class_raw = lines.pop().strip() if len(lines) > 1 else ""
+        if class_raw == "(null)":
+            class_raw = ""
+        title = "\n".join(lines).strip()
+        if class_raw:
+            class_ = self.normalize_class_name(class_raw, title)
         else:
             class_ = self.extract_app_from_title(title)
 
@@ -456,149 +521,91 @@ class LinuxWindowManager(WindowInterface):
         Extract active window directly via a temporary KWin script loaded over DBus.
         Used as a fallback when kdotool crashes due to malformed DBus paths in KWin 6.3.
         """
-        import time
-        import uuid
-        import tempfile
-
-        # Generate a unique marker for this specific query
         marker_id = uuid.uuid4().hex
-        
-        # 1. Prepare and write script to a temporary file
-        if not self._kwin_script_path:
-            script_content = f"""
-            var active = workspace.activeWindow;
-            if (active) {{
-                print("{marker_id}|" + active.caption + "|||" + active.resourceClass);
-            }}
-            """
-            fd, path = tempfile.mkstemp(suffix=".js", prefix="streamdock_kwin_")
-            with os.fdopen(fd, "w") as f:
-                f.write(script_content)
-            self._kwin_script_path = path
-
+        script = f"""
+        var active = workspace.activeWindow;
+        if (active) {{
+            print("{marker_id}|" + active.caption + "|||" + active.resourceClass);
+        }}
+        """
         try:
-            # 2. Re-write the script content with the new marker
-            # We rewrite it quickly so `loadScript` grabs the fresh marker
-            script_content = f"""
-            var active = workspace.activeWindow;
-            if (active) {{
-                print("{marker_id}|" + active.caption + "|||" + active.resourceClass);
-            }}
-            """
-            with open(self._kwin_script_path, "w") as f:
-                f.write(script_content)
-
-            # 3. Load script into KWin (returns integer script DBus ID)
-            # We first unload it just in case
-            subprocess.run(
-                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", self._kwin_script_id],
-                capture_output=True, check=False, timeout=1
-            )
-            res_load = subprocess.run(
-                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", self._kwin_script_path, self._kwin_script_id],
-                capture_output=True, text=True, timeout=1, check=False
-            )
-            
-            if res_load.returncode != 0:
-                logger.debug("Failed to load KWin script via qdbus6: %s", res_load.stderr)
-                return None
-                
-            script_num = res_load.stdout.strip()
-            if not script_num.isdigit():
-                return None
-
-            # 4. Trigger script run
-            subprocess.run(
-                ["qdbus6", "org.kde.KWin", f"/Scripting/Script{script_num}", "org.kde.kwin.Script.run"],
-                capture_output=True, check=False, timeout=1
-            )
-            time.sleep(0.05)  # Small grace period for KWin to write to journal
-
-            # 5. Extract output from journal
-            res_journal = subprocess.run(
-                ["journalctl", "--user", "-n", "20", "--no-pager"],
-                capture_output=True, text=True, timeout=1, check=False
-            )
-
-            # 6. Parse log for our marker
-            for line in reversed(res_journal.stdout.splitlines()):
-                if marker_id in line and "|||" in line:
-                    # Line format: ... js: [marker_id]|[caption]|||[class]
-                    payload = line.split(marker_id + "|")[-1]
-                    parts = payload.split("|||")
-                    if len(parts) == 2:
-                        title, class_raw = parts
-                        # Clean Up DBus unloading to not leak memory
-                        subprocess.run(
-                            ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", self._kwin_script_id],
-                            capture_output=True, check=False, timeout=1
-                        )
-                        class_nm = self.normalize_class_name(class_raw, title)
-                        return WindowInfo(
-                            title=title, class_=class_nm, raw=payload,
-                            method="qdbus_kwin", window_id=""
-                        )
-
-            return None
-            
+            results = self._qdbus_execute_script(script, marker_id)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.debug("qdbus fallback failed: %s", exc)
             return None
+        if not results:
+            return None
+
+        payload = results[-1]
+        # A caption may itself contain the separator; the class never does.
+        title, class_raw = payload.rsplit("|||", 1)
+        class_nm = self.normalize_class_name(class_raw, title)
+        return WindowInfo(
+            title=title, class_=class_nm, raw=payload,
+            method="qdbus_kwin", window_id=""
+        )
 
     def _qdbus_execute_script(self, script_content: str, marker_id: str) -> Optional[List[str]]:
-        """Helper to rapidly queue and execute a KWin JS DBus script and extract marker results."""
-        import tempfile
-        import time
-        script_id = "streamdock_detect_generic"
-        
-        fd, path = tempfile.mkstemp(suffix=".js", prefix="sd_run_")
+        """
+        Load, run and unload a one-shot KWin script, returning what it printed
+        after ``marker_id|`` (KWin sends script output to the journal).
+
+        Each call gets its own file and plugin name, so concurrent calls from
+        the poll thread and an action thread cannot unload each other's script.
+        """
+        script_id = f"streamdock_{marker_id}"
+        fd, path = tempfile.mkstemp(suffix=".js", prefix="streamdock_kwin_", dir=_kwin_script_dir())
+        _live_kwin_scripts.add(path)
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(script_content)
-                
-            subprocess.run(
-                ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", script_id],
-                capture_output=True, check=False, timeout=1
-            )
+
+            # Whole seconds: the marker, not the window, keeps old lines out.
+            since = int(time.time())
             res_load = subprocess.run(
                 ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", path, script_id],
-                capture_output=True, text=True, timeout=1, check=False
+                capture_output=True, text=True, timeout=1, check=False,
+                env=_qdbus_env(),
             )
             if res_load.returncode != 0:
+                logger.debug("Failed to load KWin script via qdbus6: %s", res_load.stderr)
                 return None
-                
+
             script_num = res_load.stdout.strip()
             if not script_num.isdigit():
                 return None
-                
+
             subprocess.run(
                 ["qdbus6", "org.kde.KWin", f"/Scripting/Script{script_num}", "org.kde.kwin.Script.run"],
-                capture_output=True, check=False, timeout=1
+                capture_output=True, check=False, timeout=1,
+                env=_qdbus_env(),
             )
-            time.sleep(0.1)
-            
+            time.sleep(0.1)  # Grace period for KWin to write to the journal
+
             res_journal = subprocess.run(
-                ["journalctl", "--user", "-n", "500", "--no-pager"],
+                ["journalctl", "--user", f"--since=@{since}", "-o", "cat", "--no-pager"],
                 capture_output=True, text=True, timeout=1, check=False
             )
-            
-            outputs = []
-            for line in res_journal.stdout.splitlines():
-                if marker_id in line and "|||" in line:
-                    payload = line.split(marker_id + "|")[-1]
-                    outputs.append(payload)
-            
+
+            prefix = marker_id + "|"
+            return [
+                line.split(prefix, 1)[1]
+                for line in res_journal.stdout.splitlines()
+                if prefix in line and "|||" in line
+            ]
+        finally:
             subprocess.run(
                 ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", script_id],
-                capture_output=True, check=False, timeout=1
+                capture_output=True, check=False, timeout=1,
+                env=_qdbus_env(),
             )
-            return outputs
-        finally:
-            if os.path.exists(path):
+            _live_kwin_scripts.discard(path)
+            try:
                 os.remove(path)
-                
+            except OSError:
+                pass
+
     def _qdbus_search_by_class(self, class_name: str) -> Optional[str]:
-        import uuid
         import re
         marker_id = uuid.uuid4().hex
         script = f"""
@@ -616,7 +623,7 @@ class LinuxWindowManager(WindowInterface):
             
         regex = re.compile(self._to_case_insensitive_regex(class_name))
         for res in results:
-            parts = res.split("|||")
+            parts = res.split("|||", 1)
             if len(parts) == 2:
                 wid, w_class = parts
                 if regex.search(w_class):
@@ -624,7 +631,6 @@ class LinuxWindowManager(WindowInterface):
         return None
         
     def _qdbus_search_by_name(self, name: str) -> Optional[str]:
-        import uuid
         import re
         marker_id = uuid.uuid4().hex
         script = f"""
@@ -642,7 +648,8 @@ class LinuxWindowManager(WindowInterface):
             
         regex = re.compile(self._to_case_insensitive_regex(name))
         for res in results:
-            parts = res.split("|||")
+            # internalId never contains the separator; a caption may.
+            parts = res.split("|||", 1)
             if len(parts) == 2:
                 wid, caption = parts
                 if regex.search(caption):
@@ -650,7 +657,6 @@ class LinuxWindowManager(WindowInterface):
         return None
 
     def _qdbus_activate_window(self, window_id: str) -> bool:
-        import uuid
         marker_id = uuid.uuid4().hex
         script = f"""
         var wins = workspace.windowList();

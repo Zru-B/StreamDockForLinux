@@ -6,7 +6,7 @@ status bar, and a GNOME one with a header bar and toasts. The rest of the UI
 describes what it needs and never picks between them.
 """
 
-from StreamDock.ui.chrome.dialog import ThemedDialog, make_button
+from StreamDock.ui.chrome.dialog import ThemedDialog, make_button, plain_message_box
 from StreamDock.ui.chrome.model import SEPARATOR, ChromeModel, MenuSpec
 from StreamDock.ui.chrome.toast import Toast
 from StreamDock.ui.chrome.window import (
@@ -31,4 +31,5 @@ __all__ = [
     'WindowChrome',
     'make_button',
     'make_chrome',
+    'plain_message_box',
 ]

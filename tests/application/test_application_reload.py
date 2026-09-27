@@ -191,6 +191,66 @@ class TestApplicationReload:
     def test_reload_before_initialize_is_refused(self, temp_dir):
         assert Application(self.write_config(temp_dir)).reload() is False
 
+    # ── a failed build puts the previous config back ─────────────────────
+
+    def write_config_with_rule(self, temp_dir):
+        """A valid config whose build fails once LayoutManager.add_rule raises."""
+        path = os.path.join(temp_dir, "ruled.yml")
+        with open(path, 'w') as f:
+            f.write(CONFIG_TEMPLATE.format(brightness=90, key_name="KeyB",
+                                           layout_name="Other", key_press="b"))
+            f.write("  windows_rules:\n"
+                    "    Browser:\n"
+                    "      window_name: firefox\n"
+                    "      layout: Other\n")
+        return path
+
+    @pytest.fixture
+    def failing_rules(self):
+        from StreamDock.business_logic.layout_manager import LayoutManager
+        with patch.object(LayoutManager, 'add_rule', side_effect=RuntimeError("boom")):
+            yield
+
+    def test_failed_build_reports_failure(self, temp_dir, device, device_info, failing_rules):
+        app = self.build_app(self.write_config(temp_dir), device, device_info)
+
+        assert app.reload(self.write_config_with_rule(temp_dir)) is False
+
+    def test_failed_build_restores_the_previous_config(self, temp_dir, device, device_info,
+                                                      failing_rules):
+        """The old runtime was torn down; leaving it so would leave a dead deck."""
+        config_path = self.write_config(temp_dir, brightness=20)
+        app = self.build_app(config_path, device, device_info)
+
+        app.reload(self.write_config_with_rule(temp_dir))
+
+        assert app.get_config_path() == config_path
+        assert app.get_config().brightness == 20
+        assert app.get_current_layout_name() == "Main"
+        device.set_brightness.assert_called_with(20)
+
+    def test_failed_build_puts_the_previous_keys_back(self, temp_dir, device, device_info,
+                                                     failing_rules):
+        """The device was cleared for the new config; the old keys must work again."""
+        app = self.build_app(self.write_config(temp_dir, key_press="a"), device, device_info)
+
+        app.reload(self.write_config_with_rule(temp_dir))
+
+        on_press = device.set_per_key_callback.call_args.kwargs['on_press']
+        on_press(device, 1)
+        app._system.send_key_combo.assert_called_once_with('a')
+
+    def test_device_is_prepared_under_the_old_device_lock(self, temp_dir, device, device_info):
+        """A key action still running on a worker writes through that lock."""
+        app = self.build_app(self.write_config(temp_dir), device, device_info)
+        old = app.get_orchestrator()
+        held = []
+        device.clear_all_icons.side_effect = lambda: held.append(old._device_lock._is_owned())
+
+        app.reload()
+
+        assert held == [True]
+
 
 class TestDeviceSelection:
     """Application honours a chosen device."""
@@ -387,3 +447,97 @@ class TestLayoutChangedHook:
             app.initialize()
 
         assert app.is_initialized()
+
+
+class TestInitialLayout:
+    """Start and Apply draw the focused window's layout once, not the default first."""
+
+    CONFIG = """
+streamdock:
+  keys:
+    KeyA:
+      text: "A"
+      on_press_actions:
+        - KEY_PRESS: "a"
+    KeyB:
+      text: "B"
+      on_press_actions:
+        - KEY_PRESS: "b"
+  layouts:
+    Main:
+      Default: true
+      keys:
+        - 1: "KeyA"
+    Browser:
+      keys:
+        - 2: "KeyB"
+  windows_rules:
+    Firefox:
+      window_name: firefox
+      layout: Browser
+"""
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    @pytest.fixture
+    def focused(self):
+        from StreamDock.domain.Models import WindowInfo
+        return WindowInfo(title="Mozilla Firefox", class_="firefox", raw="")
+
+    @pytest.fixture(autouse=True)
+    def mock_window_manager(self, focused):
+        with patch('StreamDock.application.application.LinuxWindowManager') as mock:
+            mock.return_value.get_active_window.return_value = focused
+            yield mock
+
+    def build(self, temp_dir):
+        path = os.path.join(temp_dir, "config.yml")
+        with open(path, 'w') as f:
+            f.write(self.CONFIG)
+        device = Mock()
+        device.open = Mock(return_value=True)
+        hardware = Mock()
+        hardware.enumerate_devices = Mock(return_value=[
+            Mock(vendor_id=0x6603, product_id=0x1006, serial_number='S',
+                 path='/dev/hidraw0', manufacturer='', product='')])
+        app = Application(path)
+        with patch('StreamDock.application.application.USBHardware', return_value=hardware), \
+             patch('StreamDock.application.application.LinuxSystemInterface'), \
+             patch('StreamDock.devices.stream_dock_293_v3.StreamDock293V3',
+                   return_value=device):
+            app.initialize()
+        return app, device
+
+    def test_the_focused_windows_layout_is_drawn_first(self, temp_dir):
+        app, device = self.build(temp_dir)
+
+        assert app.get_current_layout_name() == "Browser"
+        slots = [c.args[0] for c in device.set_key_pil_image.call_args_list]
+        assert slots == [2]
+
+    def test_the_monitor_does_not_report_that_window_again(self, temp_dir, focused):
+        app, _ = self.build(temp_dir)
+        monitor = app.get_event_monitor()
+
+        assert monitor.current_window is focused
+        assert monitor._last_window_key == (focused.class_, focused.title)
+
+    def test_start_does_not_redraw_it(self, temp_dir):
+        app, device = self.build(temp_dir)
+        device.set_key_pil_image.reset_mock()
+
+        app.get_orchestrator()._on_window_changed(None)
+
+        device.set_key_pil_image.assert_not_called()
+
+    def test_reload_draws_it_once(self, temp_dir):
+        app, device = self.build(temp_dir)
+        device.set_key_pil_image.reset_mock()
+
+        app.reload()
+
+        slots = [c.args[0] for c in device.set_key_pil_image.call_args_list]
+        assert slots == [2]

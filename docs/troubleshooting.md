@@ -20,9 +20,16 @@ This tool identifies missing system binaries (like `xdotool` or `kdotool`) and P
 
 **Solutions:**
 1.  **Check connection:** `lsusb | grep -i hotspot` (or `mirabox`).
-2.  **Verify udev rules:** Ensure you ran `scripts/install.sh` and are in the `plugdev` group (see [Installation](installation.md#device-permissions--launcher-linux)).
-3.  **Check Group:** Run `groups` and ensure your user is in `plugdev`.
-4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`.
+2.  **Verify udev rules:** Ensure you ran `scripts/install.sh` and that
+    `/etc/udev/rules.d/70-streamdock.rules` exists (see [Installation](installation.md#device-permissions--launcher-linux)).
+    A leftover `99-streamdock.rules` from an older install runs too late for
+    its `uaccess` tag to apply on hotplug; rerun the script to replace it.
+3.  **Check the ACL:** find the deck with `lsusb -d 6603:1006` (Bus `BBB`
+    Device `DDD`) and run `getfacl /dev/bus/usb/BBB/DDD` (and `getfacl /dev/hidrawN`
+    for its hidraw nodes). The owner stays `root`; there should be a
+    `user:<you>:rw-` entry. It is only granted to a user with an active
+    session on the local seat, so it is absent over SSH.
+4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`, then replug.
 
 ## Mouse Keys / Cursor Issues
 
@@ -36,8 +43,9 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
 
 **Fix:**
 1.  **Stop the system treating the deck as an input device.** Add these lines
-    to `/etc/udev/rules.d/99-streamdock.rules` (after the ones
-    `scripts/install.sh` put there), then run
+    to `/etc/udev/rules.d/70-streamdock.rules` (after the ones
+    `scripts/install.sh` put there; rerunning the script overwrites the file,
+    so add them again afterwards), then run
     `sudo udevadm control --reload-rules && sudo udevadm trigger` and replug:
 
     ```udev

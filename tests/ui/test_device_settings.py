@@ -6,7 +6,7 @@ Advanced Settings dialog with its gesture timings.
 from unittest.mock import patch
 
 import pytest
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from StreamDock.application.config_document import (
     DEFAULT_DOUBLE_PRESS_INTERVAL,
@@ -44,11 +44,27 @@ class TestBrightnessSlider:
 
         assert window.brightness_slider.value() == MIN_BRIGHTNESS
 
-    def test_moving_the_slider_updates_the_readout_and_the_config(self, window):
+    def test_moving_the_slider_updates_the_readout_and_the_config(self, window, qtbot):
         window.brightness_slider.setValue(73)
 
         assert window.brightness_value.text() == "73%"
-        assert window.config.settings.brightness == 73
+        qtbot.waitUntil(lambda: window.config.settings.brightness == 73)
+        assert window.modified
+
+    def test_each_tick_is_not_an_edit_of_its_own(self, window):
+        """Every valueChanged used to dirty the document and rebuild the sidebar."""
+        window.brightness_slider.setValue(60)
+        window.brightness_slider.setValue(61)
+
+        assert window.brightness_value.text() == "61%"
+        assert not window.modified
+
+    def test_releasing_the_slider_commits_at_once(self, window):
+        window.brightness_slider.setValue(64)
+
+        window.brightness_slider.sliderReleased.emit()
+
+        assert window.config.settings.brightness == 64
         assert window.modified
 
 
@@ -63,6 +79,35 @@ class TestLockSwitch:
 
         assert window.config.settings.lock_monitor is False
         assert window.modified
+
+    def test_toggling_it_leaves_a_fractional_brightness_alone(self, window, tmp_path):
+        """The slider holds ints; toggling lock used to write 42 over the file's 42.5."""
+        path = tmp_path / "config.yml"
+        path.write_text("streamdock:\n  settings:\n    brightness: 42.5\n"
+                        "  keys: {}\n  layouts: {}\n")
+        window.load_config(str(path))
+
+        window.lock_monitor_toggle.setChecked(False)
+
+        assert window.config.settings.brightness == 42.5
+
+
+class TestNewConfiguration:
+    """File > New shows the new document's settings, not the old file's."""
+
+    def test_the_controls_follow_the_new_document(self, window, tmp_path):
+        path = tmp_path / "config.yml"
+        path.write_text("streamdock:\n  settings:\n    brightness: 80\n    lock_monitor: false\n"
+                        "  keys: {}\n  layouts: {}\n")
+        window.load_config(str(path))
+
+        with patch("StreamDock.ui.main_window.QMessageBox.question",
+                   return_value=QMessageBox.StandardButton.Yes):
+            window.new_config()
+
+        assert window.brightness_slider.value() == window.config.settings.brightness
+        assert window.lock_monitor_toggle.isChecked() is True
+        assert window.device_bar._needs_apply
 
 
 class TestToggleSwitch:
@@ -127,6 +172,25 @@ class TestAdvancedSettings:
         assert window.config.settings.double_press_interval == 0.5
         assert window.config.settings.long_press_duration == 0.8
         assert window.modified
+
+    def test_accepting_unchanged_timings_is_not_an_edit(self, window):
+        settings = window.config.settings
+        with patch('StreamDock.ui.main_window.AdvancedSettingsDialog') as dialog_cls:
+            dialog_cls.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            dialog_cls.return_value.get_settings.return_value = {
+                'double_press_interval': settings.double_press_interval,
+                'long_press_duration': settings.long_press_duration}
+
+            window.show_advanced_settings()
+
+        assert not window.modified
+
+    def test_a_three_decimal_timing_survives_the_dialog(self, qtbot, window):
+        window.config.settings.double_press_interval = 0.125
+
+        dialog = self.open_dialog(qtbot, window)
+
+        assert dialog.get_settings()['double_press_interval'] == 0.125
 
     def test_it_defaults_to_the_shared_constants(self, qtbot, window):
         dialog = self.open_dialog(qtbot, window)

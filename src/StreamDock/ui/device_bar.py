@@ -118,6 +118,7 @@ class DeviceBar(QWidget):
 
         self.status_label = QLabel()
         self.status_label.setObjectName("connectionStatus")
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setMinimumWidth(96)
         self._layout.addWidget(self.status_label)
 

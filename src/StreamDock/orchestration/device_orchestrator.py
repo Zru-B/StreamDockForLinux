@@ -8,7 +8,6 @@ that connects infrastructure, business logic, and device management.
 import functools
 import logging
 import threading
-import time
 from typing import Any, Callable, Dict, Optional
 
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
@@ -131,6 +130,8 @@ class DeviceOrchestrator:
         self._layouts: Dict[str, Any] = {}  # layout_name -> Layout object
         self._default_brightness: int = 100
         self._is_locked: bool = False
+        # device_id -> brightness when the screen was locked (see _on_lock)
+        self._brightness_at_lock: Dict[str, int] = {}
 
         # Guards every device-touching operation (see @_serialized)
         self._device_lock = threading.RLock()
@@ -226,7 +227,6 @@ class DeviceOrchestrator:
         """
         return operation()
 
-    @_serialized
     def apply_layout(self, layout_name: str, clear_icons: bool = False) -> None:
         """
         Switch every attached device to a layout on request (CHANGE_LAYOUT).
@@ -239,10 +239,26 @@ class DeviceOrchestrator:
             layout_name: Name of a registered layout
             clear_icons: Blank the keys first, for a layout without clear_all
         """
-        for device_id, device in self._devices.items():
-            if clear_icons:
-                _unwrap(device).clear_all_icons()
-            self._apply_layout(device_id, layout_name, force=True)
+        self._prepare_layout(layout_name)
+        with self._device_lock:
+            if self._is_locked:
+                logger.debug("Not applying layout '%s' - device is locked", layout_name)
+                return
+            for device_id, device in list(self._devices.items()):
+                if clear_icons:
+                    _unwrap(device).clear_all_icons()
+                self._apply_layout(device_id, layout_name, force=True)
+
+    def _prepare_layout(self, layout_name: str) -> None:
+        """Render a layout's key images before the device lock is taken."""
+        layout = self._layouts.get(layout_name)
+        prepare = getattr(layout, 'prepare', None)
+        if prepare is None:
+            return
+        try:
+            prepare()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception("Error rendering layout '%s': %s", layout_name, e)
 
     def register_layout(self, name: str, layout: Any) -> None:
         """
@@ -273,6 +289,20 @@ class DeviceOrchestrator:
         """
         self._default_brightness = max(0, min(100, brightness))
         logger.debug("Default brightness set to: %s", self._default_brightness)
+
+    def _device_brightness(self, device: Any) -> int:
+        """
+        The brightness to bring a device back to after a lock.
+
+        The last one it was set to - by the GUI slider or a brightness key -
+        rather than the configured default, which would undo the user's
+        adjustment on every unlock. The configured value only stands in when
+        the device has not recorded one.
+        """
+        current = getattr(device, '_current_brightness', None)
+        if isinstance(current, bool) or not isinstance(current, (int, float)):
+            return self._default_brightness
+        return int(current)
 
     def set_layout_changed_callback(self, callback: Optional[Callable[[str], None]]) -> None:
         """
@@ -466,9 +496,11 @@ class DeviceOrchestrator:
         self._is_locked = True
 
         # Turn off all device screens and close connections
-        for device_id, device in self._devices.items():
+        for device_id, device in list(self._devices.items()):
             try:
                 device = _unwrap(device)
+                # setdefault: a repeated lock must not record the 0 it set.
+                self._brightness_at_lock.setdefault(device_id, self._device_brightness(device))
 
                 # Turn off screen physically if supported
                 if hasattr(device, 'screen_off'):
@@ -500,7 +532,7 @@ class DeviceOrchestrator:
         Design:
         - Reopens active connection to device
         - Turns screen back on
-        - Restores brightness to default level
+        - Restores the brightness the device had when it was locked
         - Reapplies current layout
         - Tracks unlocked state
         """
@@ -509,9 +541,12 @@ class DeviceOrchestrator:
         self._is_locked = False
 
         # Restore device screens
-        for device_id, device in self._devices.items():
+        for device_id, device in list(self._devices.items()):
             try:
                 device = _unwrap(device)
+                brightness = self._brightness_at_lock.pop(device_id, None)
+                if brightness is None:
+                    brightness = self._device_brightness(device)
 
                 # Reopen connection
                 success = True
@@ -545,7 +580,7 @@ class DeviceOrchestrator:
 
                 # Initialize hardware or turn on screen physically to break out of factory mode
                 if hasattr(device, 'init'):
-                    device.init(self._default_brightness)
+                    device.init(brightness)
                     logger.debug("Device %s initialized (exited factory mode)", device_id)
                 elif hasattr(device, 'screen_on'):
                     device.screen_on()
@@ -553,10 +588,10 @@ class DeviceOrchestrator:
 
                 # Restore brightness
                 if hasattr(device, 'set_brightness'):
-                    device.set_brightness(self._default_brightness)
+                    device.set_brightness(brightness)
                 else:
-                    self._hardware.set_brightness(self._default_brightness)
-                logger.debug("Device %s brightness restored to %s", device_id, self._default_brightness)
+                    self._hardware.set_brightness(brightness)
+                logger.debug("Device %s brightness restored to %s", device_id, brightness)
 
                 # Reapply current layout
                 current_layout_name = self._current_layouts.get(device_id)
@@ -574,12 +609,12 @@ class DeviceOrchestrator:
             event: WINDOW_CHANGED event from SystemEventMonitor
 
         Design:
-        - Gets current window info from SystemInterface
+        - Uses the window the event monitor just polled
         - Queries LayoutManager for layout selection
         - Applies layout if different from current
         - Skips if locked (no need to switch while screen is off)
         """
-        logger.info("🔄 Window change event received.")
+        logger.debug("Window change event received")
 
         # Skip layout changes while locked
         if self._is_locked:
@@ -593,7 +628,12 @@ class DeviceOrchestrator:
 
         # Get current window info
         try:
-            window_info = self._windows.get_active_window()
+            # The monitor's poll is what raised this event; querying again
+            # could see a different window. Before its first poll (start())
+            # there is nothing polled yet.
+            window_info = self._event_monitor.current_window
+            if window_info is None:
+                window_info = self._windows.get_active_window()
 
             if not window_info or window_info.class_ == "":
                 logger.debug("No active window detected")
@@ -602,13 +642,11 @@ class DeviceOrchestrator:
             # Query layout manager for layout selection
             layout_name = self._layout_manager.select_layout(window_info)
 
-            logger.info(
-                "Window '%s' → Layout '%s'",
-                window_info.class_, layout_name
-            )
+            logger.debug("Window %r → Layout %r", window_info.class_, layout_name)
 
-            # Apply layout to all devices if changed
-            for device_id in self._devices:
+            # Apply layout to all devices if changed. A copy: a lock or
+            # shutdown on another thread may change the devices meanwhile.
+            for device_id in list(self._devices):
                 current = self._current_layouts.get(device_id)
                 logger.debug("Device %s: current=%s, new=%s", device_id, current, layout_name)
                 if current != layout_name:
@@ -617,7 +655,6 @@ class DeviceOrchestrator:
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error handling window change: %s", e)
 
-    @_serialized
     def _apply_layout(self, device_id: str, layout_name: str, force: bool = False) -> None:
         """
         Apply layout to device.
@@ -632,6 +669,9 @@ class DeviceOrchestrator:
         - Calls layout.apply() (legacy Layout class)
         - Updates current layout tracking
         - Logs layout changes
+        - Renders the keys first and holds the device lock only for the
+          writes; re-checks the lock state under it, since a lock may have
+          closed the device while the images were rendered
         """
         # Check if layout exists
         layout = self._layouts.get(layout_name)
@@ -639,14 +679,26 @@ class DeviceOrchestrator:
             logger.warning("Layout not found: %s", layout_name)
             return
 
-        # Check if already current (unless forced)
-        if not force:
-            current = self._current_layouts.get(device_id)
-            if current == layout_name:
-                logger.debug("Layout '%s' already active on %s", layout_name, device_id)
-                return
+        if not force and self._current_layouts.get(device_id) == layout_name:
+            logger.debug("Layout '%s' already active on %s", layout_name, device_id)
+            return
 
-        # Apply layout
+        self._prepare_layout(layout_name)
+        with self._device_lock:
+            self._apply_prepared_layout(device_id, layout_name, layout, force)
+
+    def _apply_prepared_layout(self, device_id: str, layout_name: str, layout: Any,
+                               force: bool) -> None:
+        if self._is_locked:
+            logger.debug("Not applying layout '%s' - device is locked", layout_name)
+            return
+        if device_id not in self._devices:
+            logger.debug("Device %s is gone, not applying layout '%s'", device_id, layout_name)
+            return
+        if not force and self._current_layouts.get(device_id) == layout_name:
+            logger.debug("Layout '%s' already active on %s", layout_name, device_id)
+            return
+
         try:
             layout.apply()
             self._current_layouts[device_id] = layout_name
@@ -655,52 +707,6 @@ class DeviceOrchestrator:
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error applying layout '%s' to %s: %s", layout_name, device_id, e)
-
-    def execute_action(self, action_type: str, parameter: Any, device_id: Optional[str] = None) -> None:
-        """
-        Execute an action by coordinating infrastructure and device operations.
-
-        Args:
-            action_type: Type of action to execute
-            parameter: Action-specific parameter
-            device_id: Optional device identifier for device-specific actions
-
-        Design:
-        - Coordinates between infrastructure layers
-        - Delegates to appropriate interfaces
-        - Handles action-specific logic
-
-        Action Types:
-        - System actions (KEY_PRESS, TYPE_TEXT, EXECUTE_COMMAND, DBUS)
-        - Device actions (CHANGE_KEY_IMAGE, DEVICE_BRIGHTNESS_UP/DOWN)
-        - Orchestration actions (CHANGE_LAYOUT, WAIT)
-        """
-        try:
-            if action_type == "KEY_PRESS":
-                self._system.send_key_combo(parameter)
-
-            elif action_type == "WAIT":
-                time.sleep(parameter)
-
-            elif action_type == "CHANGE_LAYOUT":
-                if device_id:
-                    self._apply_layout(device_id, parameter)
-
-            elif action_type == "DEVICE_BRIGHTNESS_UP":
-                current = self._default_brightness
-                self._default_brightness = min(100, current + 10)
-                self._hardware.set_brightness(self._default_brightness)
-
-            elif action_type == "DEVICE_BRIGHTNESS_DOWN":
-                current = self._default_brightness
-                self._default_brightness = max(0, current - 10)
-                self._hardware.set_brightness(self._default_brightness)
-
-            else:
-                logger.warning("Unknown action type: %s", action_type)
-
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.exception("Error executing action %s: %s", action_type, e)
 
     def get_device_count(self) -> int:
         """

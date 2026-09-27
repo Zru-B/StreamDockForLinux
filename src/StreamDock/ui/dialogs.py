@@ -5,14 +5,19 @@ Handles key editing, action editing, and layout management
 """
 
 import copy
+import html
 import os
 import re
+import shlex
 from pathlib import Path
 
 from StreamDock.application.config_document import (
-    DEFAULT_DOUBLE_PRESS_INTERVAL, DEFAULT_LONG_PRESS_DURATION, KeyDefinition)
+    DEFAULT_DOUBLE_PRESS_INTERVAL, DEFAULT_LONG_PRESS_DURATION, DEFAULT_TEXT_POSITION,
+    KeyDefinition)
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.application.configuration_manager import (
+    MAX_FONT_SIZE,
+    MIN_FONT_SIZE,
     relativize_icon_path,
     resolve_icon_path,
 )
@@ -25,6 +30,7 @@ from StreamDock.ui.widgets import (
     SegmentedControl,
     SidebarRowDelegate,
     ToggleSwitch,
+    _font_size,
     glyph_button,
 )
 from StreamDock.ui.styles import get_colors
@@ -42,6 +48,7 @@ from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequenc
                          QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -75,6 +82,9 @@ COLORS = get_colors()
 DISPLAY_ICON = "Icon"
 DISPLAY_TEXT = "Text"
 DISPLAY_WIDGET = "Widget"
+
+# Where a label sits over an icon, as the runtime's renderer names it.
+TEXT_POSITIONS = ("bottom", "center", "top")
 
 
 # Labels that Title Case gets wrong. Everything else is derived from
@@ -127,6 +137,99 @@ def _as_int(value, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_float(value, default: float) -> float:
+    """
+    Coerce an action payload into a double spin-box value.
+
+    Args:
+        value: Whatever the configuration held
+        default: Used when the value is missing or not a number
+
+    Returns:
+        A float
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _split_command(text: str):
+    """
+    Split a typed command line into argv, shell-style.
+
+    Quotes keep an argument with spaces whole; unbalanced quotes fall back to
+    whitespace splitting rather than losing the text.
+
+    Returns:
+        A list for several arguments, a plain string for one
+    """
+    try:
+        parts = shlex.split(text)
+    except ValueError:
+        parts = text.split()
+    if not parts:
+        return text
+    return parts if len(parts) > 1 else parts[0]
+
+
+def _join_command(command) -> str:
+    """Show a list command as a line _split_command reads back to the same list."""
+    if isinstance(command, list):
+        return shlex.join(str(part) for part in command)
+    return _as_text(command)
+
+
+def _clear_layout(layout) -> None:
+    """
+    Empty a layout now, sub-layouts included.
+
+    Unparenting takes each widget out of the dialog at once: deleteLater alone
+    left the old radio buttons alive beside the new ones until the event loop
+    ran, sharing their auto-exclusive group, and nested layouts' widgets were
+    never removed at all.
+    """
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child = item.layout()
+        if widget is not None:
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
+        elif child is not None:
+            _clear_layout(child)
+            child.setParent(None)
+            child.deleteLater()
+
+
+def _fill_names(combo: QComboBox, names: list, placeholder: str) -> None:
+    """Offer names, each carrying itself as data; a disabled placeholder when there are none."""
+    for name in names:
+        combo.addItem(name, name)
+    if not names:
+        combo.addItem(placeholder)
+        combo.setEnabled(False)
+
+
+def _select_name(combo: QComboBox, name) -> None:
+    """
+    Select a target, listing it as missing when the config no longer has it.
+
+    Silently falling back to the first entry would retarget the action on OK.
+    """
+    if not isinstance(name, str) or not name:
+        return
+    index = combo.findData(name)
+    if index < 0:
+        if not combo.isEnabled():
+            combo.clear()
+            combo.setEnabled(True)
+        combo.addItem(f"{name} (missing)", name)
+        index = combo.count() - 1
+    combo.setCurrentIndex(index)
 
 
 def create_styled_button(text: str, primary: bool = False) -> QPushButton:
@@ -210,12 +313,19 @@ class KeyEditorDialog(ThemedDialog):
         
         layout.addWidget(self.icon_widget)
         
-        # Text settings (in a container for show/hide)
+        # Text settings (in a container for show/hide). An icon key shares
+        # them for its optional label, drawn over the icon on the device.
         self.text_widget = QWidget()
         text_layout = QFormLayout(self.text_widget)
+        self.text_form = text_layout
         
         self.text_edit = QLineEdit()
-        text_layout.addRow("Text:", self.text_edit)
+        self.text_row_label = QLabel("Text:")
+        text_layout.addRow(self.text_row_label, self.text_edit)
+
+        self.text_position_combo = QComboBox()
+        self.text_position_combo.addItems(TEXT_POSITIONS)
+        text_layout.addRow("Label Position:", self.text_position_combo)
         
         text_color_layout = QHBoxLayout()
         self.text_color_edit = QLineEdit("white")
@@ -234,13 +344,16 @@ class KeyEditorDialog(ThemedDialog):
         text_layout.addRow("Background Color:", bg_color_layout)
         
         self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(1, 100)
+        # The validator's bounds, so a size the file may hold is never
+        # clamped by merely opening the key.
+        self.font_size_spin.setRange(MIN_FONT_SIZE, MAX_FONT_SIZE)
         self.font_size_spin.setValue(20)
         text_layout.addRow("Font Size:", self.font_size_spin)
         
         self.bold_toggle = ToggleSwitch()
         self.bold_toggle.setChecked(True)
         text_layout.addRow("Bold:", self.bold_toggle)
+        self.text_edit.textChanged.connect(self._update_text_rows)
         
         layout.addWidget(self.text_widget)
 
@@ -289,6 +402,9 @@ class KeyEditorDialog(ThemedDialog):
 
         row = QHBoxLayout()
         self.widget_description = QLabel()
+        # Third-party manifests supply this text; rich text would let one
+        # inject links and markup into the dialog.
+        self.widget_description.setTextFormat(Qt.TextFormat.PlainText)
         self.widget_description.setWordWrap(True)
         self.widget_description.setAlignment(Qt.AlignmentFlag.AlignTop)
         row.addWidget(self.widget_description, stretch=1)
@@ -400,10 +516,24 @@ class KeyEditorDialog(ThemedDialog):
         """Update visible widgets based on display type"""
         current = self.display_type.current()
         self.icon_widget.setVisible(current == DISPLAY_ICON)
-        self.text_widget.setVisible(current == DISPLAY_TEXT)
+        self.text_widget.setVisible(current in (DISPLAY_ICON, DISPLAY_TEXT))
         self.widget_widget.setVisible(current == DISPLAY_WIDGET)
+        self._update_text_rows()
         if current == DISPLAY_WIDGET and self.widget_images_form is None:
             self._rebuild_widget_options({})
+
+    def _update_text_rows(self, *_args):
+        """
+        Text mode shows the text and its style. Icon mode shows an optional
+        label, with its position and style only once there is one.
+        """
+        icon = self.display_type.current() == DISPLAY_ICON
+        self.text_row_label.setText("Label:" if icon else "Text:")
+        self.text_edit.setPlaceholderText("Optional, drawn over the icon" if icon else "")
+        styled = not icon or bool(self.text_edit.text().strip())
+        self.text_form.setRowVisible(self.text_position_combo, icon and styled)
+        for row in range(2, self.text_form.rowCount()):
+            self.text_form.setRowVisible(row, styled)
     
     def select_icon(self):
         """Select an icon file"""
@@ -483,23 +613,32 @@ class KeyEditorDialog(ThemedDialog):
             self._rebuild_widget_options(self.key_def.widget_options,
                                          (self.key_def.icon, self.key_def.state_icons, self.key_def.badge))
             self.display_type.set_current(DISPLAY_WIDGET)
-        elif self.key_def.is_icon_based():
+        elif self.key_def.icon:
             self.display_type.set_current(DISPLAY_ICON)
-            if self.key_def.icon:
-                self.icon_path_label.setText(self.key_def.icon)
-                self.selected_icon_path = self.key_def.icon
-                # Load and display the icon preview
-                self.load_icon_preview(self.key_def.icon)
-        elif self.key_def.is_text_based():
+            self.icon_path_label.setText(self.key_def.icon)
+            self.selected_icon_path = self.key_def.icon
+            # Load and display the icon preview
+            self.load_icon_preview(self.key_def.icon)
+        elif self.key_def.text is not None:
             self.display_type.set_current(DISPLAY_TEXT)
-            self.text_edit.setText(self.key_def.text or "")
-            self.text_color_edit.setText(self.key_def.text_color)
-            self.bg_color_edit.setText(self.key_def.background_color)
-            self.font_size_spin.setValue(self.key_def.font_size)
-            self.bold_toggle.setChecked(self.key_def.bold)
         else:
             # Default to icon
             self.display_type.set_current(DISPLAY_ICON)
+
+        if not self.key_def.is_widget():
+            # Values straight from the YAML - `text: 42`, `font_size: 20.5`,
+            # `bold: "yes"` all load - and Qt's setters take exact types only;
+            # coerced the way KeySquare draws them.
+            self.text_edit.setText(_as_text(self.key_def.text))
+            self.text_color_edit.setText(_as_text(self.key_def.text_color))
+            self.bg_color_edit.setText(_as_text(self.key_def.background_color))
+            self.font_size_spin.setValue(_font_size(self.key_def.font_size))
+            self.bold_toggle.setChecked(bool(self.key_def.bold))
+            position = _as_text(self.key_def.text_position) or DEFAULT_TEXT_POSITION
+            if self.text_position_combo.findText(position) < 0:
+                # Kept as written; the validator decides whether it is valid.
+                self.text_position_combo.addItem(position)
+            self.text_position_combo.setCurrentText(position)
         
         self.update_display_type()
         
@@ -516,12 +655,34 @@ class KeyEditorDialog(ThemedDialog):
         return self.widget_options_form.errors()
 
     def accept(self):
-        """Refuse to close on widget options the runtime would reject."""
+        """
+        Refuse to close on a name or widget options the runtime would reject.
+
+        Checked here rather than after exec() so a refusal keeps the dialog
+        and everything typed into it open.
+        """
+        name = self.name_edit.text()
+        if not name.strip():
+            QMessageBox.warning(self, "Invalid key name", "Enter a name for the key.")
+            return
+        if name in self.existing_keys:
+            QMessageBox.warning(self, "Invalid key name",
+                                f"A key named '{name}' already exists.")
+            return
         errors = self.widget_option_errors()
         if errors:
             QMessageBox.warning(self, "Invalid widget option", errors[0])
             return
         super().accept()
+
+    def done(self, result: int) -> None:
+        # The preview service is shared and outlives the dialog; left
+        # connected, every later preview would call into a deleted dialog.
+        try:
+            self.widget_previews.preview_ready.disconnect(self._on_preview_ready)
+        except TypeError:
+            pass
+        super().done(result)
 
     def get_key_definition(self) -> KeyDefinition:
         """
@@ -540,16 +701,19 @@ class KeyEditorDialog(ThemedDialog):
             key_def.text = None
         elif self.display_type.current() == DISPLAY_ICON:
             key_def.icon = self.selected_icon_path or self.key_def.icon
-            key_def.text = None
+            label = self.text_edit.text()
+            if label.strip():
+                key_def.text = label
+                self._store_text_style(key_def)
+                key_def.text_position = self.text_position_combo.currentText()
+            else:
+                key_def.text = None
             key_def.widget = None
             key_def.widget_options = {}
             key_def.state_icons, key_def.badge = {}, None
         else:
             key_def.text = self.text_edit.text()
-            key_def.text_color = self.text_color_edit.text()
-            key_def.background_color = self.bg_color_edit.text()
-            key_def.font_size = self.font_size_spin.value()
-            key_def.bold = self.bold_toggle.isChecked()
+            self._store_text_style(key_def)
             key_def.icon = None
             key_def.widget = None
             key_def.widget_options = {}
@@ -561,6 +725,12 @@ class KeyEditorDialog(ThemedDialog):
         key_def.on_long_press_actions = self.long_press_actions_widget.get_actions()
         
         return key_def
+
+    def _store_text_style(self, key_def: KeyDefinition) -> None:
+        key_def.text_color = self.text_color_edit.text()
+        key_def.background_color = self.bg_color_edit.text()
+        key_def.font_size = self.font_size_spin.value()
+        key_def.bold = self.bold_toggle.isChecked()
 
 
 class ActionEditorWidget(QWidget):
@@ -716,6 +886,10 @@ class ActionDialog(ThemedDialog):
     def __init__(self, action_dict: dict = None, available_layouts: list = None, 
                  available_keys: list = None, config_dir: str = None, parent=None):
         super().__init__(parent=parent)
+        # A parameterless action may be written as a bare string in the
+        # file - "- DEVICE_BRIGHTNESS_UP" - which has no keys() to read.
+        if isinstance(action_dict, str):
+            action_dict = {action_dict: ""}
         self.action_dict = action_dict or {}
         self.available_layouts = available_layouts or []
         self.available_keys = available_keys or []
@@ -757,11 +931,7 @@ class ActionDialog(ThemedDialog):
     
     def update_action_fields(self):
         """Update fields based on selected action type"""
-        # Clear existing fields
-        while self.fields_layout.count():
-            item = self.fields_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        _clear_layout(self.fields_layout)
         
         # Get backend action type from display name
         action_type = self._get_backend_action_type()
@@ -778,6 +948,11 @@ class ActionDialog(ThemedDialog):
             # Radio buttons for simple vs advanced
             self.launch_simple_radio = QRadioButton("Simple (command or desktop file)")
             self.launch_advanced_radio = QRadioButton("Advanced (custom settings)")
+            # Each pair in its own group, so exclusivity never depends on
+            # which other radios happen to share the parent.
+            self._launch_mode = QButtonGroup(self.launch_simple_radio)
+            self._launch_mode.addButton(self.launch_simple_radio)
+            self._launch_mode.addButton(self.launch_advanced_radio)
             self.launch_simple_radio.setChecked(True)
             self.fields_layout.addWidget(self.launch_simple_radio)
             self.fields_layout.addWidget(self.launch_advanced_radio)
@@ -788,6 +963,9 @@ class ActionDialog(ThemedDialog):
             simple_layout.addWidget(QLabel("Command or Desktop File:"))
             self.launch_simple_edit = QLineEdit()
             self.launch_simple_edit.setPlaceholderText("firefox or firefox.desktop")
+            self.launch_simple_edit.setToolTip(
+                "A name ending in .desktop starts that desktop entry; anything else "
+                "is a command line, split like a shell would (quote arguments with spaces).")
             simple_layout.addWidget(self.launch_simple_edit)
             self.fields_layout.addWidget(self.launch_simple_widget)
             
@@ -837,7 +1015,10 @@ class ActionDialog(ThemedDialog):
         elif action_type == "WAIT":
             label = QLabel("Wait duration (seconds):")
             self.fields_layout.addWidget(label)
-            self.wait_spin = QSpinBox()
+            # Fractions matter here: 0.5 s is a common pause.
+            self.wait_spin = QDoubleSpinBox()
+            self.wait_spin.setDecimals(2)
+            self.wait_spin.setSingleStep(0.1)
             self.wait_spin.setRange(0, 3600)
             self.wait_spin.setValue(1)
             self.wait_spin.setSuffix(" seconds")
@@ -868,7 +1049,7 @@ class ActionDialog(ThemedDialog):
             style_layout.addRow("Background:", self.key_text_bg_edit)
 
             self.key_text_size_spin = QSpinBox()
-            self.key_text_size_spin.setRange(6, 96)
+            self.key_text_size_spin.setRange(MIN_FONT_SIZE, MAX_FONT_SIZE)
             self.key_text_size_spin.setValue(20)
             style_layout.addRow("Font size:", self.key_text_size_spin)
 
@@ -895,16 +1076,15 @@ class ActionDialog(ThemedDialog):
             label = QLabel("Change to Key:")
             self.fields_layout.addWidget(label)
             self.change_key_combo = QComboBox()
-            if self.available_keys:
-                self.change_key_combo.addItems(self.available_keys)
-            else:
-                self.change_key_combo.addItem("No keys available")
-                self.change_key_combo.setEnabled(False)
+            _fill_names(self.change_key_combo, self.available_keys, "No keys available")
             self.fields_layout.addWidget(self.change_key_combo)
         
         elif action_type == "CHANGE_LAYOUT":
             self.layout_simple_radio = QRadioButton("Simple (layout name only)")
             self.layout_advanced_radio = QRadioButton("Advanced (with options)")
+            self._layout_mode = QButtonGroup(self.layout_simple_radio)
+            self._layout_mode.addButton(self.layout_simple_radio)
+            self._layout_mode.addButton(self.layout_advanced_radio)
             self.layout_simple_radio.setChecked(True)
             self.fields_layout.addWidget(self.layout_simple_radio)
             self.fields_layout.addWidget(self.layout_advanced_radio)
@@ -914,11 +1094,7 @@ class ActionDialog(ThemedDialog):
             simple_layout = QVBoxLayout(self.layout_simple_widget)
             simple_layout.addWidget(QLabel("Layout:"))
             self.layout_name_combo = QComboBox()
-            if self.available_layouts:
-                self.layout_name_combo.addItems(self.available_layouts)
-            else:
-                self.layout_name_combo.addItem("No layouts available")
-                self.layout_name_combo.setEnabled(False)
+            _fill_names(self.layout_name_combo, self.available_layouts, "No layouts available")
             simple_layout.addWidget(self.layout_name_combo)
             self.fields_layout.addWidget(self.layout_simple_widget)
             
@@ -926,11 +1102,7 @@ class ActionDialog(ThemedDialog):
             self.layout_advanced_widget = QWidget()
             adv_layout = QFormLayout(self.layout_advanced_widget)
             self.layout_name_adv_combo = QComboBox()
-            if self.available_layouts:
-                self.layout_name_adv_combo.addItems(self.available_layouts)
-            else:
-                self.layout_name_adv_combo.addItem("No layouts available")
-                self.layout_name_adv_combo.setEnabled(False)
+            _fill_names(self.layout_name_adv_combo, self.available_layouts, "No layouts available")
             adv_layout.addRow("Layout:", self.layout_name_adv_combo)
             self.layout_clear_check = QCheckBox()
             adv_layout.addRow("Clear All:", self.layout_clear_check)
@@ -950,6 +1122,9 @@ class ActionDialog(ThemedDialog):
             # Predefined actions
             self.dbus_preset_radio = QRadioButton("Predefined action")
             self.dbus_custom_radio = QRadioButton("Custom command")
+            self._dbus_mode = QButtonGroup(self.dbus_preset_radio)
+            self._dbus_mode.addButton(self.dbus_preset_radio)
+            self._dbus_mode.addButton(self.dbus_custom_radio)
             self.dbus_preset_radio.setChecked(True)
             self.fields_layout.addWidget(self.dbus_preset_radio)
             self.fields_layout.addWidget(self.dbus_custom_radio)
@@ -970,7 +1145,11 @@ class ActionDialog(ThemedDialog):
             custom_layout = QVBoxLayout(self.dbus_custom_widget)
             custom_layout.addWidget(QLabel("Custom D-Bus command:"))
             self.dbus_custom_edit = QLineEdit()
-            self.dbus_custom_edit.setPlaceholderText("e.g., play_pause")
+            # The runtime runs a bare string through the shell; only the
+            # predefined names go in the {action: ...} form.
+            self.dbus_custom_edit.setPlaceholderText(
+                "e.g., dbus-send --session --dest=org.mpris.MediaPlayer2.spotify ...")
+            self.dbus_custom_edit.setToolTip("Run through the shell when the key is pressed")
             custom_layout.addWidget(self.dbus_custom_edit)
             self.fields_layout.addWidget(self.dbus_custom_widget)
             self.dbus_custom_widget.setVisible(False)
@@ -1009,19 +1188,22 @@ class ActionDialog(ThemedDialog):
             self.update_action_fields()
             return
         
-        # Get action type (backend key)
-        action_type = list(self.action_dict.keys())[0]
-        action_value = self.action_dict[action_type]
+        # Get action type (backend key). The runtime takes any case, so a
+        # hand-written `key_press:` opens as KEY_PRESS and is saved that way.
+        raw_type = list(self.action_dict.keys())[0]
+        action_value = self.action_dict[raw_type]
+        action_type = raw_type.upper() if isinstance(raw_type, str) else raw_type
         
-        # Convert backend key to display name and set in combo
+        # Convert backend key to display name and set in combo. Blocked, and
+        # the fields built once below: setCurrentIndex only emits when the
+        # index changes, so the first type alphabetically would otherwise get
+        # no fields, and every other type would get them twice.
         display_name = self.ACTION_TYPE_DISPLAY.get(action_type, action_type)
         index = self.action_type_combo.findText(display_name)
         if index >= 0:
+            self.action_type_combo.blockSignals(True)
             self.action_type_combo.setCurrentIndex(index)
-
-        # setCurrentIndex only emits when the index actually changes, so an
-        # action whose type is already selected - the first one alphabetically
-        # - would never have its field widgets built.
+            self.action_type_combo.blockSignals(False)
         self.update_action_fields()
         
         # Load specific fields based on type
@@ -1034,26 +1216,22 @@ class ActionDialog(ThemedDialog):
         elif action_type == "LAUNCH_APPLICATION":
             if isinstance(action_value, (str, list)):
                 self.launch_simple_radio.setChecked(True)
-                if isinstance(action_value, list):
-                    self.launch_simple_edit.setText(" ".join(action_value))
-                else:
-                    self.launch_simple_edit.setText(action_value)
+                self.launch_simple_edit.setText(_join_command(action_value))
             elif isinstance(action_value, dict):
                 self.launch_advanced_radio.setChecked(True)
                 if 'command' in action_value:
-                    cmd = action_value['command']
-                    if isinstance(cmd, list):
-                        self.launch_command_edit.setText(" ".join(cmd))
-                    else:
-                        self.launch_command_edit.setText(cmd)
+                    self.launch_command_edit.setText(_join_command(action_value['command']))
                 if 'desktop_file' in action_value:
-                    self.launch_desktop_edit.setText(action_value['desktop_file'])
+                    self.launch_desktop_edit.setText(_as_text(action_value['desktop_file']))
                 if 'class_name' in action_value:
-                    self.launch_class_edit.setText(action_value['class_name'])
+                    self.launch_class_edit.setText(_as_text(action_value['class_name']))
                 if 'match_type' in action_value:
-                    self.launch_match_combo.setCurrentText(action_value['match_type'])
+                    self.launch_match_combo.setCurrentText(_as_text(action_value['match_type']))
                 if 'force_new' in action_value:
-                    self.launch_force_check.setChecked(action_value['force_new'])
+                    self.launch_force_check.setChecked(bool(action_value['force_new']))
+            # What the fields showed on opening, so get_action can hand back
+            # the original value untouched when nothing was edited.
+            self._launch_loaded = self._launch_fields()
         
         elif action_type == "KEY_PRESS":
             self.key_combo_edit.setText(_as_text(action_value))
@@ -1062,7 +1240,7 @@ class ActionDialog(ThemedDialog):
             self.type_text_edit.setPlainText(_as_text(action_value))
         
         elif action_type == "WAIT":
-            self.wait_spin.setValue(_as_int(action_value, 1))
+            self.wait_spin.setValue(_as_float(action_value, 1.0))
         
         elif action_type == "CHANGE_KEY_IMAGE":
             self.image_path_edit.setText(_as_text(action_value))
@@ -1082,45 +1260,34 @@ class ActionDialog(ThemedDialog):
                 self.key_text_position_combo.setCurrentIndex(index)
 
         elif action_type == "CHANGE_KEY":
-            # Set the combo box to the key name
-            index = self.change_key_combo.findText(action_value)
-            if index >= 0:
-                self.change_key_combo.setCurrentIndex(index)
+            _select_name(self.change_key_combo, action_value)
         
         elif action_type == "CHANGE_LAYOUT":
             if isinstance(action_value, str):
                 self.layout_simple_radio.setChecked(True)
-                index = self.layout_name_combo.findText(action_value)
-                if index >= 0:
-                    self.layout_name_combo.setCurrentIndex(index)
+                _select_name(self.layout_name_combo, action_value)
             elif isinstance(action_value, dict):
                 self.layout_advanced_radio.setChecked(True)
-                layout_name = action_value.get('layout', '')
-                index = self.layout_name_adv_combo.findText(layout_name)
-                if index >= 0:
-                    self.layout_name_adv_combo.setCurrentIndex(index)
+                _select_name(self.layout_name_adv_combo, action_value.get('layout', ''))
                 self.layout_clear_check.setChecked(action_value.get('clear_all', False))
         
         elif action_type == "DBUS":
+            # The runtime reads a dict as a named shortcut and a string as a
+            # shell command, so the form must keep them apart: a string is
+            # always a custom command, whatever it says.
             if isinstance(action_value, dict):
-                action = action_value.get('action', '')
-                # Check if it's a predefined action
+                action = _as_text(action_value.get('action', ''))
                 index = self.dbus_action_combo.findText(action)
+                if index < 0 and action:
+                    # A shortcut the list does not offer (stop, play_pause_any).
+                    self.dbus_action_combo.addItem(action)
+                    index = self.dbus_action_combo.count() - 1
+                self.dbus_preset_radio.setChecked(True)
                 if index >= 0:
-                    self.dbus_preset_radio.setChecked(True)
                     self.dbus_action_combo.setCurrentIndex(index)
-                else:
-                    self.dbus_custom_radio.setChecked(True)
-                    self.dbus_custom_edit.setText(action)
             elif isinstance(action_value, str):
-                # Check if it's a predefined action
-                index = self.dbus_action_combo.findText(action_value)
-                if index >= 0:
-                    self.dbus_preset_radio.setChecked(True)
-                    self.dbus_action_combo.setCurrentIndex(index)
-                else:
-                    self.dbus_custom_radio.setChecked(True)
-                    self.dbus_custom_edit.setText(action_value)
+                self.dbus_custom_radio.setChecked(True)
+                self.dbus_custom_edit.setText(action_value)
     
     def get_action(self) -> dict:
         """Get the action dictionary from the dialog"""
@@ -1135,40 +1302,7 @@ class ActionDialog(ThemedDialog):
             return {action_type: command if len(command) > 1 else command[0]}
         
         elif action_type == "LAUNCH_APPLICATION":
-            if self.launch_simple_radio.isChecked():
-                value = self.launch_simple_edit.text().strip()
-                if not value:
-                    return None
-                # Check if it's a desktop file or command
-                if value.endswith('.desktop') or '.' in value:
-                    return {action_type: value}
-                else:
-                    # Try to split as command
-                    parts = value.split()
-                    return {action_type: parts if len(parts) > 1 else value}
-            else:
-                # Advanced mode
-                result = {}
-                
-                desktop = self.launch_desktop_edit.text().strip()
-                command = self.launch_command_edit.text().strip()
-                
-                if desktop:
-                    result['desktop_file'] = desktop
-                elif command:
-                    parts = command.split()
-                    result['command'] = parts if len(parts) > 1 else command
-                else:
-                    return None
-                
-                if self.launch_class_edit.text().strip():
-                    result['class_name'] = self.launch_class_edit.text().strip()
-                if self.launch_match_combo.currentText() != "contains":
-                    result['match_type'] = self.launch_match_combo.currentText()
-                if self.launch_force_check.isChecked():
-                    result['force_new'] = True
-                
-                return {action_type: result}
+            return self._launch_action(action_type)
         
         elif action_type == "KEY_PRESS":
             value = self.key_combo_edit.text().strip()
@@ -1183,7 +1317,9 @@ class ActionDialog(ThemedDialog):
             return {action_type: value}
         
         elif action_type == "WAIT":
-            return {action_type: self.wait_spin.value()}
+            seconds = self.wait_spin.value()
+            # A whole number stays an int, as a hand-written file spells it.
+            return {action_type: int(seconds) if seconds.is_integer() else seconds}
         
         elif action_type == "CHANGE_KEY_IMAGE":
             value = self.image_path_edit.text().strip()
@@ -1210,20 +1346,20 @@ class ActionDialog(ThemedDialog):
             return {action_type: value}
 
         elif action_type == "CHANGE_KEY":
-            value = self.change_key_combo.currentText()
-            if not value or value == "No keys available":
+            value = self.change_key_combo.currentData()
+            if not value:
                 return None
             return {action_type: value}
         
         elif action_type == "CHANGE_LAYOUT":
             if self.layout_simple_radio.isChecked():
-                value = self.layout_name_combo.currentText()
-                if not value or value == "No layouts available":
+                value = self.layout_name_combo.currentData()
+                if not value:
                     return None
                 return {action_type: value}
             else:
-                value = self.layout_name_adv_combo.currentText()
-                if not value or value == "No layouts available":
+                value = self.layout_name_adv_combo.currentData()
+                if not value:
                     return None
                 result = {'layout': value}
                 if self.layout_clear_check.isChecked():
@@ -1232,17 +1368,90 @@ class ActionDialog(ThemedDialog):
         
         elif action_type == "DBUS":
             if self.dbus_preset_radio.isChecked():
-                action = self.dbus_action_combo.currentText()
-            else:
-                action = self.dbus_custom_edit.text().strip()
-                if not action:
-                    return None
-            return {action_type: {'action': action}}
+                return {action_type: {'action': self.dbus_action_combo.currentText()}}
+            command = self.dbus_custom_edit.text().strip()
+            if not command:
+                return None
+            return {action_type: command}
         
         elif action_type in ["DEVICE_BRIGHTNESS_UP", "DEVICE_BRIGHTNESS_DOWN"]:
             return {action_type: ""}
         
         return None
+
+    def _launch_fields(self) -> tuple:
+        """Everything the LAUNCH_APPLICATION form shows, for spotting an edit."""
+        return (self.launch_simple_radio.isChecked(),
+                self.launch_simple_edit.text(),
+                self.launch_command_edit.text(),
+                self.launch_desktop_edit.text(),
+                self.launch_class_edit.text(),
+                self.launch_match_combo.currentText(),
+                self.launch_force_check.isChecked())
+
+    def _original_launch_value(self):
+        """The LAUNCH_APPLICATION value the dialog opened with, or None."""
+        if not self.action_dict:
+            return None
+        action_type = list(self.action_dict.keys())[0]
+        is_launch = isinstance(action_type, str) and action_type.upper() == "LAUNCH_APPLICATION"
+        return self.action_dict[action_type] if is_launch else None
+
+    def _launch_action(self, action_type: str):
+        """
+        LAUNCH_APPLICATION from the form.
+
+        An untouched form returns the original value as it was: the fields
+        cannot show every spelling (process_name, unknown keys, a one-item
+        list), and re-deriving it would rewrite the file on an unrelated edit.
+        """
+        original = self._original_launch_value()
+        if original is not None and self._launch_fields() == getattr(self, '_launch_loaded', None):
+            return {action_type: copy.deepcopy(original)}
+
+        if self.launch_simple_radio.isChecked():
+            value = self.launch_simple_edit.text().strip()
+            if not value:
+                return None
+            if value.endswith('.desktop'):
+                return {action_type: {'desktop_file': value}}
+            return {action_type: _split_command(value)}
+
+        # Advanced: overlay the edited fields on the original, so keys the
+        # form has no field for (process_name, anything newer) survive.
+        result = copy.deepcopy(original) if isinstance(original, dict) else {}
+
+        desktop = self.launch_desktop_edit.text().strip()
+        command = self.launch_command_edit.text().strip()
+        if not desktop and not command:
+            return None
+        if desktop:
+            result['desktop_file'] = desktop
+        else:
+            result.pop('desktop_file', None)
+        if command:
+            unchanged = (isinstance(original, dict) and 'command' in original
+                         and command == _join_command(original['command']).strip())
+            result['command'] = original['command'] if unchanged else _split_command(command)
+        else:
+            result.pop('command', None)
+
+        class_name = self.launch_class_edit.text().strip()
+        if class_name:
+            result['class_name'] = class_name
+        else:
+            result.pop('class_name', None)
+
+        match_type = self.launch_match_combo.currentText()
+        if match_type != "contains" or 'match_type' in result:
+            result['match_type'] = match_type
+
+        if self.launch_force_check.isChecked():
+            result['force_new'] = True
+        elif 'force_new' in result:
+            result['force_new'] = False
+
+        return {action_type: result}
 
 
 def run_key_editor(parent, config, key_name: str = None):
@@ -1261,10 +1470,8 @@ def run_key_editor(parent, config, key_name: str = None):
                              config_dir=config.config_dir, parent=parent)
     if editor.exec() != QDialog.DialogCode.Accepted:
         return None
+    # KeyEditorDialog.accept() has already refused a duplicate or blank name.
     new_def = editor.get_key_definition()
-    if new_def.name in others:
-        QMessageBox.warning(parent, "Error", f"A key named '{new_def.name}' already exists.")
-        return None
     if key_name:
         config.replace_key(key_name, new_def)
     else:
@@ -1276,8 +1483,9 @@ def describe_key(key_def: KeyDefinition) -> str:
     """What the key shows, in a few words."""
     if key_def.is_widget():
         return f"Widget: {key_def.widget}"
-    if key_def.is_icon_based():
-        return f"Icon: {Path(key_def.icon).name}"
+    if key_def.has_icon():
+        icon = f"Icon: {Path(key_def.icon).name}"
+        return f"{icon} + text '{key_def.text}'" if key_def.has_text() else icon
     if key_def.has_text():
         return f"Text: {key_def.text}"
     return "No icon or text"
@@ -1342,6 +1550,9 @@ class KeyThumbnailGrid(QWidget):
         super().__init__(parent)
         self._keys = {}
         self._extra_filter = None
+        # name -> (signature, icon): set_keys runs after every edit in Manage
+        # Keys, and redrawing a hundred keys each time is what made it lag.
+        self._thumbnails = {}
         self._renderer = KeySquare(0)
         self._renderer.config_dir = config_dir
         self._renderer.preview_service = shared_previews()
@@ -1473,7 +1684,31 @@ class KeyThumbnailGrid(QWidget):
     def _items(self):
         return [self.list.item(row) for row in range(self.list.count())]
 
-    def _thumbnail(self, name: str, key_def: KeyDefinition) -> QIcon:
+    def _signature(self, key_def: KeyDefinition) -> tuple:
+        """Everything a thumbnail depends on: the definition, the icon file, the widget snapshot."""
+        mtime = None
+        if isinstance(key_def.icon, str) and key_def.icon:
+            try:
+                mtime = os.stat(resolve_icon_path(key_def.icon, self._renderer.config_dir)).st_mtime_ns
+            except OSError:
+                pass
+        return (hash(repr(key_def.to_dict())), mtime, self._preview_key(key_def))
+
+    def _preview_key(self, key_def: KeyDefinition):
+        if not key_def.is_widget():
+            return None
+        return self._renderer.preview_service.key(*self._renderer._widget_preview_args(key_def))
+
+    def _thumbnail(self, name: str, key_def: KeyDefinition, force: bool = False) -> QIcon:
+        signature = self._signature(key_def)
+        cached = self._thumbnails.get(name)
+        if not force and cached is not None and cached[0] == signature:
+            return cached[1]
+        icon = self._render_thumbnail(name, key_def)
+        self._thumbnails[name] = (signature, icon)
+        return icon
+
+    def _render_thumbnail(self, name: str, key_def: KeyDefinition) -> QIcon:
         self._renderer.set_key(name, key_def)
         pixmap = self._renderer.grab().scaled(
             self.THUMBNAIL, self.THUMBNAIL, Qt.AspectRatioMode.KeepAspectRatio,
@@ -1484,13 +1719,13 @@ class KeyThumbnailGrid(QWidget):
         icon.addPixmap(pixmap, QIcon.Mode.Selected)
         return icon
 
-    def _refresh_widget_thumbnails(self, _key: str) -> None:
-        """Widget snapshots arrive after the grid is drawn; redraw once they do."""
+    def _refresh_widget_thumbnails(self, key: str) -> None:
+        """Widget snapshots arrive after the grid is drawn; redraw the keys this one belongs to."""
         for item in self._items():
             name = item.data(Qt.ItemDataRole.UserRole)
             key_def = self._keys.get(name)
-            if key_def is not None and key_def.is_widget():
-                item.setIcon(self._thumbnail(name, key_def))
+            if key_def is not None and key_def.is_widget() and self._preview_key(key_def) == key:
+                item.setIcon(self._thumbnail(name, key_def, force=True))
 
 
 class ManageKeysDialog(ThemedDialog):
@@ -1546,7 +1781,7 @@ class ManageKeysDialog(ThemedDialog):
 
     def refresh_keys_list(self):
         """Redraw every key with its usage."""
-        self._usage = {name: self.config.key_usage(name) for name in self.config.keys}
+        self._usage = self.config.all_key_usage()
         captions, tooltips = {}, {}
         for name, usage in self._usage.items():
             captions[name] = ", ".join(usage.layouts) if usage.layouts else \
@@ -1726,6 +1961,9 @@ class WindowRuleDialog(ThemedDialog):
         self.existing_rules = existing_rules or []
         self.recent_windows = list(recent_windows)
         self.suggest_name = suggest_name or (lambda pattern: "")
+        # The pattern text as loaded, to hand back window_name untouched when
+        # it was not edited: splitting it again could corrupt it.
+        self._loaded_pattern_text = None
 
         self.setWindowTitle("Add Window Rule" if not rule_name else "Edit Window Rule")
         self.setMinimumWidth(520)
@@ -1747,11 +1985,13 @@ class WindowRuleDialog(ThemedDialog):
 
         self.window_name_input = QLineEdit()
         self.window_name_input.setToolTip("Matched case-insensitively anywhere in the text. "
-                                          "Separate several patterns with commas; any of them matches.")
+                                          "Without \"Regular expression\", separate several patterns "
+                                          "with commas; any of them matches. A regular expression is "
+                                          "taken whole, commas included.")
         self.window_name_input.textChanged.connect(self._refresh_matches)
         form.addRow("When the:", self.match_row())
         self.regex_check = QCheckBox("Regular expression")
-        self.regex_check.setToolTip("Treat each pattern as a case-insensitive regular expression")
+        self.regex_check.setToolTip("Treat the text as one case-insensitive regular expression")
         self.regex_check.toggled.connect(self._refresh_matches)
         pattern_row = QHBoxLayout()
         pattern_row.addWidget(self.window_name_input, stretch=1)
@@ -1785,7 +2025,10 @@ class WindowRuleDialog(ThemedDialog):
             for window in self.recent_windows:
                 item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, window)
-                item.setToolTip(f"Class: {window.class_}\nTitle: {window.title}")
+                # Rich text on purpose, with the window's own strings escaped:
+                # any title is under the control of whatever made the window.
+                item.setToolTip(f"<p>Class: {html.escape(str(window.class_ or ''))}<br>"
+                                f"Title: {html.escape(str(window.title or ''))}</p>")
                 self.recent_list.addItem(item)
         else:
             item = QListWidgetItem("None yet - connect the deck, then switch to the window you "
@@ -1840,7 +2083,7 @@ class WindowRuleDialog(ThemedDialog):
     def _refresh_matches(self, *_args):
         from StreamDock.business_logic.layout_manager import rule_patterns, window_matches
         self._refresh_name_placeholder()
-        pattern = split_patterns(self.window_name_input.text())
+        pattern = self.patterns()
         field_name = self.match_field()
         try:
             pattern = rule_patterns(pattern, self.regex_check.isChecked()) if pattern else pattern
@@ -1879,14 +2122,14 @@ class WindowRuleDialog(ThemedDialog):
         name = self.rule_name()
         window_name = self.window_name_input.text().strip()
 
-        if not window_name or not split_patterns(window_name):
+        if not window_name or not self.patterns():
             QMessageBox.warning(self, "Validation Error", "Enter what the window's name contains.")
             return
 
         if self.regex_check.isChecked():
             from StreamDock.business_logic.layout_manager import rule_patterns
             try:
-                rule_patterns(split_patterns(window_name), True)
+                rule_patterns(self.patterns(), True)
             except re.error as e:
                 QMessageBox.warning(self, "Validation Error", f"Not a valid regular expression: {e}")
                 return
@@ -1902,6 +2145,21 @@ class WindowRuleDialog(ThemedDialog):
 
         self.accept()
 
+    def patterns(self):
+        """
+        window_name as the form means it.
+
+        A comma is legal inside a regex ({2,3}) and a title, so only plain
+        patterns are split on it, and an unedited field returns the loaded
+        value as it was - list or string.
+        """
+        text = self.window_name_input.text()
+        if self._loaded_pattern_text is not None and text == self._loaded_pattern_text:
+            return copy.deepcopy(self.window_rule.window_name)
+        if self.regex_check.isChecked():
+            return text.strip()
+        return split_patterns(text)
+
     def rule_name(self) -> str:
         return self.name_input.text().strip() or \
             self.suggest_name(self.window_name_input.text().strip()) or "WindowRule"
@@ -1911,6 +2169,8 @@ class WindowRuleDialog(ThemedDialog):
         # window_name may be a list in the file; show it comma-separated.
         patterns = rule.patterns() if hasattr(rule, 'patterns') else [rule.window_name]
         self.window_name_input.setText(", ".join(str(p) for p in patterns if p))
+        if getattr(rule, 'window_name', None) is not None:
+            self._loaded_pattern_text = self.window_name_input.text()
         if rule.layout:
             index = self.layout_combo.findText(rule.layout)
             if index >= 0:
@@ -1927,7 +2187,7 @@ class WindowRuleDialog(ThemedDialog):
         """Get the rule data from the form (validation already done)"""
         return {
             'name': self.rule_name(),
-            'window_name': split_patterns(self.window_name_input.text()),
+            'window_name': self.patterns(),
             'layout': self.layout_combo.currentText(),
             'match_field': self.match_field(),
             'is_regex': self.regex_check.isChecked(),
@@ -2100,7 +2360,7 @@ class AdvancedSettingsDialog(ThemedDialog):
         
         self.interval_spin = self._add_timing_card(
             layout, "Double-Press Detection", "Time Window:",
-            self.config.settings.double_press_interval, 0.1, 2.0,
+            self.config.settings.double_press_interval, 0.01, 2.0,
             DEFAULT_DOUBLE_PRESS_INTERVAL,
             "The time window (in seconds) for detecting double-presses on keys. "
             "Lower values require faster double-presses. Higher values are more forgiving "
@@ -2143,7 +2403,8 @@ class AdvancedSettingsDialog(ThemedDialog):
         spin = QDoubleSpinBox()
         spin.setRange(minimum, maximum)
         spin.setSingleStep(0.05)
-        spin.setDecimals(2)
+        # Three decimals: a hand-tuned 0.125 must survive opening the dialog.
+        spin.setDecimals(3)
         spin.setValue(value)
         spin.setSuffix(" sec")
         spin.setMinimumWidth(120)

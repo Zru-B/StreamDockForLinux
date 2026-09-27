@@ -96,7 +96,7 @@ class TestStreamDock(unittest.TestCase):
         
     def test_init_applies_requested_brightness(self):
         """Test init() applies the requested brightness instead of forcing 100%."""
-        self.device.set_brightness = MagicMock()
+        self.device.set_brightness = MagicMock(return_value=1)
 
         self.device.init(15)
 
@@ -108,7 +108,7 @@ class TestStreamDock(unittest.TestCase):
 
     def test_init_defaults_to_full_brightness(self):
         """Test init() falls back to the default brightness when none is given."""
-        self.device.set_brightness = MagicMock()
+        self.device.set_brightness = MagicMock(return_value=1)
 
         self.device.init()
 
@@ -125,6 +125,26 @@ class TestStreamDock(unittest.TestCase):
         self.device.set_brightness.reset_mock()
         self.device.init(-10)
         self.device.set_brightness.assert_called_once_with(0)
+
+    def test_init_keeps_previous_brightness_when_write_fails(self):
+        # Guards brightness up/down stepping from a value the device never took.
+        self.device._current_brightness = 40
+        self.device.set_brightness = MagicMock(return_value=-1)
+
+        self.device.init(80)
+
+        self.assertEqual(self.device._current_brightness, 40)
+
+    def test_clear_icon_rejects_out_of_range_key_on_mapped_device(self):
+        # Guards KEY_MAPPING raising KeyError before the range check could run.
+        self.device.KEY_MAP = True
+
+        self.assertEqual(self.device.clear_icon(16), -1)
+        self.assertEqual(self.device.clear_icon(0), -1)
+        self.mock_transport.key_clear.assert_not_called()
+
+        self.device.clear_icon(1)
+        self.mock_transport.key_clear.assert_called_once_with(11)
 
     def _process_queue(self):
         """Helper to process all events in the queue."""
@@ -352,6 +372,151 @@ class TestStreamDock(unittest.TestCase):
              on_release.assert_called_with(self.device, key_mapped)
              
              on_double.assert_not_called()
+
+
+class TestReaderAndLifecycleRegressions(unittest.TestCase):
+    def setUp(self):
+        self.transport = MagicMock()
+        self.transport.open.return_value = 1
+        self.transport.read_.return_value = None
+        self.device = ConcreteStreamDock(
+            self.transport, {'vendor_id': 1, 'product_id': 2, 'path': 'p'})
+
+    def tearDown(self):
+        self.device.close()
+
+    def _run_reader_over(self, reads):
+        """Feed `reads` (values or exceptions) to _read, then stop the loop."""
+        reads = list(reads)
+
+        def read_mock(*args, **kwargs):
+            if not reads:
+                self.device.run_read_thread = False
+                return None
+            item = reads.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        self.device.read = read_mock
+        self.device.run_read_thread = True
+        self.device._read()
+
+    def test_screen_off_does_not_rearm_itself(self):
+        # Guards the deck blanking every N seconds forever after the first lock.
+        self.device.screen_off()
+        self.assertIsNone(self.device.screenlicent)
+
+    def test_close_cancels_pending_countdown(self):
+        # Guards a countdown armed before close blanking a reopened deck.
+        self.device.set_seconds(0.05)
+        self.device.close()
+        time.sleep(0.15)
+        self.transport.screen_off.assert_not_called()
+
+    def test_open_cancels_pending_countdown(self):
+        self.device.set_seconds(0.05)
+        self.device.open()
+        time.sleep(0.15)
+        self.transport.screen_off.assert_not_called()
+
+    def test_unknown_key_report_is_ignored_and_reader_keeps_running(self):
+        # Guards a KeyError on an unmapped key id closing the device from the reader.
+        callback = MagicMock()
+        self.device.key_callback = callback
+        self.device.close = MagicMock()
+        unknown = bytearray(13); unknown[9] = 0x40; unknown[10] = 1
+        known = bytearray(13); known[9] = 5; known[10] = 1
+
+        self._run_reader_over([unknown, known])
+
+        self.device.close.assert_not_called()
+        queued = []
+        while not self.device._event_queue.empty():
+            queued.append(self.device._event_queue.get_nowait())
+        self.assertEqual([args for _, args in queued], [(self.device, 15, 1)])
+
+    @patch('StreamDock.devices.stream_dock.time.sleep')
+    def test_read_error_backs_off_instead_of_closing(self, mock_sleep):
+        # Guards a busy spin (or a close) when every read fails after an unplug.
+        self.device.close = MagicMock()
+
+        self._run_reader_over([OSError("gone"), OSError("gone")])
+
+        self.device.close.assert_not_called()
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertGreater(mock_sleep.call_args[0][0], 0)
+
+    def test_reopen_stops_old_reader_before_reopening_transport(self):
+        # Guards hid_close() running while the old reader is inside hid_read_timeout().
+        order = []
+        self.device.open()
+        old_reader = self.device.read_thread
+
+        def transport_open(path):
+            order.append(('open', old_reader.is_alive()))
+            return 1
+        self.transport.open.side_effect = transport_open
+
+        self.device.open()
+
+        self.assertEqual(order, [('open', False)])
+        self.assertIsNot(self.device.read_thread, old_reader)
+
+    def test_close_cancels_gestures_and_drops_queued_callbacks(self):
+        # Guards a press, release or long press from before close firing after reopen.
+        fired = []
+        self.device.long_press_duration = 0.05
+        self.device.double_press_interval = 0.05
+        self.device.set_per_key_callback(
+            3, on_press=lambda d, k: fired.append('press'),
+            on_long_press=lambda d, k: fired.append('long'),
+            on_double_press=lambda d, k: fired.append('double'))
+        self.device.set_per_key_callback(
+            4, on_release=lambda d, k: fired.append('release'),
+            on_double_press=lambda d, k: fired.append('double'))
+
+        self.device._handle_key_event(3, True)
+        self.device._handle_key_event(4, True)
+        self.device._handle_key_event(4, False)
+        self.device.long_press_fired.add(7)
+        self.device.release_skip_count[8] = 1
+        self.device._queue_callback(lambda d, k: fired.append('queued'), 1)
+
+        self.device.close()
+        self.device.open()
+        time.sleep(0.2)
+
+        self.assertEqual(fired, [])
+        self.assertEqual(self.device.long_press_fired, set())
+        self.assertEqual(self.device.release_skip_count, {})
+        self.assertFalse(any(self.device.pending_long_press.values()))
+        self.assertFalse(any(self.device.pending_single_release.values()))
+        self.assertIn(3, self.device.per_key_callbacks)
+
+
+class TestStreamDock293V3Brightness(unittest.TestCase):
+    def setUp(self):
+        from StreamDock.devices.stream_dock_293_v3 import StreamDock293V3
+        self.transport = MagicMock()
+        self.device = StreamDock293V3(
+            self.transport, {'vendor_id': 1, 'product_id': 2, 'path': 'p'})
+
+    def test_records_brightness_on_success(self):
+        # The brightness up/down actions step from _current_brightness.
+        self.transport.set_brightness.return_value = 1
+
+        self.device.set_brightness(30)
+
+        self.assertEqual(self.device._current_brightness, 30)
+
+    def test_keeps_brightness_on_failure(self):
+        self.transport.set_brightness.return_value = -1
+
+        self.device.set_brightness(30)
+
+        self.assertEqual(self.device._current_brightness, DEFAULT_BRIGHTNESS)
+
 
 if __name__ == '__main__':
     unittest.main()

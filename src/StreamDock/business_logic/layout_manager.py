@@ -15,6 +15,11 @@ from StreamDock.domain.Models import WindowInfo
 
 logger = logging.getLogger(__name__)
 
+# Titles come from any window, so any program can set them. Every rule's
+# pattern runs against the value on each poll; capping its length bounds that
+# work (a user regex prone to backtracking included).
+MAX_MATCH_LENGTH = 512
+
 
 @dataclass
 class LayoutRule:
@@ -70,6 +75,8 @@ def window_matches(window_info: WindowInfo, pattern, match_field: str = 'class')
     if field_value is None:
         logger.debug("Window missing field: %s", match_field)
         return False
+    if isinstance(field_value, str):
+        field_value = field_value[:MAX_MATCH_LENGTH]
 
     for candidate in pattern if isinstance(pattern, list) else [pattern]:
         if isinstance(candidate, Pattern):

@@ -12,8 +12,11 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from StreamDock.application.configuration_manager import ConfigurationManager
+from StreamDock.application.configuration_manager import ConfigValidationError, ConfigurationManager
 from StreamDock.application.layout_factory import LayoutFactory
+from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.business_logic.action_type import ActionType
+from StreamDock.domain.key import Key
 
 
 @pytest.fixture
@@ -182,9 +185,9 @@ class TestKeyRendering:
 
         default.apply()
 
-        device.set_key_image.assert_called_once()
-        rendered = device.set_key_image.call_args[0][1]
-        assert rendered and os.path.exists(rendered)
+        device.set_key_pil_image.assert_called_once()
+        rendered = device.set_key_pil_image.call_args[0][1]
+        assert rendered.size == (112, 112)
 
     @pytest.mark.parametrize("font_size", [1, 8, 20, 72, 200])
     def test_font_sizes_across_the_allowed_range(self, workdir, device, font_size):
@@ -193,7 +196,7 @@ class TestKeyRendering:
 
         default.apply()
 
-        device.set_key_image.assert_called_once()
+        device.set_key_pil_image.assert_called_once()
 
     @pytest.mark.parametrize("colors", [
         {"text_color": "white", "background_color": "black"},
@@ -205,14 +208,14 @@ class TestKeyRendering:
 
         default.apply()
 
-        device.set_key_image.assert_called_once()
+        device.set_key_pil_image.assert_called_once()
 
     def test_bold_false(self, workdir, device):
         default, _ = build(workdir, device, config({"KeyA": key(bold=False)}))
 
         default.apply()
 
-        device.set_key_image.assert_called_once()
+        device.set_key_pil_image.assert_called_once()
 
     def test_an_icon_key_passes_the_icon_path_through(self, workdir, device):
         icon = os.path.join(workdir, "icon.png")
@@ -263,21 +266,31 @@ class TestActions:
         assert kwargs['on_long_press'] is not None
         assert kwargs['on_press'] is None
 
-    def test_a_lowercase_action_name_is_dropped(self, workdir, device):
-        """Known gap: it passes validation, then the factory discards it."""
+    def test_a_lowercase_action_name_is_wired(self, workdir, device):
+        # The validator accepts any case; the factory once dropped it silently.
         keys = {"KeyA": {"text": "A", "on_press_actions": [{"key_press": "a"}]}}
 
         default, _ = build(workdir, device, config(keys), action_executor=Mock())
 
-        assert default.keys[0].on_press_actions == []
+        assert default.keys[0].on_press_actions == [(ActionType.KEY_PRESS, "a")]
 
-    def test_a_bare_string_action_is_dropped(self, workdir, device):
-        """Also validated and also discarded."""
+    def test_a_lowercase_change_layout_shorthand_is_normalised(self, workdir, device):
+        layouts = {
+            "Main": {"Default": True, "keys": [{1: "KeyA"}]},
+            "Other": {"keys": [{1: "KeyA"}]},
+        }
+        keys = {"KeyA": {"text": "A", "on_press_actions": [{"change_layout": "Other"}]}}
+
+        default, _ = build(workdir, device, config(keys, layouts), action_executor=Mock())
+
+        assert default.keys[0].on_press_actions == [(ActionType.CHANGE_LAYOUT, {"layout": "Other"})]
+
+    def test_a_bare_string_action_is_rejected(self, workdir, device):
+        # Once validated and then silently discarded by the factory.
         keys = {"KeyA": {"text": "A", "on_press_actions": ["DEVICE_BRIGHTNESS_UP"]}}
 
-        default, _ = build(workdir, device, config(keys), action_executor=Mock())
-
-        assert default.keys[0].on_press_actions == []
+        with pytest.raises(ConfigValidationError, match="must be a mapping"):
+            build(workdir, device, config(keys), action_executor=Mock())
 
     def test_change_layout_shorthand_is_normalised(self, workdir, device):
         layouts = {
@@ -292,6 +305,58 @@ class TestActions:
 
         _, parameter = default.keys[0].on_press_actions[0]
         assert parameter == {"layout": "Other"}
+
+
+class TestNullSlots:
+    """A null slot is an explicitly empty key."""
+
+    def test_a_null_slot_is_cleared_when_applied(self, workdir, device):
+        # Guards the previous layout's key staying visible and live on a null slot.
+        layouts = {"Main": {"Default": True, "keys": [{1: "KeyA"}, {4: None}]}}
+
+        default, _ = build(workdir, device, config(layouts=layouts), action_executor=Mock())
+        default.apply()
+
+        assert default.clear_keys == [4]
+        device.clear_icon.assert_called_once_with(4)
+        device.clear_key_callback.assert_called_once_with(Key.KEY_MAPPING[4])
+
+
+class TestChangeKeyByName:
+    """CHANGE_KEY names a configured key, as the editor writes it."""
+
+    def test_change_key_shows_the_named_key_and_its_actions_fire(self, workdir, device):
+        # Guards the name being treated as an image path and the actions being dropped.
+        system = Mock()
+        executor = ActionExecutor(system, Mock())
+        keys = {
+            "KeyA": {"text": "A", "on_press_actions": [{"CHANGE_KEY": "OtherKey"}]},
+            "OtherKey": {"icon": "other.png", "on_press_actions": [{"TYPE_TEXT": "hi"}]},
+        }
+        open(os.path.join(workdir, "other.png"), "wb").close()
+        cfg = parsed(workdir, config(keys))
+        factory = LayoutFactory(config_data=cfg.raw_config, device=device,
+                                action_executor=executor)
+        factory.create_layouts()
+        executor.set_key_builder(factory.build_key)
+
+        executor.execute_action((ActionType.CHANGE_KEY, "OtherKey"), device=device, key_number=3)
+
+        device.set_key_image.assert_called_with(3, os.path.join(workdir, "other.png"))
+        callbacks = device.set_per_key_callback.call_args.kwargs
+        callbacks['on_press'](device, 3)
+        system.type_text.assert_called_once_with("hi")
+
+    def test_an_unknown_name_is_still_an_image_path(self, workdir, device):
+        executor = ActionExecutor(Mock(), Mock())
+        cfg = parsed(workdir, config())
+        factory = LayoutFactory(config_data=cfg.raw_config, device=device,
+                                action_executor=executor)
+        executor.set_key_builder(factory.build_key)
+
+        executor.execute_action((ActionType.CHANGE_KEY, "/img/x.png"), device=device, key_number=2)
+
+        device.set_key_image.assert_called_with(2, "/img/x.png")
 
 
 class TestThroughApplication:
@@ -352,7 +417,7 @@ class TestThroughApplication:
         app = self.initialize(workdir, config(keys, layouts), device)
 
         assert app.is_initialized()
-        assert device.set_key_image.call_count == 15
+        assert device.set_key_pil_image.call_count == 15
 
     def test_unicode_keys_initialize(self, workdir, device):
         keys = {"Ключ": key("日本 🚀")}

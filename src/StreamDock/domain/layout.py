@@ -40,6 +40,15 @@ class Layout:
         if total_operations > 15:
             raise ValueError("Layout must contain at most 15 total operations (keys + clears)")
 
+    def prepare(self):
+        """
+        Render every key's image without touching the device.
+
+        Callers do this before taking the device lock, so apply() only writes.
+        """
+        for key in self.keys:
+            key.prepare()
+
     def apply(self):
         """
         Apply this layout to the device.
@@ -54,7 +63,7 @@ class Layout:
 
         # Clear specified keys (both icons and callbacks)
         for key_number in self.clear_keys:
-            self.device.cleaerIcon(key_number)
+            self.device.clear_icon(key_number)
             # Get the logical key number for callback clearing
             logical_key = key_number  # Will be mapped in clear_key_callback if needed
             logical_key = Key.KEY_MAPPING.get(key_number, key_number)

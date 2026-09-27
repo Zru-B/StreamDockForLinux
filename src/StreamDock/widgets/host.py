@@ -41,6 +41,17 @@ def error_tile(widget_id: str, size: Tuple[int, int] = KEY_SIZE) -> Image.Image:
     return image
 
 
+def _composed(widget_id: str, appearance: Appearance, state: Optional[str], badge: Optional[str],
+              drawn: Optional[Image.Image]) -> Optional[Image.Image]:
+    """compose(), with the error tile when the key's icon can't be loaded."""
+    frame = compose(appearance, state, badge, drawn, KEY_SIZE)
+    if frame is None and appearance.replaces_drawing:
+        # The widget draws nothing when an icon replaces its drawing, so a
+        # missing icon would otherwise leave the placeholder up for good.
+        return error_tile(widget_id)
+    return frame
+
+
 @dataclass
 class _Instance:
     key_name: str
@@ -105,6 +116,9 @@ class WidgetHost:
         # widgets stay shown until the next layout says otherwise.
         self._shown: Set[str] = set()
         self._slot_digests: Dict[int, bytes] = {}
+        # The digest of the frame frame_for() last handed out per key, i.e.
+        # what Layout.apply wrote; None if two different frames went out.
+        self._handed_out: Dict[str, Optional[bytes]] = {}
         self._run_exclusive: Optional[Callable[[Callable[[], Any]], Any]] = None
         self._is_locked: Callable[[], bool] = lambda: False
 
@@ -149,6 +163,7 @@ class WidgetHost:
         only the key's images keeps it running too; the key is recomposed.
         """
         recompose = []
+        stopped = []
         with self._lock:
             for key_name in list(self._instances):
                 instance = self._instances[key_name]
@@ -156,13 +171,20 @@ class WidgetHost:
                 if wanted is None or wanted.widget_id != instance.widget_id or \
                         self._resolved(wanted) != instance.options or \
                         wanted.appearance.replaces_drawing != instance.appearance.replaces_drawing:
-                    self._stop(self._instances.pop(key_name))
+                    # Stopped after the lock is released, like shutdown(): a
+                    # stop can wait seconds on a child process.
+                    stopped.append(self._instances.pop(key_name))
+                    # The replacement is a new, unstarted runner: the next
+                    # layout must start and show it even if the key stayed put.
+                    self._shown.discard(key_name)
                 elif wanted.appearance != instance.appearance:
                     instance.appearance = wanted.appearance
                     recompose.append((key_name, instance))
             for key_name, wanted in keys.items():
                 if key_name not in self._instances:
                     self._instances[key_name] = self._start(key_name, wanted)
+        for instance in stopped:
+            self._stop(instance)
         for key_name, instance in recompose:
             self._refresh(key_name, instance)
 
@@ -182,7 +204,13 @@ class WidgetHost:
     def frame_for(self, key_name: str) -> Image.Image:
         with self._lock:
             instance = self._instances.get(key_name)
-            return instance.frame if instance else error_tile('')
+            if instance is None:
+                return error_tile('')
+            if self._handed_out.get(key_name, instance.digest) != instance.digest:
+                self._handed_out[key_name] = None
+            else:
+                self._handed_out[key_name] = instance.digest
+            return instance.frame
 
     def events_for(self, key_name: str) -> Tuple[str, ...]:
         with self._lock:
@@ -221,8 +249,10 @@ class WidgetHost:
         """
         Record which widget keys are now on the device, by slot.
 
-        Called from Layout.apply after every key was written, so each widget
-        slot already shows its instance's current frame.
+        Called from Layout.apply after every key was written. A slot is
+        recorded with the frame frame_for() handed out for it, not the
+        instance's current one: a frame arriving mid-apply is newer than what
+        was written, and must still be pushed.
         """
         visible: Dict[str, List[int]] = {}
         for slot, key_name in slots.items():
@@ -231,9 +261,10 @@ class WidgetHost:
             before, self._shown = self._shown, set(visible)
             self._visible = visible
             self._slot_digests = {
-                slot: self._instances[key_name].digest
+                slot: self._handed_out.get(key_name, self._instances[key_name].digest)
                 for slot, key_name in slots.items() if key_name in self._instances
             }
+            self._handed_out = {}
             instances = dict(self._instances)
         for key_name, instance in instances.items():
             if instance.runner is None:
@@ -267,7 +298,7 @@ class WidgetHost:
 
         appearance = wanted.appearance
         instance = _Instance(key_name, spec.id, options, None,
-                             compose(appearance, None, None, None, KEY_SIZE) or placeholder_tile(),
+                             _composed(spec.id, appearance, None, None, None) or placeholder_tile(),
                              events=spec.events, appearance=appearance, window_focus=spec.window_focus)
         instance.runner = self._runner_factory(
             spec, options, KEY_SIZE,
@@ -316,7 +347,7 @@ class WidgetHost:
 
     def _refresh(self, key_name: str, instance: _Instance) -> None:
         """Recompose the key from the widget's latest drawing, state and badge."""
-        frame = compose(instance.appearance, instance.state, instance.badge, instance.drawn, KEY_SIZE)
+        frame = _composed(instance.widget_id, instance.appearance, instance.state, instance.badge, instance.drawn)
         if frame is not None:
             self._on_frame(key_name, instance, frame)
 

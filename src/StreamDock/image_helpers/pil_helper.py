@@ -1,6 +1,7 @@
+import functools
+import io
 import logging
 import os
-import tempfile
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -15,11 +16,11 @@ except ImportError:
 
 def convert_svg_to_png(svg_path, target_size=None):
     """
-    Convert SVG file to PNG format.
+    Rasterise an SVG file to PNG in memory.
 
     :param svg_path: Path to the SVG file
     :param target_size: Optional tuple (width, height) for the output PNG
-    :return: Path to the temporary PNG file
+    :return: The PNG data as bytes
     """
     if not SVG_SUPPORT:
         # Provide clear, highly visible error message
@@ -41,31 +42,16 @@ def convert_svg_to_png(svg_path, target_size=None):
             "Install with: pip install cairosvg"
         )
 
-    # Create a temporary PNG file
-    temp_fd, temp_png_path = tempfile.mkstemp(suffix='.png', prefix='svg_converted_')
-    os.close(temp_fd)
-
     try:
-        # Convert SVG to PNG
         if target_size:
-            cairosvg.svg2png(
+            return cairosvg.svg2png(
                 url=svg_path,
-                write_to=temp_png_path,
+                write_to=None,
                 output_width=target_size[0],
                 output_height=target_size[1]
             )
-        else:
-            cairosvg.svg2png(
-                url=svg_path,
-                write_to=temp_png_path
-            )
-
-        return temp_png_path
+        return cairosvg.svg2png(url=svg_path, write_to=None)
     except Exception as e:
-        # Clean up temp file on error
-        if os.path.exists(temp_png_path):
-            os.remove(temp_png_path)
-
         # Provide clear error message
         error_msg = (
             "\n" + "="*80 + "\n"
@@ -349,32 +335,40 @@ def render_key_image(
                 pass
 
 
+# Icons are re-read on every page switch and SVGs re-rasterised each time;
+# keyed on mtime and file size so an edited file is picked up.
+_IMAGE_CACHE_SIZE = 128
+
+
+@functools.lru_cache(maxsize=_IMAGE_CACHE_SIZE)
+def _load_image_cached(image_path, mtime_ns, file_size, target_size):  # pylint: disable=unused-argument
+    _, ext = os.path.splitext(image_path)
+    if ext.lower() in ['.svg', '.svgz']:
+        image = Image.open(io.BytesIO(convert_svg_to_png(image_path, target_size)))
+    else:
+        image = Image.open(image_path)
+    image.load()
+    return image
+
+
 def load_image(image_path, target_size=None):
     """
     Load an image from path, with automatic SVG to PNG conversion.
 
+    The image is a copy of a cached one, so callers may modify it freely.
+
     :param image_path: Path to the image file (supports PNG, JPG, GIF, SVG, etc.)
     :param target_size: Optional tuple (width, height) for SVG rendering
-    :return: Tuple of (PIL.Image object, temporary_file_path or None)
+    :return: Tuple of (PIL.Image object, None); the second item is kept for
+             callers that still clean up a temporary file
     """
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image file not found: {image_path}")
 
-    # Check if file is SVG
-    _, ext = os.path.splitext(image_path)
-    is_svg = ext.lower() in ['.svg', '.svgz']
-
-    temp_file = None
-
-    if is_svg:
-        # Convert SVG to PNG
-        temp_file = convert_svg_to_png(image_path, target_size)
-        image = Image.open(temp_file)
-    else:
-        # Load image directly
-        image = Image.open(image_path)
-
-    return image, temp_file
+    stat = os.stat(image_path)
+    image = _load_image_cached(image_path, stat.st_mtime_ns, stat.st_size,
+                               tuple(target_size) if target_size else None)
+    return image.copy(), None
 
 
 def _create_image(image_format, background):

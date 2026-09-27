@@ -78,12 +78,12 @@ class SystemInterface(ABC):
     # ==================== Lock Monitoring ====================
 
     @abstractmethod
-    def poll_lock_state(self) -> bool:
+    def poll_lock_state(self) -> Optional[bool]:
         """
         Synchronously check if the screen is currently locked.
 
         Returns:
-            True if locked, False if unlocked or unknown
+            True if locked, False if unlocked, None if the state is unknown
         """
         pass
 

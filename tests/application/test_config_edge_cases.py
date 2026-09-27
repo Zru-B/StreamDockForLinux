@@ -8,6 +8,7 @@ inside a loader.
 """
 
 import os
+import re
 import tempfile
 
 import pytest
@@ -217,7 +218,7 @@ class TestKeys:
         ("not a dict", "definition must be a dictionary"),
         ([1, 2], "definition must be a dictionary"),
         ({"on_press_actions": [{"KEY_PRESS": "a"}]}, "must have either 'icon' or 'text'"),
-        ({"icon": "a.png", "text": "A"}, "cannot have both 'icon' and 'text'"),
+        ({"icon": "a.png", "text": "A"}, "Icon file not found"),
         ({"text": 42, "on_press_actions": [{"KEY_PRESS": "a"}]}, "text field must be a string"),
         ({"text": "", "on_press_actions": [{"KEY_PRESS": "a"}]}, "text field cannot be empty"),
         ({"text": "   ", "on_press_actions": [{"KEY_PRESS": "a"}]}, "text field cannot be empty"),
@@ -324,9 +325,11 @@ class TestActions:
         ("KEY_PRESS", "actions must be a list"),
         ({"KEY_PRESS": "a"}, "actions must be a list"),
         (42, "actions must be a list"),
-        ([42], "must be a dictionary or string"),
-        ([None], "must be a dictionary or string"),
-        ([[1, 2]], "must be a dictionary or string"),
+        ([42], "must be a mapping like {ACTION: value}"),
+        ([None], "must be a mapping like {ACTION: value}"),
+        ([[1, 2]], "must be a mapping like {ACTION: value}"),
+        (["KEY_PRESS"], "must be a mapping like {ACTION: value}"),
+        ([], "must have at least one action"),
         ([{}], "exactly one key-value pair"),
         ([{"KEY_PRESS": "a", "TYPE_TEXT": "b"}], "exactly one key-value pair"),
         ([{"NOT_AN_ACTION": "a"}], "invalid action type"),
@@ -345,15 +348,107 @@ class TestActions:
         assert "KeyA" in message and "[1]" in message
 
     def test_lowercase_action_names_pass_validation(self, workdir):
-        """Known gap: the factory is case-sensitive, so this is dropped later."""
+        """The factory matches names case-insensitively too, so this runs."""
         config = base()
         config["keys"]["KeyA"]["on_press_actions"] = [{"key_press": "a"}]
         ConfigurationManager.validate_data(config, os.path.join(workdir, "config.yml"))
 
-    def test_an_empty_action_list_is_allowed(self, workdir):
+    def test_an_empty_action_list_is_rejected(self, workdir):
+        # An empty list looks configured but does nothing when pressed.
         config = base()
         config["keys"]["KeyA"]["on_release_actions"] = []
+        message = expect(workdir, config, "must have at least one action")
+        assert "on_release_actions" in message
+
+
+class TestActionParameters:
+    """Each action's parameter, checked against what its handler accepts."""
+
+    @pytest.mark.parametrize("action, fragment", [
+        ({"WAIT": -1}, "WAIT must be a number of seconds"),
+        ({"WAIT": True}, "WAIT must be a number of seconds"),
+        ({"WAIT": "1"}, "WAIT must be a number of seconds"),
+        ({"KEY_PRESS": ""}, "KEY_PRESS must be a non-empty string"),
+        ({"KEY_PRESS": ["CTRL", "C"]}, "KEY_PRESS must be a non-empty string"),
+        ({"TYPE_TEXT": ""}, "TYPE_TEXT must be a non-empty string"),
+        ({"TYPE_TEXT": 42}, "TYPE_TEXT must be a non-empty string"),
+        ({"EXECUTE_COMMAND": ["firefox"]}, "EXECUTE_COMMAND must be a non-empty string"),
+        ({"EXECUTE_COMMAND": "  "}, "EXECUTE_COMMAND must be a non-empty string"),
+        ({"CHANGE_LAYOUT": "Gone"}, "references undefined layout: 'Gone'"),
+        ({"CHANGE_LAYOUT": {"layout": "Gone"}}, "references undefined layout: 'Gone'"),
+        ({"CHANGE_LAYOUT": {"clear_all": True}}, "must be a layout name"),
+        ({"CHANGE_LAYOUT": 3}, "must be a layout name"),
+        ({"CHANGE_KEY_TEXT": 42}, "CHANGE_KEY_TEXT must be a text or a mapping"),
+        ({"CHANGE_KEY": ""}, "CHANGE_KEY must be a key name"),
+        ({"DBUS": 42}, "DBUS must be a command or a mapping"),
+        ({"DBUS": {"method": "x"}}, "mapping must have an 'action' name"),
+        ({"change_key_image": "missing.png"}, "CHANGE_KEY_IMAGE image not found"),
+        ({"CHANGE_KEY_TEXT": {"text": "x", "icon": "missing.png"}}, "CHANGE_KEY_TEXT icon not found"),
+    ])
+    def test_rejected(self, workdir, action, fragment):
+        config = base()
+        config["keys"]["KeyA"]["on_press_actions"] = [action]
+        message = expect(workdir, config, fragment)
+        assert "KeyA" in message and "on_press_actions[0]" in message
+
+    @pytest.mark.parametrize("action", [
+        {"WAIT": 0},
+        {"WAIT": 0.5},
+        {"TYPE_TEXT": " "},
+        {"CHANGE_LAYOUT": "Main"},
+        {"CHANGE_LAYOUT": {"layout": "Main", "clear_all": True}},
+        {"CHANGE_KEY": "KeyA"},
+        {"CHANGE_KEY": "/legacy/image.png"},
+        {"CHANGE_KEY_TEXT": "Muted"},
+        {"CHANGE_KEY_TEXT": {"text": "Muted"}},
+        {"DBUS": {"action": "play_pause"}},
+        {"DBUS": "dbus-send --session x"},
+        {"DEVICE_BRIGHTNESS_UP": ""},
+        {"DEVICE_BRIGHTNESS_DOWN": None},
+    ])
+    def test_accepted(self, workdir, action):
+        config = base()
+        config["keys"]["KeyA"]["on_press_actions"] = [action]
         ConfigurationManager.validate_data(config, os.path.join(workdir, "config.yml"))
+
+    def test_action_images_resolve_against_the_config_directory(self, workdir):
+        # Guards relative CHANGE_KEY_IMAGE / CHANGE_KEY_TEXT icons meaning the cwd.
+        os.makedirs(os.path.join(workdir, "img"))
+        for name in ("on.png", "off.png"):
+            open(os.path.join(workdir, "img", name), "wb").close()
+        config = base()
+        config["keys"]["KeyA"]["on_press_actions"] = [
+            {"CHANGE_KEY_IMAGE": "img/on.png"},
+            {"change_key_text": {"text": "x", "icon": "img/off.png"}},
+        ]
+
+        parsed = ConfigurationManager.parse_data(config, os.path.join(workdir, "config.yml"))
+
+        actions = parsed.keys_config["KeyA"]["on_press_actions"]
+        assert actions[0]["CHANGE_KEY_IMAGE"] == os.path.join(workdir, "img", "on.png")
+        assert actions[1]["change_key_text"]["icon"] == os.path.join(workdir, "img", "off.png")
+        # The caller's document keeps what the user wrote.
+        assert config["keys"]["KeyA"]["on_press_actions"][0]["CHANGE_KEY_IMAGE"] == "img/on.png"
+
+    def test_the_actions_reference_examples_validate(self, workdir):
+        # Guards the documented examples drifting from what the validator accepts.
+        doc = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "actions_reference.md")
+        with open(doc, encoding="utf-8") as f:
+            blocks = re.findall(r"```yaml\n(.*?)```", f.read(), re.S)
+        confdir = os.path.join(workdir, "conf")
+        os.makedirs(os.path.join(workdir, "img"))
+        os.makedirs(confdir)
+        open(os.path.join(workdir, "img", "mute_on.png"), "wb").close()
+        actions = []
+        for block in blocks:
+            data = yaml.safe_load(block)
+            actions.extend(data["on_press_actions"] if isinstance(data, dict) else data)
+        assert len(actions) > 20
+        config = base()
+        config["layouts"]["Media_Layout"] = {"keys": [{1: "KeyA"}]}
+        config["layouts"]["Settings_Layout"] = {"keys": [{1: "KeyA"}]}
+        config["keys"]["KeyA"]["on_press_actions"] = actions
+        ConfigurationManager.validate_data(config, os.path.join(confdir, "config.yml"))
 
 
 class TestLayouts:
@@ -426,6 +521,9 @@ class TestWindowRules:
         ({"window_name": "x", "layout": ["Main"]}, "'layout' must be text"),
         ({"window_name": "x", "layout": "Main", "is_regex": "yes"}, "must be a boolean"),
         ({"window_name": "x", "layout": "Main", "match_field": "colour"}, "invalid match_field"),
+        ({"window_name": "x", "layout": "Main", "priority": "high"}, "'priority' must be a whole number"),
+        ({"window_name": "x", "layout": "Main", "priority": True}, "'priority' must be a whole number"),
+        ({"window_name": "x", "layout": "Main", "priority": 1.5}, "'priority' must be a whole number"),
     ])
     def test_rejected(self, workdir, rule, fragment):
         expect(workdir, {**base(), "windows_rules": {"R": rule}}, fragment)

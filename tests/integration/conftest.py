@@ -17,7 +17,6 @@ def mock_hardware():
     hardware.open_device = Mock(return_value=True)
     hardware.close_device = Mock()
     hardware.set_brightness = Mock()
-    hardware.send_image = Mock()
     hardware.clear_device = Mock()
     hardware.is_device_connected = Mock(return_value=True)
     return hardware

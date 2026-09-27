@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from StreamDock.application.config_document import (
+    DEFAULT_BACKGROUND_COLOR,
     DEFAULT_FONT_SIZE,
+    DEFAULT_TEXT_COLOR,
     KeyDefinition,
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
+from StreamDock.image_helpers.pil_helper import render_key_image
 from StreamDock.ui.styles import get_colors
 from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
 from StreamDock.widgets.appearance import Appearance
@@ -37,6 +40,7 @@ from PyQt6.QtGui import (
     QPainter,
     QPalette,
     QPen,
+    QImage,
     QPixmap,
     QShortcut,
 )
@@ -65,6 +69,8 @@ COLORS = get_colors()
 # Carried by a row being dragged to a new position in its list. Its own
 # format, so a row cannot be dropped on anything else that takes text.
 ACTION_MIME_TYPE = "application/x-streamdock-action"
+# Carried by a key being dragged to another square of the grid.
+KEY_MIME_TYPE = "application/x-streamdock-key-position"
 
 
 def _font_size(value) -> int:
@@ -82,6 +88,17 @@ def _font_size(value) -> int:
     except (TypeError, ValueError):
         return DEFAULT_FONT_SIZE
     return size if size > 0 else DEFAULT_FONT_SIZE
+
+
+def _css_color(value, default: str) -> str:
+    """
+    A configured colour as #rrggbb for a stylesheet, or the default.
+
+    The value comes straight from the file; interpolated raw, a stray ';' or
+    '}' would inject rules into the square's stylesheet.
+    """
+    color = QColor(value) if isinstance(value, str) else QColor()
+    return color.name() if color.isValid() else QColor(default).name()
 
 
 def _rgba(color: str, alpha: int) -> str:
@@ -325,37 +342,18 @@ class KeySquare(QFrame):
         if key_def.is_widget():
             self._show_widget(key_def)
 
-        elif key_def.is_icon_based():
-            # Icon mode: fill entire square with icon.
+        elif key_def.has_icon():
             # Relative paths resolve against the config file's directory, the
             # same rule the runtime applies, so the preview matches the device.
             icon_path = Path(resolve_icon_path(key_def.icon, self.config_dir))
-            
-            if icon_path.exists():
-                original_pixmap = QPixmap(str(icon_path))
-                
-                if not original_pixmap.isNull():
-                    # Scale icon to fill entire 112x112 square
-                    scaled_pixmap = original_pixmap.scaled(
-                        112, 112,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    
-                    # Create canvas and fill with black
-                    canvas = QPixmap(112, 112)
-                    canvas.fill(QColor(0, 0, 0))
-                    
-                    # Center the icon
-                    x = (112 - scaled_pixmap.width()) // 2
-                    y = (112 - scaled_pixmap.height()) // 2
-                    
-                    painter = QPainter(canvas)
-                    painter.drawPixmap(x, y, scaled_pixmap)
-                    painter.end()
-                    
-                    self.label.setPixmap(canvas)
-                    
+            if not icon_path.exists():
+                self._show_error("Not Found")
+            else:
+                pixmap = self._icon_pixmap(key_def, icon_path)
+                if pixmap is None:
+                    self._show_error("Error")
+                else:
+                    self.label.setPixmap(pixmap)
                     # No border, no padding - just the icon
                     self.setStyleSheet("""
                         KeySquare {
@@ -367,18 +365,9 @@ class KeySquare(QFrame):
                         }
                     """)
                     self.label.setStyleSheet("background-color: #000000; padding: 0px; margin: 0px;")
-                else:
-                    # Failed to load
-                    self._show_error("Error")
-            else:
-                # Icon not found
-                self._show_error("Not Found")
-        
+
         elif key_def.has_text():
             # Text mode: centered text with specified colors.
-            # has_text() rather than is_text_based() so a key carrying both an
-            # icon and text still renders something; the icon branch above
-            # already handled the case where the icon loaded.
             self.label.setPixmap(QPixmap())  # Clear any pixmap
             self.label.setText(str(key_def.text))
             
@@ -391,8 +380,8 @@ class KeySquare(QFrame):
             self.label.setFont(font)
             
             # Fill entire square with background color
-            bg_color = key_def.background_color
-            text_color = key_def.text_color
+            bg_color = _css_color(key_def.background_color, DEFAULT_BACKGROUND_COLOR)
+            text_color = _css_color(key_def.text_color, DEFAULT_TEXT_COLOR)
             
             self.setStyleSheet(f"""
                 KeySquare {{
@@ -426,6 +415,40 @@ class KeySquare(QFrame):
         self.update()
         self.label.update()
     
+    @staticmethod
+    def _icon_pixmap(key_def: KeyDefinition, icon_path: Path) -> Optional[QPixmap]:
+        """
+        The key as the device draws it: the icon centred on black, and a label
+        drawn over it by the runtime's own renderer when the key has one.
+        """
+        text = key_def.text if isinstance(key_def.text, str) else ""
+        if text.strip():
+            try:
+                image = render_key_image(
+                    size=(112, 112), icon_path=str(icon_path), text=text,
+                    text_color=key_def.text_color,
+                    background_color=key_def.background_color,
+                    font_size=_font_size(key_def.font_size), bold=bool(key_def.bold),
+                    text_position=key_def.text_position).convert("RGBA")
+                data = image.tobytes("raw", "RGBA")
+                return QPixmap.fromImage(QImage(data, image.width, image.height,
+                                                QImage.Format.Format_RGBA8888).copy())
+            except Exception:  # pylint: disable=broad-exception-caught
+                # The runtime falls back to the bare icon too.
+                pass
+
+        original = QPixmap(str(icon_path))
+        if original.isNull():
+            return None
+        scaled = original.scaled(112, 112, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        canvas = QPixmap(112, 112)
+        canvas.fill(QColor(0, 0, 0))
+        painter = QPainter(canvas)
+        painter.drawPixmap((112 - scaled.width()) // 2, (112 - scaled.height()) // 2, scaled)
+        painter.end()
+        return canvas
+
     def _show_error(self, message: str):
         """Show error message on square"""
         self.label.setText(message)
@@ -480,7 +503,7 @@ class KeySquare(QFrame):
         # Start drag
         drag = QDrag(self)
         mime_data = QMimeData()
-        mime_data.setText(str(self.position))
+        mime_data.setData(KEY_MIME_TYPE, str(self.position).encode())
         drag.setMimeData(mime_data)
         
         # Create drag pixmap (snapshot of this square)
@@ -503,17 +526,22 @@ class KeySquare(QFrame):
             A key position, or None when the drag is not one of ours or
             started on this very square
         """
-        if not mime.hasText():
+        if not mime.hasFormat(KEY_MIME_TYPE):
             return None
         try:
-            position = int(mime.text())
+            position = int(bytes(mime.data(KEY_MIME_TYPE)).decode())
         except ValueError:
             return None
         return None if position == self.position else position
 
+    def _from_this_grid(self, event) -> bool:
+        """True when the drag started on a square of this same window."""
+        source = event.source()
+        return isinstance(source, KeySquare) and source.window() is self.window()
+
     def dragEnterEvent(self, event):
         """Take any key dragged from another square"""
-        if self.dragged_position(event.mimeData()) is None:
+        if not self._from_this_grid(event) or self.dragged_position(event.mimeData()) is None:
             event.ignore()
             return
 
@@ -531,7 +559,7 @@ class KeySquare(QFrame):
         """Move the dragged key here, trading places with whatever is here"""
         self._clear_highlight()
         from_position = self.dragged_position(event.mimeData())
-        if from_position is None:
+        if from_position is None or not self._from_this_grid(event):
             event.ignore()
             return
 
@@ -852,6 +880,7 @@ class LayoutListWidget(SidebarSection):
                           emit(self.delete_layout_clicked))
 
         menu.exec(self.list_widget.mapToGlobal(position))
+        menu.deleteLater()
 
     def set_layouts(self, layout_names: list, default_layout: str = None,
                     captions: dict = None, unreachable=(), tooltips: dict = None):
@@ -1246,6 +1275,7 @@ class WindowRulesWidget(SidebarSection):
                           lambda: self.delete_rule_clicked.emit(rule_name))
 
         menu.exec(self.list_widget.mapToGlobal(position))
+        menu.deleteLater()
 
     def move(self, rule_name: str, step: int) -> None:
         """Move a rule up (-1) or down (+1) in the order."""

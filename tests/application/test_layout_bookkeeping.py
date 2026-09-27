@@ -120,3 +120,10 @@ def test_is_regex_round_trips_and_bad_regex_fails_validation():
     assert doc.validate() == []
     doc.window_rules["Idea"].window_name = "(["
     assert any("invalid regular expression" in problem for problem in doc.validate())
+
+
+def test_all_layout_usage_matches_layout_usage_for_every_layout():
+    """The sidebar builds usage in one pass; it must agree with the per-layout answer."""
+    doc = document()
+
+    assert doc.all_layout_usage() == {name: doc.layout_usage(name) for name in doc.layouts}

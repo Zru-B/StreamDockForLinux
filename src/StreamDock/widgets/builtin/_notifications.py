@@ -20,10 +20,8 @@ exactly the messages it exists to report.
 
 import json
 import logging
-import subprocess
-import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from streamdock_sdk import Option, Widget
 from StreamDock.widgets.builtin import _common
@@ -67,71 +65,27 @@ def parse_event(line: str) -> Optional[NotificationEvent]:
     try:
         app, replaces_id, _icon, summary, body = data[:5]
         hints = data[6] if len(data) > 6 and isinstance(data[6], dict) else {}
+        replaces_id = int(replaces_id or 0)
     except (ValueError, TypeError):
         return None
     entry = hints.get('desktop-entry')
     entry = entry.get('data') if isinstance(entry, dict) else entry
     return NotificationEvent('notify', sender, str(app), str(summary), str(body),
-                             entry if isinstance(entry, str) else '', int(replaces_id or 0))
+                             entry if isinstance(entry, str) else '', replaces_id)
 
 
-class NotificationHub:
-    """The one monitor process, started by the first subscriber and stopped with the last."""
+class NotificationHub(_common.ProcessHub):
+    """
+    The one monitor process, started by the first subscriber and stopped with the last.
+
+    ``callback(event)`` per event; ``callback(None)`` if the bus can't be watched.
+    """
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self._subscribers: List[Callable[[Optional[NotificationEvent]], None]] = []
-        self._stopping: Optional[threading.Event] = None
-        self._process: Optional[subprocess.Popen] = None
-
-    def subscribe(self, callback: Callable[[Optional[NotificationEvent]], None]) -> None:
-        """``callback(event)`` per event; ``callback(None)`` if the bus can't be watched."""
-        with self._lock:
-            self._subscribers.append(callback)
-            if self._stopping is None:
-                self._stopping = threading.Event()
-                threading.Thread(target=self._run, args=(self._stopping,), name='notification-monitor',
-                                 daemon=True).start()
-
-    def unsubscribe(self, callback) -> None:
-        with self._lock:
-            if callback in self._subscribers:
-                self._subscribers.remove(callback)
-            if not self._subscribers and self._stopping is not None:
-                self._stopping.set()
-                self._stopping = None
-                if self._process is not None:
-                    self._process.terminate()
-
-    def _publish(self, event: Optional[NotificationEvent]) -> None:
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for callback in subscribers:
-            try:
-                callback(event)
-            except Exception:  # pylint: disable=broad-exception-caught
-                logger.exception('notification subscriber failed')
-
-    def _run(self, stopping: threading.Event) -> None:
         command = ['busctl', '--user', 'monitor', '--json=short']
         for match in _MATCHES:
             command += ['--match', match]
-        while not stopping.is_set():
-            try:
-                process = subprocess.Popen(command, stdout=subprocess.PIPE,  # pylint: disable=consider-using-with
-                                           stderr=subprocess.DEVNULL, text=True)
-            except OSError:
-                logger.warning('busctl not found; notification counters are unavailable')
-                self._publish(None)
-                return
-            self._process = process
-            for line in process.stdout:
-                event = parse_event(line)
-                if event is not None:
-                    self._publish(event)
-            if process.wait() != 0 and not stopping.is_set():
-                self._publish(None)
-            stopping.wait(5)
+        super().__init__(command, 'notification-monitor', parse_event)
 
 
 HUB = NotificationHub()

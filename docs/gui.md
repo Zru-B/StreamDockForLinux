@@ -18,8 +18,8 @@ startup when a configuration is loaded.
 | Connect / Disconnect | Open or release the device. |
 | Apply to Device | Send the configuration currently open in the window. |
 
-If the list is empty, check that you are in the `plugdev` group and that the
-udev rule is installed — see [Installation](installation.md).
+If the list is empty, check that the udev rule is installed and replug the
+deck — see [Installation](installation.md).
 
 ## Plugging and unplugging
 
@@ -57,9 +57,16 @@ there is a brief flicker rather than the screen going dark.
 right after an apply, the device already matches what is on screen, so the
 button is greyed out. It becomes available again as soon as you edit
 something, open a different configuration file, or the device is unplugged and
-reconnected. Note that saving does not enable it and applying does not clear
+reconnected. Connecting while the window holds unsaved edits leaves it enabled:
+the device loads the file on disk, not what is on screen. Note that saving does not enable it and applying does not clear
 the modified marker in the title bar — writing the file and pushing to the
 device stay independent.
+
+## Icons with a label
+
+An icon key has an optional **Label**. Fill it in and the device draws the text
+over the icon, where **Label Position** puts it, in the chosen colour, size and
+weight; the grid previews it the same way. Leave it empty for a plain icon.
 
 ## Widgets
 
@@ -73,8 +80,15 @@ up the change. To put a widget on a key, open the key and choose
 
 The application opens the same configuration each time. When you open a
 different file it asks whether that should become the new default; answering
-*No* keeps the current one. Without a stored default it looks for `config.yml`
-in the working directory, then next to `main.py`, and otherwise starts empty.
+*No* keeps the current one. Without a stored default it uses the `config.yml`
+installed next to the program, and otherwise starts empty. The GUI never picks
+up a `config.yml` from the working directory — pass the file on the command
+line to open one. (`--headless` does still look in the working directory first,
+and logs which file it chose.)
+
+**Save As** into another directory rewrites relative icon paths so they still
+point at the same images; a path that would leave the new directory is written
+absolute.
 
 ## Appearance
 
@@ -183,7 +197,8 @@ machine with no display. Press Ctrl+C to stop.
 ## One instance at a time
 
 Only one process can drive the device. A second launch raises the existing
-window rather than starting again, and if something else already holds the
+window rather than starting again (the check uses a socket private to your
+user, so other users on the same machine are unaffected), and if something else already holds the
 device the application says so and lets you keep editing configurations with
 connecting disabled.
 

@@ -192,3 +192,68 @@ class TestLifecycle:
                 watcher.stop()
 
         assert len(seen[0]) == 1
+
+
+class TestOverlappingScans:
+    """A debounce timer, refresh() and the poll loop can all scan at once."""
+
+    def test_an_older_scan_cannot_overwrite_a_newer_one(self):
+        # The slow first scan used to commit last, reporting a device as
+        # still attached after the second scan had seen it unplugged.
+        device = make_device('/dev/hidraw0')
+        first_started, release_first = threading.Event(), threading.Event()
+        calls = []
+
+        def discover(_hardware=None):
+            calls.append(None)
+            if len(calls) == 1:
+                first_started.set()
+                release_first.wait(2)
+                return [device]
+            return []
+
+        seen = []
+        with patch('StreamDock.application.device_watcher.discover_devices',
+                   side_effect=discover):
+            watcher = DeviceWatcher(seen.append)
+            watcher._running = True
+            older = threading.Thread(target=watcher.refresh)
+            older.start()
+            assert first_started.wait(2)
+            newer = threading.Thread(target=watcher.refresh)
+            newer.start()
+            time.sleep(0.05)
+            release_first.set()
+            older.join(2)
+            newer.join(2)
+
+        assert watcher.devices() == []
+        assert [len(devices) for devices in seen] == [1, 0]
+
+    def test_a_short_poll_interval_does_not_spin(self):
+        # Below 0.1s the loop's sleep became zero iterations: a busy loop.
+        scans = []
+
+        def discover(_hardware=None):
+            scans.append(None)
+            return []
+
+        real_import = __builtins__['__import__'] if isinstance(__builtins__, dict) \
+            else __builtins__.__import__
+
+        def no_pyudev(name, *args, **kwargs):
+            if name == 'pyudev':
+                raise ImportError("no pyudev")
+            return real_import(name, *args, **kwargs)
+
+        with patch('StreamDock.application.device_watcher.discover_devices',
+                   side_effect=discover), \
+             patch('builtins.__import__', side_effect=no_pyudev):
+            watcher = DeviceWatcher(lambda devices: None, poll_interval=0.05)
+            watcher.start()
+            try:
+                time.sleep(0.3)
+            finally:
+                watcher.stop()
+
+        assert len(scans) < 20

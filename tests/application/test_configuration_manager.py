@@ -214,7 +214,7 @@ streamdock:
             manager.load()
     
     def test_validate_key_both_icon_and_text(self, temp_dir, test_icon_path):
-        """Error handling: Key cannot have both icon and text."""
+        """Icon + text is a supported key: the text is drawn over the icon."""
         content = f"""
 streamdock:
   keys:
@@ -232,8 +232,10 @@ streamdock:
         config_path = self.create_config_file(temp_dir, content)
         manager = ConfigurationManager(config_path)
         
-        with pytest.raises(ConfigValidationError, match="cannot have both 'icon' and 'text' fields"):
-            manager.load()
+        config = manager.load()
+        key = config.keys_config['BadKey']
+        assert key['text'] == "Label"
+        assert key['icon'] == os.path.abspath(test_icon_path)
     
     def test_validate_icon_path_not_found(self, temp_dir):
         """Error handling: Icon file must exist."""

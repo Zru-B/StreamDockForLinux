@@ -4,10 +4,8 @@ import os
 import re
 import shlex
 import subprocess
-import tempfile
-import threading
 import time
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from StreamDock.business_logic.action_type import ActionType
 from StreamDock.domain.key import Key
@@ -96,6 +94,41 @@ def parse_desktop_file(desktop_file):
         logger.exception("Error parsing desktop file %s", desktop_path)
         return None
 
+def parse_action_list(action_configs) -> List[Tuple]:
+    """
+    Parse a list of {ACTION_TYPE: parameter} dicts into (ActionType, parameter) tuples.
+
+    Lives here rather than in the layout factory because CHANGE_KEY builds
+    keys at runtime and must parse their actions exactly as the factory does.
+    Action names are matched case-insensitively, as the validator accepts them.
+    """
+    actions: List[Tuple] = []
+    if not action_configs:
+        return actions
+
+    for index, action_config in enumerate(action_configs):
+        if not isinstance(action_config, dict):
+            # Only the shape: the value may be text the user types or runs.
+            logger.warning("Skipping action #%d: expected a mapping, got %s",
+                           index, type(action_config).__name__)
+            continue
+        for action_type_str, param in action_config.items():
+            name = action_type_str.upper() if isinstance(action_type_str, str) else action_type_str
+            try:
+                action_type = ActionType[name]
+            except KeyError:
+                logger.warning("Unknown action type: %r", action_type_str)
+                continue
+            # CHANGE_LAYOUT shorthand: a bare layout name. The name stays a
+            # string; the executor resolves it when the action runs, since
+            # layouts are not built yet while keys are being parsed.
+            if action_type is ActionType.CHANGE_LAYOUT and isinstance(param, str):
+                param = {'layout': param}
+            actions.append((action_type, param))
+
+    return actions
+
+
 def _parse_app_config(app_config):
     """Parse and normalize app_config from various formats."""
     force_new = False
@@ -104,8 +137,10 @@ def _parse_app_config(app_config):
     match_type = "contains"
 
     if isinstance(app_config, str):
-        command = [app_config]
-        class_name = app_config.lower()
+        # A string is a command line: "code --new-window" must run `code`
+        # with an argument, not look for a binary named "code --new-window".
+        command = shlex.split(app_config)
+        class_name = os.path.basename(command[0]).lower() if command else None
     elif isinstance(app_config, list):
         command = app_config
         class_name = app_config[0].lower()
@@ -124,9 +159,9 @@ def _parse_app_config(app_config):
         else:
             command = app_config.get("command")
             if isinstance(command, str):
-                command = [command]
+                command = shlex.split(command)
             if command:
-                class_name = app_config.get("class_name", command[0]).lower()
+                class_name = app_config.get("class_name", os.path.basename(command[0])).lower()
 
         match_type = app_config.get("match_type", "contains")
         force_new = app_config.get("force_new", False)
@@ -163,6 +198,9 @@ class ActionExecutor:
         self._action_handlers = {}
         self._layouts = {}  # layout_name -> Layout object, populated after factory creates layouts
         self._layout_switcher = None
+        self._key_builder = None
+        self._run_exclusive: Callable[[Callable[[], object]], object] = lambda operation: operation()
+        self._default_brightness = 50
         self._register_built_in_handlers()
 
     def _register_built_in_handlers(self):
@@ -195,26 +233,57 @@ class ActionExecutor:
         """
         self._layout_switcher = switcher
 
-    def execute_action(self, action: Tuple, device=None, key_number=None) -> None:
+    def set_run_exclusive(self, run_exclusive: Callable[[Callable[[], object]], object]) -> None:
+        """
+        Route device writes through the orchestrator's device lock.
+
+        Key images are multi-packet HID transfers; written from a key worker
+        while a layout or widget frame is being drawn, their packets interleave
+        and keys come up blank.
+        """
+        self._run_exclusive = run_exclusive
+
+    def set_default_brightness(self, brightness: int) -> None:
+        """Configured brightness, stepped from when the device has not reported one."""
+        self._default_brightness = brightness
+
+    def set_key_builder(self, builder: Callable[[str, int], Optional[Key]]) -> None:
+        """
+        Resolve CHANGE_KEY key names: builder(key_name, key_number) returns the
+        configured key built for that slot, or None for an unknown name.
+        """
+        self._key_builder = builder
+
+    def execute_action(self, action: Tuple, device=None, key_number=None) -> bool:
+        """Run one action; returns False when it could not run or raised."""
         if not isinstance(action, tuple) or len(action) != 2:
             logger.error("Invalid action format: %s. Expected (ActionType, parameter)", action)
-            return
+            return False
 
         action_type, parameter = action
         handler = self._action_handlers.get(action_type)
         if handler:
             try:
                 handler(parameter, device, key_number)
+                return True
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error executing action %s: %s", action_type, e)
-        else:
-            logger.error("Unknown action type: %s", action_type)
+                return False
+        logger.error("Unknown action type: %s", action_type)
+        return False
 
     def execute_actions(self, actions: List[Tuple], device=None, key_number=None) -> None:
         if not isinstance(actions, list):
             actions = [actions]
-        for action in actions:
-            self.execute_action(action, device=device, key_number=key_number)
+        for i, action in enumerate(actions):
+            ok = self.execute_action(action, device=device, key_number=key_number)
+            # A WAIT separates steps that depend on each other (open a window,
+            # then type into it); running the rest without the pause sends
+            # them to the wrong place, so the macro stops instead.
+            if not ok and isinstance(action, tuple) and action and action[0] is ActionType.WAIT:
+                logger.error("WAIT failed, skipping the remaining %d action(s)",
+                             len(actions) - i - 1)
+                break
 
     def _handle_execute_command(self, parameter, unused_device, unused_key_number):
         self._system.execute_command(parameter)
@@ -239,20 +308,29 @@ class ActionExecutor:
             '[': 'bracketleft', ']': 'bracketright', '\\': 'backslash',
             '=': 'equal', '-': 'minus', '`': 'grave',
         }
-        keys = [k.strip().upper() for k in parameter.split('+')]
-        if not keys:
+        combo = parameter.strip()
+        # '+' separates keys, so the plus key itself can only be written as a
+        # trailing '+' after a separator ("CTRL++") or on its own ("+").
+        with_plus = combo == '+' or combo.endswith('++')
+        if with_plus:
+            combo = combo[:-2] if combo != '+' else ''
+        keys = [k.strip() for k in combo.split('+')] if combo else []
+        if any(not k for k in keys) or not (keys or with_plus):
             logger.error("Invalid key combination: %s", parameter)
             return
 
         xdotool_keys = []
         for key in keys:
-            if key in key_mapping:
-                xdotool_keys.append(key_mapping[key])
+            if key.upper() in key_mapping:
+                xdotool_keys.append(key_mapping[key.upper()])
             elif len(key) == 1:
                 xdotool_keys.append(key.lower())
             else:
-                logger.error("Unknown key: %s", key)
-                return
+                # Any other X keysym (XF86AudioPlay, KP_Add, ...) goes through
+                # as written: keysyms are case-sensitive and xdotool knows them all.
+                xdotool_keys.append(key)
+        if with_plus:
+            xdotool_keys.append('plus')
 
         combo_str = '+'.join(xdotool_keys)
         self._system.send_key_combo(combo_str)
@@ -268,7 +346,7 @@ class ActionExecutor:
         if device is None or key_number is None:
             logger.error("Error: CHANGE_KEY_IMAGE requires device and key_number")
             return
-        device.set_key_image(key_number, parameter)
+        self._run_exclusive(lambda: device.set_key_image(key_number, parameter))
 
     def _handle_change_key_text(self, parameter, device, key_number):
         if device is None or key_number is None:
@@ -306,18 +384,7 @@ class ActionExecutor:
                 bold=bold,
                 text_position=text_position,
             )
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.jpg', prefix='sdkey_txt_')
-            os.close(temp_fd)
-            rendered.save(temp_path, format='JPEG', quality=95)
-            device.set_key_image(key_number, temp_path)
-
-            def cleanup():
-                time.sleep(1.0)
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            threading.Thread(target=cleanup, daemon=True).start()
+            self._run_exclusive(lambda: device.set_key_pil_image(key_number, rendered))
         except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("Error creating text image for CHANGE_KEY_TEXT")
 
@@ -334,31 +401,38 @@ class ActionExecutor:
             if key_number is None:
                 logger.error("Error: CHANGE_KEY with string requires key_number")
                 return
-            target_key = Key(device, key_number, image_path=parameter)
+            # The editor writes the name of a configured key; older configs
+            # hold an image path, which still just swaps the picture.
+            if self._key_builder is not None:
+                target_key = self._key_builder(parameter, key_number)
+            if target_key is None:
+                target_key = Key(device, key_number, image_path=parameter)
         elif isinstance(parameter, dict):
             if key_number is None:
                 logger.error("Error: CHANGE_KEY with dict requires key_number")
                 return
             image_path = parameter.get('image', '')
-            on_press = parameter.get('actions') or parameter.get('on_press')
-            on_release = parameter.get('on_release')
-            on_double_press = parameter.get('on_double_press')
-            on_long_press = parameter.get('on_long_press')
+            on_press = parse_action_list(parameter.get('actions') or parameter.get('on_press'))
+            on_release = parse_action_list(parameter.get('on_release'))
+            on_double_press = parse_action_list(parameter.get('on_double_press'))
+            on_long_press = parse_action_list(parameter.get('on_long_press'))
             target_key = Key(
                 device, key_number,
                 image_path=image_path,
                 on_press=on_press,
                 on_release=on_release,
                 on_double_press=on_double_press,
-                on_long_press=on_long_press
+                on_long_press=on_long_press,
+                action_executor=self,
             )
         else:
             logger.error("Error: CHANGE_KEY parameter has invalid type: %s", type(parameter))
             return
 
         if target_key:
+            target_key.prepare()
             # pylint: disable=protected-access
-            target_key._configure()
+            self._run_exclusive(target_key._configure)
 
     def _handle_change_layout(self, parameter, device, unused_key_number):
         if device is None:
@@ -385,9 +459,11 @@ class ActionExecutor:
                 return
             layout = resolved
 
-        if action_clear_all and not layout.clear_all:
-            device.clear_all_icons()
-        layout.apply()
+        def apply():
+            if action_clear_all and not layout.clear_all:
+                device.clear_all_icons()
+            layout.apply()
+        self._run_exclusive(apply)
 
     # Shortcut names (with or without the legacy _any suffix) -> MPRIS Player method.
     _MEDIA_SHORTCUTS = {
@@ -417,10 +493,16 @@ class ActionExecutor:
         if not isinstance(parameter, str):
             logger.error("Invalid D-Bus command format: %s", type(parameter))
             return
+        # Output is discarded rather than captured: nothing reads it, and a
+        # chatty or hung command would otherwise buffer or block the key's
+        # action thread indefinitely.
         try:
-            subprocess.run(parameter, shell=True, check=True, capture_output=True)
+            subprocess.run(parameter, shell=True, check=True, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except subprocess.CalledProcessError as e:
             logger.error("Error executing D-Bus command: %s", e)
+        except subprocess.TimeoutExpired:
+            logger.error("D-Bus command timed out after 5s: %s", parameter)
 
     @staticmethod
     def _control_media(method: str) -> None:
@@ -446,14 +528,29 @@ class ActionExecutor:
             self._adjust_brightness(device, -10)
 
     def _adjust_brightness(self, device, amount):
+        # The device's own record is the one source of truth: the GUI slider,
+        # a reload and these keys all set it, so stepping from a copy kept here
+        # would jump back to a stale value. Never below MIN_BRIGHTNESS: the
+        # device ignores dimmer values.
+        # Imported here: the application package imports this module.
+        from StreamDock.application.configuration_manager import MIN_BRIGHTNESS  # pylint: disable=import-outside-toplevel
         try:
-            current = getattr(device, '_current_brightness', 50)
-            new_val = max(0, min(100, current + amount))
-            device.set_brightness(new_val)
-            # pylint: disable=protected-access
-            device._current_brightness = new_val
+            current = getattr(device, '_current_brightness', None)
+            if isinstance(current, bool) or not isinstance(current, (int, float)):
+                current = self._default_brightness
+            new_val = int(max(MIN_BRIGHTNESS, min(100, current + amount)))
+
+            def write():
+                device.set_brightness(new_val)
+                # pylint: disable=protected-access
+                device._current_brightness = new_val
+            self._run_exclusive(write)
         except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("Error adjusting brightness")
+
+    def _focused_window_matches(self, predicate) -> bool:
+        window = self._windows.get_active_window()
+        return window is not None and bool(predicate(window))
 
     def _handle_launch_application(self, parameter, unused_device, unused_key_number):
         config = _parse_app_config(parameter)
@@ -481,13 +578,25 @@ class ActionExecutor:
                     if desktop_info:
                         search_by_name = desktop_info['name']
 
+            # The window lookups only match substrings and return an id, so a
+            # stricter match is checked on the window once it has focus.
             window_id = self._windows.search_window_by_class(class_name)
+            confirm = None
+            if window_id and str(config['match_type']).lower() == 'exact':
+                confirm = lambda window: (window.class_ or '').lower() == class_name
             if not window_id and search_by_name:
                 window_id = self._windows.search_window_by_name(search_by_name)
+                # Any tab whose title mentions the app would match; the app's
+                # own window is titled "... - <app name>" or just the name.
+                app_name = search_by_name.strip().lower()
+                confirm = lambda window: (window.title or '').strip().lower().endswith(app_name)
 
             activated = False
             if window_id:
                 activated = self._windows.activate_window(window_id)
+                if activated and confirm is not None and not self._focused_window_matches(confirm):
+                    logger.info("Found window is not '%s'; not using it", class_name)
+                    activated = False
 
             if not activated:
                 activated = self._windows.activate_tray_app(class_name)

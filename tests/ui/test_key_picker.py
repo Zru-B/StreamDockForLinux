@@ -80,3 +80,42 @@ def test_picked_key_lands_on_the_square(window, monkeypatch):
     window.pick_key_for_position(5, square, "Assign Key")
     assert window.current_layout.keys[5] == "Terminal"
     assert square.key_name == "Terminal"
+
+
+def test_set_keys_only_redraws_keys_that_changed(window, qtbot):
+    """Manage Keys calls set_keys after every edit; redrawing every key made it lag."""
+    from unittest.mock import patch
+    from StreamDock.ui.dialogs import KeyThumbnailGrid
+
+    grid = KeyThumbnailGrid(window.config.config_dir)
+    qtbot.addWidget(grid)
+    grid.set_keys(window.config.keys)
+    window.config.keys["Volume"].text = "Vol"
+
+    with patch.object(KeyThumbnailGrid, "_render_thumbnail",
+                      autospec=True, side_effect=KeyThumbnailGrid._render_thumbnail) as render:
+        grid.set_keys(window.config.keys)
+
+    assert [call.args[1] for call in render.call_args_list] == ["Volume"]
+    grid.release()
+
+
+def test_a_widget_snapshot_redraws_only_its_own_keys(window, qtbot):
+    from unittest.mock import patch
+    from StreamDock.application.config_document import KeyDefinition
+    from StreamDock.ui.dialogs import KeyThumbnailGrid
+
+    keys = dict(window.config.keys)
+    keys["Clock"] = KeyDefinition("Clock", {"widget": "clock"})
+    grid = KeyThumbnailGrid(window.config.config_dir)
+    qtbot.addWidget(grid)
+    grid.set_keys(keys)
+
+    with patch.object(KeyThumbnailGrid, "_render_thumbnail",
+                      autospec=True, side_effect=KeyThumbnailGrid._render_thumbnail) as render:
+        grid._refresh_widget_thumbnails("some-other-snapshot")
+        assert render.call_count == 0
+        grid._refresh_widget_thumbnails(grid._preview_key(keys["Clock"]))
+
+    assert [call.args[1] for call in render.call_args_list] == ["Clock"]
+    grid.release()

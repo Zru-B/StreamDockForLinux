@@ -45,6 +45,7 @@ class SystemStats(Widget):
         self.previous: Optional[Tuple[int, int]] = None
         self.cpu: Optional[float] = None
         self.ram: Optional[float] = None
+        self.last_displayed = None
         # CPU load is a difference of two readings; take both now so the
         # first frame has a number rather than waiting a whole interval.
         self.sample(ctx)
@@ -67,7 +68,15 @@ class SystemStats(Widget):
         shown = [value for label, value in self.rows(ctx.options) if value is not None]
         ctx.set_state('high' if any(value > 85 for value in shown) else 'normal')
         ctx.set_badge(f'{shown[0]:.0f}%' if shown else None)
-        ctx.request_render()
+        # The key shows whole percentages; a redraw for 41.2 -> 41.4 would
+        # push an identical frame to the device every interval.
+        displayed = self.displayed(ctx.options)
+        if displayed != self.last_displayed:
+            self.last_displayed = displayed
+            ctx.request_render()
+
+    def displayed(self, options):
+        return tuple(None if value is None else f'{value:.0f}' for _label, value in self.rows(options))
 
     def rows(self, options):
         rows = [('CPU', self.cpu), ('RAM', self.ram)]

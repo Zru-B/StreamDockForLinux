@@ -286,35 +286,15 @@ class TestApplyConfig:
         with qtbot.waitSignal(service.error_occurred):
             service.apply_config(self.valid_document(), config_path)
 
-    def test_the_document_is_copied_at_the_thread_boundary(self, service, app,
-                                                           config_path):
-        """The GUI stays editable while an apply is in flight."""
+    def test_the_document_is_handed_over_without_another_copy(self, service, app,
+                                                               config_path):
+        """The window already deep-copies at the boundary; a second copy is waste."""
         service.connect_device("", config_path)
         document = self.valid_document()
 
         service.apply_config(document, config_path)
 
-        passed = app.reload.call_args.kwargs['raw_document']
-        assert passed == document and passed is not document
-
-
-class TestBrightness:
-    """set_brightness()."""
-
-    def test_goes_through_the_orchestrator_lock(self, service, app, config_path):
-        service.connect_device("", config_path)
-        device, orchestrator = Mock(), Mock()
-        orchestrator.run_exclusive = Mock(side_effect=lambda fn: fn())
-        app.get_device = Mock(return_value=device)
-        app.get_orchestrator = Mock(return_value=orchestrator)
-
-        service.set_brightness(35)
-
-        orchestrator.run_exclusive.assert_called_once()
-        device.set_brightness.assert_called_once_with(35)
-
-    def test_is_ignored_when_not_connected(self, service):
-        service.set_brightness(35)
+        assert app.reload.call_args.kwargs['raw_document'] is document
 
 
 class TestBusySignal:
@@ -387,6 +367,20 @@ class TestHotplug:
         service._on_devices_changed([make_device('/dev/hidraw0')])
 
         assert service.is_connected()
+
+    def test_replugging_uses_the_last_applied_file(self, service, app, config_path,
+                                                  tmp_path):
+        """A replug used to reload the file first connected, not the one applied since."""
+        import yaml
+        self.connected(service, app, config_path)
+        other = tmp_path / "other.yml"
+        other.write_text(CONFIG)
+        service.apply_config(yaml.safe_load(CONFIG)['streamdock'], str(other))
+        service._on_devices_changed([])
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert service.factory.call_args.args[0] == str(other)
 
     def test_plugging_in_while_idle_connects(self, service, app, config_path,
                                              hardware):
@@ -462,3 +456,103 @@ class TestHotplug:
         service.shutdown()
 
         watcher.stop.assert_called_once()
+
+    def test_a_replug_reconnects_only_to_the_dock_that_was_in_use(self, app, hardware,
+                                                                  config_path):
+        """No explicit choice: the dock actually connected is the one to come back to."""
+        first, second = make_device('/dev/hidraw0'), make_device('/dev/hidraw1')
+        hardware.enumerate_devices = Mock(return_value=[first])
+        factory = Mock(return_value=app)
+        service = DeviceService(application_factory=factory,
+                                hardware_factory=lambda: hardware)
+        service.connect_device("", config_path)
+        app.get_device_info = Mock(return_value=first)
+        service._devices = [first]
+
+        service._on_devices_changed([])
+        service._on_devices_changed([second])
+
+        assert not service.is_connected(), "must not move to a different dock"
+
+    def test_a_new_dock_is_announced_even_when_the_connected_one_leaves(
+            self, service, app, config_path, qtbot):
+        self.connected(service, app, config_path)
+        service._devices = [make_device('/dev/hidraw0')]
+        attached = []
+        service.device_attached.connect(attached.append)
+
+        service._on_devices_changed([make_device('/dev/hidraw1')])
+
+        assert attached
+
+    def test_reconnect_gives_up_after_repeated_failures(self, app, hardware, config_path,
+                                                        qtbot):
+        """A dock that keeps failing must not be retried on every udev event."""
+        factory = Mock(side_effect=RuntimeError("busy"))
+        service = DeviceService(application_factory=factory,
+                                hardware_factory=lambda: hardware)
+        service.connect_device("", config_path)
+        service._on_devices_changed([])
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+        calls = factory.call_count
+        service._on_devices_changed([])
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert calls == 2
+        assert factory.call_count == calls
+
+    def test_a_background_failure_is_not_a_modal_error(self, app, hardware, config_path):
+        factory = Mock(side_effect=RuntimeError("busy"))
+        service = DeviceService(application_factory=factory,
+                                hardware_factory=lambda: hardware)
+        service.connect_device("", config_path)
+        service._on_devices_changed([])
+        errors, background = [], []
+        service.error_occurred.connect(lambda *a: errors.append(a))
+        service.background_error.connect(lambda *a: background.append(a))
+
+        service._on_devices_changed([make_device('/dev/hidraw0')])
+
+        assert background and not errors
+
+    def test_no_connect_once_shutting_down(self, service, config_path):
+        service.shutdown()
+
+        service.connect_device("", config_path)
+
+        assert not service.is_connected()
+
+
+class TestResolve:
+    """Which device a connect opens."""
+
+    def test_a_missing_explicit_device_is_an_error_not_the_first_dock(self, service,
+                                                                      config_path, qtbot):
+        with qtbot.waitSignal(service.error_occurred) as blocker:
+            service.connect_device("6603:1006@/dev/hidraw9", config_path)
+
+        assert blocker.args[0] == "Device not found"
+        assert not service.is_connected()
+
+    def test_a_missing_explicit_device_is_looked_for_again(self, app, config_path):
+        first, second = make_device('/dev/hidraw0'), make_device('/dev/hidraw1')
+        hw = Mock()
+        hw.enumerate_devices = Mock(side_effect=[[first], [first, second]])
+        factory = Mock(return_value=app)
+        service = DeviceService(application_factory=factory, hardware_factory=lambda: hw)
+        service.refresh_devices()
+
+        service.connect_device('6603:1006@/dev/hidraw1', config_path)
+
+        assert factory.call_args.kwargs['device_info'].path == '/dev/hidraw1'
+
+    def test_a_failed_discovery_is_reported_once(self, config_path):
+        service = DeviceService(application_factory=Mock(),
+                                hardware_factory=Mock(side_effect=OSError("no hidapi")))
+        titles = []
+        service.error_occurred.connect(lambda title, _message: titles.append(title))
+
+        service.connect_device("", config_path)
+
+        assert titles == ["Device discovery failed"]

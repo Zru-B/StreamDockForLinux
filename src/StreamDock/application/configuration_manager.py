@@ -62,6 +62,10 @@ VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_acti
 
 ICON_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')
 
+# The device ignores anything dimmer than this, so neither the editor nor the
+# brightness keys go below it.
+MIN_BRIGHTNESS = 15
+
 # A key is 112x112 px, so anything outside this cannot render usefully.
 MIN_FONT_SIZE = 1
 MAX_FONT_SIZE = 200
@@ -174,6 +178,9 @@ def expand_icon_paths(streamdock: Dict[str, Any], config_dir: str) -> None:
         config_dir: Directory containing the config file
     """
     for key_def in streamdock.get('keys', {}).values():
+        if isinstance(key_def, dict):
+            for action_key in VALID_ACTIONS:
+                _expand_action_image_paths(key_def.get(action_key), config_dir)
         if isinstance(key_def, dict) and isinstance(key_def.get('icon'), str):
             key_def['icon'] = resolve_icon_path(key_def['icon'], config_dir)
         if isinstance(key_def, dict) and isinstance(key_def.get('state_icons'), dict):
@@ -181,6 +188,27 @@ def expand_icon_paths(streamdock: Dict[str, Any], config_dir: str) -> None:
                 state: resolve_icon_path(path, config_dir) if isinstance(path, str) else path
                 for state, path in key_def['state_icons'].items()
             }
+
+
+def _expand_action_image_paths(actions: Any, config_dir: str) -> None:
+    """
+    Resolve the image paths CHANGE_KEY_IMAGE and CHANGE_KEY_TEXT carry.
+
+    They are icons too, so a relative one must mean the config directory, not
+    wherever the process happened to be started from.
+    """
+    if not isinstance(actions, list):
+        return
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        for name, param in list(action.items()):
+            action_type = name.upper() if isinstance(name, str) else name
+            if action_type == 'CHANGE_KEY_IMAGE' and isinstance(param, str) and param.strip():
+                action[name] = resolve_icon_path(param, config_dir)
+            elif (action_type == 'CHANGE_KEY_TEXT' and isinstance(param, dict)
+                  and isinstance(param.get('icon'), str) and param['icon'].strip()):
+                param['icon'] = resolve_icon_path(param['icon'], config_dir)
 
 
 class ConfigurationManager:
@@ -425,7 +453,8 @@ class ConfigurationManager:
             if not isinstance(key_def, dict):
                 raise ConfigValidationError(f"Key '{key_name}' definition must be a dictionary")
 
-            # Check required fields - 'widget', or either 'icon' or 'text'
+            # Check required fields - 'widget', or 'icon' and/or 'text' (text
+            # over an icon is drawn as an overlay)
             has_icon = 'icon' in key_def
             has_text = 'text' in key_def
             has_widget = 'widget' in key_def
@@ -435,11 +464,6 @@ class ConfigurationManager:
             elif not has_icon and not has_text:
                 raise ConfigValidationError(
                     f"Key '{key_name}' must have either 'icon' or 'text' field"
-                )
-
-            if has_icon and has_text:
-                raise ConfigValidationError(
-                    f"Key '{key_name}' cannot have both 'icon' and 'text' fields"
                 )
 
             # Validate and expand icon path
@@ -601,37 +625,93 @@ class ConfigurationManager:
         if not isinstance(actions, list):
             raise ConfigValidationError(f"{context}: actions must be a list")
 
+        # An empty list reads as configured but does nothing when pressed.
+        if not actions:
+            raise ConfigValidationError(f"{context} must have at least one action")
+
         for i, action in enumerate(actions):
-            if not isinstance(action, (dict, str)):
+            # A bare string (`- KEY_PRESS`) has no parameter and the runtime
+            # skipped it silently, so the key looked configured but did nothing.
+            if not isinstance(action, dict):
                 raise ConfigValidationError(
-                    f"{context}[{i}]: action must be a dictionary or string"
+                    f"{context}[{i}] must be a mapping like {{ACTION: value}}"
                 )
 
-            if isinstance(action, dict):
-                # Get the action type (the key in the dict)
-                if len(action) != 1:
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: action dict must have exactly one key-value pair"
-                    )
+            if len(action) != 1:
+                raise ConfigValidationError(
+                    f"{context}[{i}]: action dict must have exactly one key-value pair"
+                )
 
-                action_type_str = list(action.keys())[0]
+            action_type_str, parameter = next(iter(action.items()))
 
-                # `- on: x` and `- 1: x` both parse to a non-string name.
-                if not isinstance(action_type_str, str):
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: action type must be text, "
-                        f"not {type(action_type_str).__name__}"
-                    )
+            # `- on: x` and `- 1: x` both parse to a non-string name.
+            if not isinstance(action_type_str, str):
+                raise ConfigValidationError(
+                    f"{context}[{i}]: action type must be text, "
+                    f"not {type(action_type_str).__name__}"
+                )
 
-                # Validate action type exists
-                try:
-                    ActionType[action_type_str.upper()]
-                except KeyError:
-                    valid_types = ', '.join([t.name for t in ActionType])
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: invalid action type '{action_type_str}'. "
-                        f"Valid types: {valid_types}"
-                    )
+            try:
+                action_type = ActionType[action_type_str.upper()]
+            except KeyError:
+                valid_types = ', '.join([t.name for t in ActionType])
+                raise ConfigValidationError(
+                    f"{context}[{i}]: invalid action type '{action_type_str}'. "
+                    f"Valid types: {valid_types}"
+                )
+
+            self._validate_action_parameter(action_type, parameter, f"{context}[{i}] {action_type.name}")
+
+    def _validate_action_parameter(self, action_type: ActionType, parameter: Any, label: str) -> None:
+        """
+        Check a parameter against what its handler accepts.
+
+        The handlers log and give up on a wrong parameter, so without this a
+        typo only shows up as a key that silently does nothing when pressed.
+        """
+        if action_type is ActionType.WAIT:
+            if isinstance(parameter, bool) or not isinstance(parameter, (int, float)) or parameter < 0:
+                raise ConfigValidationError(f"{label} must be a number of seconds, 0 or more")
+
+        elif action_type in (ActionType.KEY_PRESS, ActionType.EXECUTE_COMMAND):
+            if not isinstance(parameter, str) or not parameter.strip():
+                raise ConfigValidationError(f"{label} must be a non-empty string")
+
+        elif action_type is ActionType.TYPE_TEXT:
+            # Whitespace is legitimate text to type, so only '' is empty.
+            if not isinstance(parameter, str) or not parameter:
+                raise ConfigValidationError(f"{label} must be a non-empty string")
+
+        elif action_type is ActionType.CHANGE_LAYOUT:
+            layout = parameter.get('layout') if isinstance(parameter, dict) else parameter
+            if not isinstance(layout, str) or not layout:
+                raise ConfigValidationError(
+                    f"{label} must be a layout name, or a mapping with a 'layout' name")
+            layouts = self._raw_config.get('layouts')
+            if isinstance(layouts, dict) and layout not in layouts:
+                raise ConfigValidationError(f"{label} references undefined layout: '{layout}'")
+
+        elif action_type is ActionType.CHANGE_KEY_IMAGE:
+            self._validate_image_file(f"{label} image", parameter)
+
+        elif action_type is ActionType.CHANGE_KEY_TEXT:
+            if isinstance(parameter, dict):
+                if parameter.get('icon'):
+                    self._validate_image_file(f"{label} icon", parameter['icon'])
+            elif not isinstance(parameter, str):
+                raise ConfigValidationError(f"{label} must be a text or a mapping with 'text'")
+
+        elif action_type is ActionType.CHANGE_KEY:
+            # A key name (what the editor writes) or, in older configs, an image path.
+            if not (isinstance(parameter, dict) or (isinstance(parameter, str) and parameter.strip())):
+                raise ConfigValidationError(f"{label} must be a key name")
+
+        elif action_type is ActionType.DBUS:
+            if isinstance(parameter, dict):
+                if not isinstance(parameter.get('action'), str):
+                    raise ConfigValidationError(f"{label} mapping must have an 'action' name")
+            elif not isinstance(parameter, str) or not parameter.strip():
+                raise ConfigValidationError(f"{label} must be a command or a mapping with 'action'")
 
     def _validate_layouts(self) -> None:
         """
@@ -793,6 +873,15 @@ class ConfigurationManager:
                             raise ConfigValidationError(
                                 f"Window rule '{rule_name}': invalid regular expression "
                                 f"{pattern!r}: {e}") from e
+
+            # The layout manager sorts on priority, so a string would crash the
+            # sort and true would quietly count as 1.
+            if 'priority' in rule_def:
+                priority = rule_def['priority']
+                if isinstance(priority, bool) or not isinstance(priority, int):
+                    raise ConfigValidationError(
+                        f"Window rule '{rule_name}': 'priority' must be a whole number"
+                    )
 
             # Validate match_field (optional)
             if 'match_field' in rule_def:

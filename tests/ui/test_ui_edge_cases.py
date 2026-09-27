@@ -115,7 +115,7 @@ class TestLoadingOddConfigs:
         with open(bad, "w", encoding="utf-8") as f:
             f.write("streamdock:\n  keys: [unclosed\n")
 
-        with patch('StreamDock.ui.main_window.QMessageBox.critical'):
+        with patch('StreamDock.ui.main_window.plain_message_box'):
             window.load_config(bad)
 
         assert window.config is before
@@ -126,10 +126,44 @@ class TestLoadingOddConfigs:
         with open(bad, "w", encoding="utf-8") as f:
             f.write("streamdock:\n")
 
-        with patch('StreamDock.ui.main_window.QMessageBox.critical') as critical:
+        with patch('StreamDock.ui.main_window.plain_message_box') as critical:
             window.load_config(bad)
 
         critical.assert_called_once()
+
+    def test_a_load_that_fails_while_presenting_restores_everything(
+            self, window, workdir):
+        """A display failure used to leave the new document in and the slider muted."""
+        window.load_config(write_config(workdir, BASE))
+        before, before_path = window.config, window.config_file_path
+        other = write_config(workdir, BASE, name="other.yml")
+
+        with patch.object(MainWindow, 'display_layout',
+                          side_effect=[RuntimeError("boom"), None]), \
+                patch('StreamDock.ui.main_window.plain_message_box'):
+            loaded = window.load_config(other)
+
+        assert loaded is False
+        assert window.config is before
+        assert window.config_file_path == before_path
+        assert not window.brightness_slider.signalsBlocked()
+        assert not window.lock_monitor_toggle.signalsBlocked()
+
+    def test_load_reports_success(self, window, workdir):
+        assert window.load_config(write_config(workdir, BASE)) is True
+
+    def test_a_failed_open_is_not_offered_as_the_default(self, window, workdir):
+        bad = os.path.join(workdir, "bad.yml")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("streamdock:\n  keys: [unclosed\n")
+        window.offer_as_default_config = Mock()
+
+        with patch('StreamDock.ui.main_window.QFileDialog.getOpenFileName',
+                   return_value=(bad, "")), \
+                patch('StreamDock.ui.main_window.plain_message_box'):
+            window.open_config()
+
+        window.offer_as_default_config.assert_not_called()
 
 
 class TestDisplayLayout:
@@ -223,6 +257,28 @@ class TestKeySquare:
         square.set_key("K", KeyDefinition("K", {"icon": "icon.png", "text": "A"}))
 
         assert not square.is_empty()
+
+    def test_a_label_is_drawn_over_the_icon_as_on_the_device(self, square, workdir):
+        """The preview used to show the bare icon, hiding the label the deck draws."""
+        from PIL import Image
+        Image.new("RGB", (112, 112), "red").save(os.path.join(workdir, "red.png"))
+        square.config_dir = workdir
+
+        square.set_key("K", KeyDefinition("K", {"icon": "red.png"}))
+        bare = square.label.pixmap().toImage()
+        square.set_key("K", KeyDefinition("K", {"icon": "red.png", "text": "WWWW",
+                                                "text_color": "white"}))
+        labelled = square.label.pixmap().toImage()
+
+        assert labelled != bare
+
+    def test_a_colour_cannot_inject_stylesheet_rules(self, square):
+        square.set_key("K", KeyDefinition("K", {
+            "text": "A", "text_color": "red; } KeySquare { background-image: url(/etc/x)",
+            "background_color": "blue"}))
+
+        assert "url(" not in square.styleSheet() + square.label.styleSheet()
+        assert "#0000ff" in square.styleSheet()
 
     def test_a_missing_icon_shows_not_found(self, square, workdir):
         square.config_dir = workdir
@@ -356,9 +412,10 @@ class TestValidationInTheUI:
         window.config = ConfigDocument.from_dict({**BASE,
                                                   "settings": {"brightness": 500}})
 
-        with patch('StreamDock.ui.main_window.QMessageBox') as box:
-            box.Icon.Critical = 0
+        with patch('StreamDock.ui.main_window.plain_message_box') as box:
             assert window.validate_current_config() is False
+
+        box.assert_called_once()
 
     def test_apply_is_blocked_by_an_invalid_config(self, window, workdir):
         window.config = ConfigDocument.from_dict({**BASE,
@@ -366,7 +423,7 @@ class TestValidationInTheUI:
         emitted = []
         window.apply_config_requested.connect(lambda d, p: emitted.append(d))
 
-        with patch('StreamDock.ui.main_window.QMessageBox'):
+        with patch('StreamDock.ui.main_window.plain_message_box'):
             window.on_apply_requested()
 
         assert emitted == []
@@ -382,3 +439,16 @@ class TestValidationInTheUI:
 
         assert os.path.exists(target)
         assert ConfigDocument.load(target).validate() != []
+
+
+class TestDescribeKey:
+    def test_an_icon_with_a_label_names_both(self):
+        from StreamDock.ui.dialogs import describe_key
+
+        assert describe_key(KeyDefinition("K", {"icon": "icons/x.png", "text": "Web"})) == \
+            "Icon: x.png + text 'Web'"
+
+    def test_a_plain_icon(self):
+        from StreamDock.ui.dialogs import describe_key
+
+        assert describe_key(KeyDefinition("K", {"icon": "x.png"})) == "Icon: x.png"

@@ -79,7 +79,7 @@ keys:
     icon: "../img/settings.png"      # Optional
     text: "Settings"                # Optional
     text_color: "white"             # Optional (color name or hex)
-    background_color: "black"       # Optional (used for text-only mode)
+    background_color: "black"       # Optional (text-only background, or behind a transparent icon)
     font_size: 20                   # Optional (pixels)
     bold: true                      # Optional
     text_position: "bottom"         # Optional: "top", "center", "bottom" (default: bottom)
@@ -87,7 +87,12 @@ keys:
       - "EXECUTE_COMMAND": ["systemsettings"]
 ```
 
-> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image. If no icon is present, the text is centred by default.
+With both `icon` and `text`, the icon fills the key and the text is drawn over it:
+`text`, `text_position`, `text_color`, `font_size` and `bold` all apply, and
+`background_color` shows through transparent parts of the icon. With `text` alone
+the text is always centred on `background_color`, and `text_position` has no effect.
+
+> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image.
 
 ### Widget Keys
 
@@ -144,6 +149,12 @@ the key has to wait to find out which gesture it is:
 
 Keys with only press and release actions are unaffected and still fire immediately.
 
+Every action list you include must hold at least one action, and each action is a
+mapping of one action name to its parameter (`- KEY_PRESS: "CTRL+C"`, not a bare
+`- KEY_PRESS`). Action names are case-insensitive. Parameters are checked when the
+configuration loads: for example `WAIT` needs a number of seconds, `CHANGE_LAYOUT` an
+existing layout, and `CHANGE_KEY` the name of another key.
+
 For a list of all available actions, see the [Actions Reference](actions_reference.md).
 
 ---
@@ -175,7 +186,7 @@ layouts:
 ```
 
 - **Key numbers:** 1-15 (Top-left to Bottom-right).
-- **Empty keys:** Use `null` or `~` to clear a key.
+- **Empty keys:** Use `null` or `~` to clear a key: when the layout is applied, that button is blanked and its actions from the previous layout are removed.
 - **clear_all:** If `true`, wipes the screen before drawing this layout. Useful for clean transitions.
 
 ---
@@ -220,7 +231,7 @@ windows_rules:
 - `raw`: Raw window info string.
 
 **Order:** the first matching rule wins. Rules are tried by `priority`
-(optional integer, higher first, default `0`), then in the order they appear
+(optional whole number, higher first, default `0`; anything else is rejected), then in the order they appear
 in the file. The editor's Window Rules panel lists them in that order; dragging
 a rule to a new place rewrites the file order and clears `priority`.
 

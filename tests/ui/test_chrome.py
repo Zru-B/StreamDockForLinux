@@ -422,3 +422,57 @@ class TestThemedDialogs:
 
         assert dialog.content_layout is not dialog._outer
         assert isinstance(dialog, QDialog)
+
+
+class TestHeaderButtonConnections:
+    """A design switch deletes the header buttons; the actions must let go of them."""
+
+    def test_a_header_button_follows_its_action(self, window, model, restore_theme):
+        theme_manager().set_preferences(flavor='gnome')
+        chrome = GnomeChrome(window, model)
+        chrome.install()
+        from PyQt6.QtWidgets import QPushButton
+        button = next(child for child in window.menuWidget().findChildren(QPushButton)
+                      if child.text() == "Save")
+
+        model.save_action.setEnabled(False)
+
+        assert not button.isEnabled()
+
+    def test_removing_the_chrome_drops_the_connection(self, window, model, restore_theme):
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        theme_manager().set_preferences(flavor='gnome')
+        before = model.save_action.receivers(model.save_action.enabledChanged)
+        chrome = GnomeChrome(window, model)
+        chrome.install()
+        assert model.save_action.receivers(model.save_action.enabledChanged) > before
+
+        chrome.remove()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+        assert model.save_action.receivers(model.save_action.enabledChanged) == before
+        model.save_action.setEnabled(False)
+
+
+class TestRebuildingOnlyForADesignChange:
+    """A light/dark flip repaints; only a design switch moves the furniture."""
+
+    def test_a_scheme_flip_keeps_the_chrome(self, qtbot, restore_theme):
+        from StreamDock.ui.main_window import MainWindow
+        main = MainWindow()
+        qtbot.addWidget(main)
+        chrome = main._chrome
+
+        theme_manager().set_preferences(scheme='light')
+
+        assert main._chrome is chrome
+
+    def test_a_design_switch_rebuilds_it(self, qtbot, restore_theme):
+        from StreamDock.ui.main_window import MainWindow
+        main = MainWindow()
+        qtbot.addWidget(main)
+        chrome = main._chrome
+
+        theme_manager().set_preferences(flavor='gnome')
+
+        assert isinstance(main._chrome, GnomeChrome) and main._chrome is not chrome

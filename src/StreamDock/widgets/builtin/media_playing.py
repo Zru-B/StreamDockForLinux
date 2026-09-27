@@ -27,9 +27,11 @@ class MediaPlaying(Widget):
     def on_show(self, ctx):
         self.check(ctx)
 
-    def check(self, ctx):
+    def check(self, ctx, poll=True):
+        # A check after a press must run even while a poll is in flight: that
+        # poll may have read the player before the press.
         ctx.run_in_background(lambda: _mpris.current(ctx.options['player'], with_metadata=False),
-                              then=lambda status: self.update(ctx, status))
+                              then=lambda status: self.update(ctx, status), skip_if_running=poll)
 
     def update(self, ctx, status):
         changed = status.status != self.status.status
@@ -41,7 +43,7 @@ class MediaPlaying(Widget):
     def on_press(self, ctx):
         if ctx.options['toggle_on_press'] and self.status.player:
             player = self.status.player
-            ctx.run_in_background(lambda: _mpris.call(player, 'PlayPause'), then=lambda _: self.check(ctx))
+            ctx.run_in_background(lambda: _mpris.call(player, 'PlayPause'), then=lambda _: self.check(ctx, poll=False))
 
     def render(self, ctx):
         options = ctx.options

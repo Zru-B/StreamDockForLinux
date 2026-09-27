@@ -12,7 +12,7 @@ import queue
 import tempfile
 import threading
 import time
-from typing import Any, Callable, List, Mapping, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Type
 
 from PIL import Image
 
@@ -81,6 +81,8 @@ class WidgetDriver:
         self._timers: List[_Timer] = []
         self._render_lock = threading.Lock()
         self._render_pending = False
+        # Running background jobs per call site (code object); see run_in_background.
+        self._in_flight: Dict[Any, int] = {}
         self._visible = False
         self._failed = False
         self._thread: Optional[threading.Thread] = None
@@ -152,13 +154,31 @@ class WidgetDriver:
         else:
             self._queue.put(lambda: self._timers.append(timer))
 
-    def run_in_background(self, fn: Callable[[], Any], then: Optional[Callable[[Any], None]]) -> None:
+    def run_in_background(self, fn: Callable[[], Any], then: Optional[Callable[[Any], None]],
+                          skip_if_running: bool = False) -> None:
+        # With skip_if_running, one job per call site at a time: a poll slower
+        # than its interval would otherwise pile up threads and land results
+        # out of order. A lambda written in one place has one code object
+        # however often it is created, so that is the call site. Off by
+        # default: two presses must toggle twice.
+        site = getattr(fn, '__code__', fn)
+        with self._render_lock:
+            if skip_if_running and self._in_flight.get(site):
+                return
+            self._in_flight[site] = self._in_flight.get(site, 0) + 1
+
         def job():
             try:
                 result = fn()
             except Exception:  # pylint: disable=broad-exception-caught
                 self.ctx.log.exception('background job failed')
                 return
+            finally:
+                # Before ``then`` is queued, so ``then`` may start the next one.
+                with self._render_lock:
+                    self._in_flight[site] -= 1
+                    if not self._in_flight[site]:
+                        del self._in_flight[site]
             if then is not None:
                 self.call_soon(lambda: then(result))
 
@@ -231,6 +251,10 @@ class WidgetDriver:
         if not self._visible:
             return
         for timer in list(self._timers):
+            if timer.due - now > timer.interval + self.ALIGN_SLACK:
+                # The wall clock went back: without this the timer would stay
+                # silent until the clock caught up with the old due time.
+                timer.due = self._next_due(timer, now)
             if now >= timer.due:
                 timer.due = self._next_due(timer, now)
                 self._guard(timer.fn or self.request_render)

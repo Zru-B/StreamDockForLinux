@@ -43,37 +43,10 @@ def toggle_muted(kind: str) -> Optional[bool]:
     return read_muted(kind)
 
 
-class EventWatcher:
-    """Runs ``pactl subscribe`` and calls ``on_change`` for events that concern ``kind``."""
-
-    def __init__(self, kind: str, on_change: Callable[[], None]):
-        self._kind = kind
-        self._on_change = on_change
-        self._stopping = threading.Event()
-        self._process: Optional[subprocess.Popen] = None
-
-    def start(self) -> None:
-        threading.Thread(target=self._run, name=f'pactl-subscribe-{self._kind}', daemon=True).start()
-
-    def stop(self) -> None:
-        self._stopping.set()
-        if self._process is not None:
-            self._process.terminate()
-
-    def _run(self) -> None:
-        # 'server' events fire when the default device changes.
-        wanted = (f"on {self._kind} #", 'on server')
-        while not self._stopping.is_set():
-            try:
-                self._process = subprocess.Popen(  # pylint: disable=consider-using-with
-                    ['pactl', 'subscribe'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-            except OSError:
-                return
-            for line in self._process.stdout:
-                if "'change'" in line and any(token in line for token in wanted):
-                    self._on_change()
-            self._process.wait()
-            self._stopping.wait(5)
+# One ``pactl subscribe`` serves every mute key in the process.
+HUB = _common.ProcessHub(['pactl', 'subscribe'], 'pactl-subscribe')
+# A volume slider dragged across sends dozens of events; they become one read.
+DEBOUNCE = 0.1
 
 
 class MuteWidget(Widget):
@@ -94,14 +67,23 @@ class MuteWidget(Widget):
         # One quick pactl call, so the first frame shows the real state.
         self.muted: Optional[bool] = read_muted(self.kind)
         ctx.set_state(self.state_name())
-        self.watcher: Optional[EventWatcher] = None
+        self._listener: Optional[Callable[[Optional[str]], None]] = None
+        self._debounce_lock = threading.Lock()
+        self._debounce: Optional[threading.Timer] = None
         # A backstop for a pactl subscribe that died unnoticed.
         ctx.every(10, lambda: self.refresh(ctx))
 
     def on_show(self, ctx):
         # Watch for changes only while the key is on the device.
-        self.watcher = EventWatcher(self.kind, lambda: self.refresh(ctx))
-        self.watcher.start()
+        if self._listener is None:
+            # 'server' events fire when the default device changes.
+            wanted = (f"on {self.kind} #", 'on server')
+
+            def listener(line):
+                if line is not None and "'change'" in line and any(token in line for token in wanted):
+                    self.changed(ctx)
+            self._listener = listener
+            HUB.subscribe(listener)
         self.refresh(ctx)
 
     def on_hide(self, ctx):
@@ -111,12 +93,34 @@ class MuteWidget(Widget):
         self.stop_watching()
 
     def stop_watching(self):
-        if self.watcher is not None:
-            self.watcher.stop()
-            self.watcher = None
+        if self._listener is not None:
+            HUB.unsubscribe(self._listener)
+            self._listener = None
+        with self._debounce_lock:
+            if self._debounce is not None:
+                self._debounce.cancel()
+                self._debounce = None
+
+    def changed(self, ctx):
+        """A change event: read the state once the burst it belongs to is over."""
+        with self._debounce_lock:
+            if self._debounce is not None:
+                return
+            self._debounce = threading.Timer(DEBOUNCE, self._read_now, args=(ctx,))
+            self._debounce.daemon = True
+            self._debounce.start()
+
+    def _read_now(self, ctx):
+        # Read here rather than through the backstop's refresh(), which skips
+        # a read while one is in flight - and that one may predate the change.
+        with self._debounce_lock:
+            self._debounce = None
+        muted = read_muted(self.kind)
+        ctx.call_soon(lambda: self.update(ctx, muted))
 
     def refresh(self, ctx):
-        ctx.run_in_background(lambda: read_muted(self.kind), then=lambda muted: self.update(ctx, muted))
+        ctx.run_in_background(lambda: read_muted(self.kind), then=lambda muted: self.update(ctx, muted),
+                              skip_if_running=True)
 
     def state_name(self) -> str:
         return 'unknown' if self.muted is None else 'muted' if self.muted else 'unmuted'

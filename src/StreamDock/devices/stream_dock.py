@@ -34,6 +34,9 @@ DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
 # This can be overridden via configuration
 DEFAULT_LONG_PRESS_DURATION = 0.5
 
+# Pause (in seconds) before the reader retries after a failed read
+READ_ERROR_BACKOFF = 0.1
+
 # Default number of worker threads for callback processing
 DEFAULT_WORKER_THREADS = 4
 
@@ -149,6 +152,10 @@ class StreamDock(ABC):
         Returns:
             True if device opened successfully, False otherwise
         """
+        # Reopening closes the current HID handle, so the old reader must be
+        # out of hid_read_timeout() before that happens.
+        self._setup_reader(None)
+        self._cancel_countdown()
         self._start_workers()
         result = self.transport.open(bytes(self.path, 'utf-8'))
         if result != 1:
@@ -165,8 +172,8 @@ class StreamDock(ABC):
         """
         brightness = max(0, min(100, int(brightness)))
         self.wake_screen()
-        self.set_brightness(brightness)
-        self._current_brightness = brightness
+        if self.set_brightness(brightness) == 1:
+            self._current_brightness = brightness
         self.clear_all_icons()
         self.refresh()
 
@@ -175,20 +182,48 @@ class StreamDock(ABC):
         Close the device and release the HID handle.
         """
         self._setup_reader(None)
+        self._cancel_countdown()
+        self._cancel_gestures()
+        self._drain_event_queue()
         self._stop_workers()
         self.disconnected()
         self.transport.close()  # Release the HID handle so device can be reopened
+
+    def _cancel_gestures(self):
+        """
+        Drop in-flight gestures so a timer armed before close cannot fire a
+        press, release or long press into the next session. Callbacks stay
+        registered: a reopen reuses them.
+        """
+        with self._gesture_lock:
+            for pending in (self.pending_single_press, self.pending_single_release,
+                            self.pending_long_press):
+                for timer in pending.values():
+                    if timer is not None:
+                        timer.cancel()
+                pending.clear()
+            self.last_release_time.clear()
+            self.release_skip_count.clear()
+            self.long_press_fired.clear()
+
+    def _drain_event_queue(self):
+        """Discard queued callbacks that no worker has picked up yet."""
+        while True:
+            try:
+                self._event_queue.get_nowait()
+            except queue.Empty:
+                return
+            self._event_queue.task_done()
 
     def disconnected(self):
         self.transport.disconnected()
 
     def clear_icon(self, index):
-        origin = index
-        index = self.key(index)
+        # Check before mapping: KEY_MAPPING raises KeyError for an unknown key.
         if index not in range(1, 16):
-            logger.error("key '%s' out of range. you should set (1 ~ 15)", origin)
+            logger.error("key '%s' out of range. you should set (1 ~ 15)", index)
             return -1
-        self.transport.key_clear(index)
+        self.transport.key_clear(self.key(index))
 
     def clear_all_icons(self):
         self.transport.key_all_clear()
@@ -214,27 +249,8 @@ class StreamDock(ABC):
             return data[0]  # Return only result_bytes
         return data
 
-    def whileread(self):
-        """Read loop for manual key event monitoring (deprecated - use callbacks)."""
-        while 1:
-            try:
-                data = self.read(timeout_ms=1000)
-                if data != None and len(data) >= 11:
-                    if (data[:3].decode('utf-8', errors='ignore') == "ACK" and data[5:7].decode('utf-8', errors='ignore')):
-                        if data[10] == 0x01 and data[9] > 0x00 and data[9] <= 0x0f:
-                            key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            logger.debug("Key %s pressed", key_num)
-                        elif data[10] == 0x00 and data[9] > 0x00 and data[9] <= 0x0f:
-                            key_num = KEY_MAPPING[data[9]] if self.KEY_MAP else data[9]
-                            logger.debug("Key %s released", key_num)
-            except Exception as e:
-                logger.exception("Error in whileread: %s", e)
-                break
-
     def screen_off(self):
-        res=self.transport.screen_off()
-        self.reset_countdown(self.__seconds)
-        return res
+        return self.transport.screen_off()
 
     def screen_on(self):
         return self.transport.screen_on()
@@ -249,6 +265,11 @@ class StreamDock(ABC):
         self.screenlicent=threading.Timer(data,self.screen_off)
         self.screenlicent.daemon = True
         self.screenlicent.start()
+
+    def _cancel_countdown(self):
+        if self.screenlicent is not None:
+            self.screenlicent.cancel()
+            self.screenlicent = None
 
     @abstractmethod
     def get_serial_number(self):
@@ -275,10 +296,6 @@ class StreamDock(ABC):
 
     @abstractmethod
     def set_brightness(self, percent):
-        pass
-
-    @abstractmethod
-    def set_touchscreen_image(self, image):
         pass
 
     def id(self):
@@ -649,11 +666,15 @@ class StreamDock(ABC):
                 lambda: self._queue_callback(callbacks['on_release'], k))
 
     def _read(self):
+        read_failing = False
         while self.run_read_thread:
             try:
                 arr=self.read(timeout_ms=1000)
-                if arr is not None and len(arr) >= 10:
-                    if arr[9]!=0xFF:
+                if arr is not None and len(arr) >= 11:
+                    if arr[9] != 0xFF and arr[9] not in KEY_MAPPING:
+                        logger.debug("Ignoring report for unknown key 0x%02x: %s",
+                                     arr[9], bytes(arr).hex())
+                    elif arr[9]!=0xFF:
                         k = KEY_MAPPING[arr[9]]
                         new = arr[10]
                         if new == 0x02:
@@ -668,7 +689,13 @@ class StreamDock(ABC):
                         if new in (0, 1):
                             self._handle_key_event(k, new == 1)
                 del arr
+                read_failing = False
+            except OSError as e:
+                # An unplugged device fails every read at once; back off instead of spinning.
+                if not read_failing:
+                    logger.warning("Device read failed: %s", e)
+                    read_failing = True
+                time.sleep(READ_ERROR_BACKOFF)
             except Exception:
                 logger.exception("Error in read loop")
-                self.run_read_thread = False
-                self.close()
+                time.sleep(READ_ERROR_BACKOFF)

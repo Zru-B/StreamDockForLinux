@@ -398,3 +398,164 @@ class TestSystemEventMonitor:
         
         # Handler should NOT be called (verification cancelled)
         handler.assert_not_called()
+
+
+class TestLockRaces:
+    """Signals interleaving with a verification poll or a running handler."""
+
+    @pytest.fixture
+    def mock_system(self):
+        system = Mock(spec=SystemInterface)
+        system.start_lock_monitor.return_value = True
+        return system
+
+    @pytest.fixture
+    def monitor(self, mock_system):
+        return SystemEventMonitor(mock_system, Mock(spec=WindowInterface), verification_delay=0.05)
+
+    def test_unlock_during_the_poll_wins(self, monitor, mock_system):
+        # The unlock was dropped and a stale poll dispatched LOCK: stuck locked.
+        events = []
+        monitor.register_handler(SystemEvent.LOCK, lambda e: events.append('LOCK'))
+        monitor.register_handler(SystemEvent.UNLOCK, lambda e: events.append('UNLOCK'))
+        polling, release = threading.Event(), threading.Event()
+
+        def slow_poll():
+            polling.set()
+            release.wait(2)
+            return True
+        mock_system.poll_lock_state.side_effect = slow_poll
+
+        monitor._on_lock_state_changed(True)
+        assert polling.wait(2)
+        monitor._on_lock_state_changed(False)
+        release.set()
+        time.sleep(0.1)
+
+        assert events == ['UNLOCK']
+        assert not monitor.is_locked()
+
+    def test_unlock_during_the_lock_handler_is_delivered_after_it(self, monitor, mock_system):
+        # The busy guard discarded the unlock, leaving the device in locked mode.
+        mock_system.poll_lock_state.return_value = True
+        events = []
+        in_handler, release = threading.Event(), threading.Event()
+
+        def slow_lock(_event):
+            events.append('LOCK')
+            in_handler.set()
+            release.wait(2)
+        monitor.register_handler(SystemEvent.LOCK, slow_lock)
+        monitor.register_handler(SystemEvent.UNLOCK, lambda e: events.append('UNLOCK'))
+
+        monitor._on_lock_state_changed(True)
+        assert in_handler.wait(2)
+        monitor._on_lock_state_changed(False)
+        assert events == ['LOCK']  # handlers never run concurrently
+        release.set()
+        time.sleep(0.1)
+
+        assert events == ['LOCK', 'UNLOCK']
+        assert not monitor.is_locked()
+
+    def test_window_polling_pauses_while_locked(self, mock_system):
+        # Lock-screen focus must not switch layouts; the first poll after
+        # unlocking reports the window even if it is the one from before.
+        windows = Mock(spec=WindowInterface)
+        window = Mock(class_="firefox", title="t")
+        windows.get_active_window.return_value = window
+        monitor = SystemEventMonitor(mock_system, windows, verification_delay=0.05)
+        monitor._window_poll_interval = 0.01
+        changes = []
+        monitor.register_handler(SystemEvent.WINDOW_CHANGED, lambda e: changes.append(e))
+        mock_system.poll_lock_state.return_value = False
+        monitor.start_monitoring()
+        try:
+            time.sleep(0.05)
+            assert len(changes) == 1
+
+            monitor._current_state['is_locked'] = True
+            time.sleep(0.05)
+            windows.get_active_window.reset_mock()
+            time.sleep(0.05)
+            windows.get_active_window.assert_not_called()
+
+            monitor._current_state['is_locked'] = False
+            time.sleep(0.05)
+            assert len(changes) == 2
+        finally:
+            monitor.stop_monitoring()
+
+
+class TestUnknownLockState:
+    """poll_lock_state() returns None when the state cannot be read."""
+
+    @pytest.fixture
+    def mock_system(self):
+        system = Mock(spec=SystemInterface)
+        system.start_lock_monitor.return_value = True
+        return system
+
+    @pytest.fixture
+    def monitor(self, mock_system):
+        return SystemEventMonitor(mock_system, Mock(spec=WindowInterface), verification_delay=0.05)
+
+    def test_an_unreadable_state_at_start_keeps_the_known_one(self, monitor, mock_system):
+        # None was stored as the lock state, and read as "unlocked" everywhere.
+        monitor._current_state['is_locked'] = True
+        mock_system.poll_lock_state.return_value = None
+        monitor.start_monitoring()
+        try:
+            assert monitor.is_locked() is True
+        finally:
+            monitor.stop_monitoring()
+
+    def test_an_unverifiable_lock_is_assumed(self, monitor, mock_system):
+        # Failing open would leave the deck lit and usable on a locked screen.
+        handler = Mock()
+        monitor.register_handler(SystemEvent.LOCK, handler)
+        mock_system.poll_lock_state.return_value = None
+
+        monitor._on_lock_state_changed(True)
+        time.sleep(0.15)
+
+        handler.assert_called_once_with(SystemEvent.LOCK)
+        assert monitor.is_locked() is True
+
+    def test_only_a_definite_unlock_aborts_the_lock(self, monitor, mock_system):
+        handler = Mock()
+        monitor.register_handler(SystemEvent.LOCK, handler)
+        mock_system.poll_lock_state.return_value = False
+
+        monitor._on_lock_state_changed(True)
+        time.sleep(0.15)
+
+        handler.assert_not_called()
+
+
+class TestSeedWindow:
+    """A window the application already acted on is not reported again."""
+
+    def test_the_first_poll_skips_a_seeded_window(self):
+        from StreamDock.domain.Models import WindowInfo
+        system = Mock(spec=SystemInterface)
+        system.start_lock_monitor.return_value = True
+        system.poll_lock_state.return_value = False
+        windows = Mock(spec=WindowInterface)
+        window = WindowInfo(title="t", class_="firefox", raw="")
+        windows.get_active_window.return_value = window
+        monitor = SystemEventMonitor(system, windows)
+        monitor._window_poll_interval = 0.01
+        changes = []
+        monitor.register_handler(SystemEvent.WINDOW_CHANGED, changes.append)
+
+        monitor.seed_window(window)
+        monitor.start_monitoring()
+        try:
+            time.sleep(0.05)
+        finally:
+            monitor.stop_monitoring()
+
+        assert changes == []
+        assert monitor.current_window is window
+        assert monitor.recent_windows == [window]

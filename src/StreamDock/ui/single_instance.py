@@ -7,9 +7,10 @@ point has no Qt and cannot participate here.
 """
 
 import logging
+import os
 from typing import Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QStandardPaths, pyqtSignal
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_KEY = "streamdock-gui"
 ACTIVATE = b"RAISE"
 CONNECT_TIMEOUT_MS = 200
+
+
+def socket_path(key: str = DEFAULT_KEY) -> str:
+    """
+    Where the guard's socket lives: somewhere private to this user.
+
+    Qt puts a bare name in /tmp, shared by every user on the machine, so one
+    user's GUI would refuse to start - or be raised by - another's.
+
+    Args:
+        key: Socket file name
+
+    Returns:
+        An absolute path under XDG_RUNTIME_DIR, else Qt's runtime location,
+        else a per-uid name in the temporary directory
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.RuntimeLocation)
+    if runtime_dir and os.path.isdir(runtime_dir):
+        return os.path.join(runtime_dir, key)
+    # Still relative, so Qt places it in /tmp, but no longer the same name
+    # for every user.
+    return f"{key}-{os.getuid()}"
 
 
 class SingleInstanceGuard(QObject):
@@ -27,12 +51,12 @@ class SingleInstanceGuard(QObject):
     def __init__(self, key: str = DEFAULT_KEY, parent: Optional[QObject] = None):
         """
         Args:
-            key: Local socket name. Per-user on Linux, since it lives in
-                XDG_RUNTIME_DIR.
+            key: Socket name, placed per user by socket_path(); an absolute
+                path is used as given.
             parent: Qt parent
         """
         super().__init__(parent)
-        self._key = key
+        self._key = key if os.path.isabs(key) else socket_path(key)
         self._server: Optional[QLocalServer] = None
 
     def try_acquire(self) -> bool:
@@ -51,6 +75,8 @@ class SingleInstanceGuard(QObject):
         QLocalServer.removeServer(self._key)
 
         server = QLocalServer(self)
+        # Owner-only permissions, in case the fallback lands somewhere shared.
+        server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         if not server.listen(self._key):
             logger.warning("Could not listen on %s: %s", self._key, server.errorString())
             return True

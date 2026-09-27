@@ -16,6 +16,10 @@ from StreamDock.dependency_check import DependencyChecker
 
 logger = logging.getLogger(__name__)
 
+# Headless: how often to try a dock that is attached but would not open - held
+# by another process, or not yet readable - with no udev event to prompt it.
+HEADLESS_RETRY_SECONDS = 5.0
+
 
 def parse_args(argv=None) -> argparse.Namespace:
     """Parse the command line."""
@@ -51,14 +55,15 @@ def setup_logging(debug: bool = False) -> None:
     logging.getLogger('PIL.PngImagePlugin').setLevel(logging.INFO)
 
 
-def check_dependencies(check_only: bool = False) -> None:
+def check_dependencies(check_only: bool = False, headless: bool = False) -> None:
     """
     Report on dependencies, exiting if any critical one is missing.
 
     Args:
         check_only: Print the full report and exit 0
+        headless: PyQt6 is not needed without the GUI
     """
-    checker = DependencyChecker()
+    checker = DependencyChecker(headless=headless)
 
     if check_only:
         checker.print_report()
@@ -73,7 +78,9 @@ def check_dependencies(check_only: bool = False) -> None:
         sys.exit(1)
 
 
-def determine_config_path(explicit: Optional[str], *, required: bool) -> Optional[str]:
+def determine_config_path(explicit: Optional[str], *, required: bool,
+                          gui: bool = False,
+                          remembered: Optional[str] = None) -> Optional[str]:
     """
     Resolve which configuration file to use.
 
@@ -81,6 +88,12 @@ def determine_config_path(explicit: Optional[str], *, required: bool) -> Optiona
         explicit: Path given on the command line
         required: Exit with an error when nothing is found. The GUI passes
             False - it opens with an empty document instead.
+        gui: Skip ./config.yml. The GUI is launched from menus and
+            terminals alike, and whatever config.yml sat in the working
+            directory would override the remembered default - then be
+            connected to the device and saved over.
+        remembered: The GUI's remembered default configuration, preferred
+            over the install-relative file
 
     Returns:
         A path, or None when nothing was found and none is required
@@ -88,9 +101,12 @@ def determine_config_path(explicit: Optional[str], *, required: bool) -> Optiona
     if explicit:
         return explicit
 
-    candidates = ['config.yml',
-                  os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               os.pardir, 'config.yml')]
+    if gui and remembered:
+        return remembered
+
+    candidates = [] if gui else ['config.yml']
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   os.pardir, 'config.yml'))
     for candidate in candidates:
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
@@ -177,6 +193,7 @@ def run_headless(config_path: str, device_id: str = "") -> int:
     watcher = DeviceWatcher(lambda devices: changed.set())
     watcher.start()
 
+    last_attempt = time.monotonic()
     try:
         if watcher.devices():
             start_for(watcher.devices()[0])
@@ -186,24 +203,30 @@ def run_headless(config_path: str, device_id: str = "") -> int:
         logging.info("✓ StreamDock is ready. Press Ctrl+C to exit.")
 
         while True:
-            if changed.wait(timeout=1.0):
+            event = changed.wait(timeout=min(1.0, HEADLESS_RETRY_SECONDS))
+            retry_due = time.monotonic() - last_attempt >= HEADLESS_RETRY_SECONDS
+            if event:
                 changed.clear()
-                attached = {device_key(d): d for d in watcher.devices()}
-
                 current = state['device']
-                if current is not None and device_key(current) not in attached:
+                if current is not None and device_key(current) not in \
+                        {device_key(d) for d in watcher.devices()}:
                     stop_running(f"{device_label(current)} was unplugged")
 
-                if state['app'] is None and attached:
-                    # Honour an explicit --device; otherwise take any.
-                    if device_id:
-                        target = next((d for k, d in attached.items()
-                                       if device_id in (k, d.device_id)), None)
-                    else:
-                        target = next(iter(attached.values()))
-                    if target is not None:
+            # A dock that failed to open gets no new udev event, so it is
+            # retried on a timer as well as on every change.
+            if state['app'] is None and (event or retry_due):
+                attached = {device_key(d): d for d in watcher.devices()}
+                # Honour an explicit --device; otherwise take any.
+                if device_id:
+                    target = next((d for k, d in attached.items()
+                                   if device_id in (k, d.device_id)), None)
+                else:
+                    target = next(iter(attached.values()), None)
+                if target is not None:
+                    if event:
                         logging.info("Device available: %s", device_label(target))
-                        start_for(target)
+                    last_attempt = time.monotonic()
+                    start_for(target)
             time.sleep(0)
     except KeyboardInterrupt:
         logging.info("Shutting down...")
@@ -227,14 +250,18 @@ def main(argv=None) -> int:
     """
     args = parse_args(argv)
     setup_logging(args.debug)
-    check_dependencies(args.check_deps)
+    check_dependencies(args.check_deps, headless=args.headless)
 
     if args.headless:
         config_path = determine_config_path(args.config, required=True)
         logging.info("Using configuration file: %s", config_path)
         return run_headless(config_path, args.device)
 
-    config_path = determine_config_path(args.config, required=False)
+    # Qt only from here on: --headless must never import it.
+    from StreamDock.ui.settings_store import get_default_config_path
+    config_path = determine_config_path(args.config, required=False, gui=True,
+                                        remembered=get_default_config_path())
+    logging.info("Using configuration file: %s", config_path or "(none)")
 
     from StreamDock.ui.app import main as run_gui
     return run_gui(config_path=config_path, device_id=args.device,

@@ -136,6 +136,9 @@ def compose(appearance: Appearance, state: Optional[str], badge_text: Optional[s
     """
     path = appearance.image_for(state)
     base = load_key_image(path, size) if path else None
+    if base is None and appearance.icon and path != appearance.icon:
+        # A state image that won't load falls back to the base image.
+        base = load_key_image(appearance.icon, size)
     if base is None:
         return drawn
     if badge_text and appearance.badge is not None:

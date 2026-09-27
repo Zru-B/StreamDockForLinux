@@ -10,6 +10,7 @@ a widget never sees a value of the wrong type.
 # body, so annotations there must not be evaluated.
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -85,6 +86,9 @@ class Option:
                 value = int(value)
             else:
                 value = float(value)
+                # NaN compares false with every bound, so it would pass the range check.
+                if not math.isfinite(value):
+                    raise OptionError(f"'{self.key}' must be a finite number")
             if self.minimum is not None and value < self.minimum:
                 raise OptionError(f"'{self.key}' must be at least {self.minimum}")
             if self.maximum is not None and value > self.maximum:

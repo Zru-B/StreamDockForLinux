@@ -21,6 +21,13 @@ class TestOptions:
             option.coerce(1.5)
         assert option.coerce(2.0) == 2
 
+    def test_float_rejects_nan_and_infinity(self):
+        # NaN compares false with any bound, so a range alone let it through.
+        option = Option.float('scale', 1.0, minimum=0.0, maximum=10.0)
+        for value in (float('nan'), float('inf'), float('-inf')):
+            with pytest.raises(OptionError):
+                option.coerce(value)
+
     def test_range_is_enforced(self):
         option = Option.float('f', default=0.5, minimum=0.0, maximum=1.0)
         with pytest.raises(OptionError):
@@ -132,6 +139,21 @@ class TestTimers:
         driver._run_due_timers(clock.now)
         assert len(fired) == 1
         assert driver._timers[0].due == pytest.approx(5040.0 + WidgetDriver.ALIGN_SLACK)
+
+    def test_a_clock_going_back_realigns_instead_of_going_silent(self):
+        # Setting the clock back an hour left the timer due an hour away.
+        clock = FakeClock(5000.0)
+        driver = idle_driver(clock)
+        fired = []
+        driver.ctx.every(60, lambda: fired.append(clock.now), align=True)
+
+        clock.now = 1000.0
+        driver._run_due_timers(clock.now)
+        assert fired == []
+        assert driver._timers[0].due == pytest.approx(1020.0 + WidgetDriver.ALIGN_SLACK)
+        clock.now = 1021.0
+        driver._run_due_timers(clock.now)
+        assert fired == [1021.0]
 
     def test_sleep_is_capped_so_jumps_are_noticed(self):
         clock = FakeClock(0.0)
@@ -292,3 +314,49 @@ class TestRenderOnceDataDir:
         driver = WidgetDriver(DataDirWidget, {}, data_dir=str(tmp_path / 'mine'))
         driver.render_once()
         assert driver.widget.folder == str(tmp_path / 'mine')
+
+
+class TestBackgroundJobs:
+    def test_a_call_site_runs_one_job_at_a_time(self):
+        # A poll slower than its interval used to stack up threads.
+        driver = WidgetDriver(Recorder, {})
+        release = threading.Event()
+        started = []
+
+        def poll():
+            driver.run_in_background(lambda: started.append(1) or release.wait(5), None, skip_if_running=True)
+
+        poll()
+        poll()
+        driver.run_in_background(lambda: started.append(2), None)
+        release.set()
+        for _ in range(100):
+            if not driver._in_flight:
+                break
+            threading.Event().wait(0.01)
+        assert sorted(started) == [1, 2]
+        poll()
+        for _ in range(100):
+            if len(started) == 3:
+                break
+            threading.Event().wait(0.01)
+        assert started.count(1) == 2
+
+    def test_user_work_is_never_skipped(self):
+        # Two quick presses of a mute toggle must toggle twice, even from one call site.
+        driver = WidgetDriver(Recorder, {})
+        release = threading.Event()
+        started = []
+
+        def press():
+            driver.ctx.run_in_background(lambda: started.append(1) or release.wait(5))
+
+        press()
+        press()
+        release.set()
+        for _ in range(100):
+            if len(started) == 2 and not driver._in_flight:
+                break
+            threading.Event().wait(0.01)
+        assert started == [1, 1]
+        assert not driver._in_flight

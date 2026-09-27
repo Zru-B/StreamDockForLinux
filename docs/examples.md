@@ -52,7 +52,19 @@ streamdock:
 
 `LAUNCH_APPLICATION` focuses the application's window when it is already
 open instead of starting a second copy. A key can also carry an icon *and*
-text: add `text:` and `text_position:` to an icon key.
+text: add `text:` to an icon key and the label is drawn over the icon, at
+`text_position:` (`bottom`, `center` or `top`) with the same `text_color`,
+`font_size` and `bold` a text key takes; `background_color` shows through a
+transparent icon. The editor offers this as the *Label* field of an icon key.
+
+```yaml
+    Browser:
+      icon: "../img/firefox.png"
+      text: "Web"
+      text_position: "bottom"
+      on_press_actions:
+        - "LAUNCH_APPLICATION": "firefox"
+```
 
 ## Media controls
 

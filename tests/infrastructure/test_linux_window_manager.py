@@ -33,6 +33,33 @@ def _run(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
     return r
 
 
+def _fake_kwin(payload: str, calls: list = None):
+    """subprocess.run stand-in for the KWin-script path; the journal echoes ``payload``."""
+    loaded = {}
+
+    def fake(cmd, *args, **kwargs):
+        if calls is not None:
+            calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "kdotool" in cmd_str:
+            return _run(1)
+        if "loadScript" in cmd_str and "unloadScript" not in cmd_str:
+            with open(cmd[-2]) as f:
+                loaded["marker"] = f.read().split('print("')[1].split("|")[0]
+            return _run(0, "42")
+        if "journalctl" in cmd_str:
+            return _run(0, f"some line\njs: {loaded.get('marker')}|{payload}\nother line")
+        return _run(0)
+
+    return fake
+
+
+def _xdotool_out(window_id: str, title: str, class_: str) -> str:
+    """What `xdotool getactivewindow getwindowgeometry --shell getwindowname getwindowclassname` prints."""
+    return (f"WINDOW={window_id}\nX=0\nY=0\nWIDTH=800\nHEIGHT=600\nSCREEN=0\n"
+            f"{title}\n{class_}\n")
+
+
 # ---------------------------------------------------------------------------
 # Tool availability
 # ---------------------------------------------------------------------------
@@ -109,12 +136,9 @@ class TestHaircrossSafety:
         """kdotool path: must call 'kdotool getactivewindow', never 'selectwindow'."""
         mock_which.side_effect = lambda name: "/usr/bin/kdotool" if name == "kdotool" else None
 
-        # availability probe + getactivewindow + getwindowname + getwindowclassname
         mock_run.side_effect = [
-            _run(0, "1"),           # is_kdotool_available probe
-            _run(0, "999"),         # getactivewindow
-            _run(0, "Firefox"),     # getwindowname
-            _run(0, "firefox"),     # getwindowclassname
+            _run(0, "1"),                        # is_kdotool_available probe
+            _run(0, "999\nFirefox\nfirefox\n"),  # chained id/name/class
         ]
 
         result = manager.get_active_window()
@@ -136,9 +160,7 @@ class TestHaircrossSafety:
 
         mock_run.side_effect = [
             _run(0),                # is_xdotool_available probe
-            _run(0, "42"),          # getactivewindow
-            _run(0, "Konsole"),     # getwindowname
-            _run(0, "org.kde.konsole"),  # getwindowclassname
+            _run(0, _xdotool_out("42", "Konsole", "org.kde.konsole")),
         ]
 
         result = manager.get_active_window()
@@ -162,15 +184,15 @@ class TestGetActiveWindowResults:
         mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
         mock_run.side_effect = [
             _run(0, "1"),
-            _run(0, "123"),
-            _run(0, "Firefox - GitHub"),
-            _run(0, "firefox"),
+            _run(0, "{abc-123}\nFirefox - GitHub\nfirefox\n"),
         ]
         result = manager.get_active_window()
         assert result is not None
         assert isinstance(result, WindowInfo)
         assert result.method == "kdotool"
         assert result.class_ == "Firefox"
+        assert result.title == "Firefox - GitHub"
+        assert result.window_id == "{abc-123}"
 
     @patch(f"{MODULE}.shutil.which")
     @patch(f"{MODULE}.subprocess.run")
@@ -178,14 +200,14 @@ class TestGetActiveWindowResults:
         mock_which.side_effect = lambda n: "/usr/bin/xdotool" if n == "xdotool" else None
         mock_run.side_effect = [
             _run(0),
-            _run(0, "77"),
-            _run(0, "Konsole"),
-            _run(0, "org.kde.konsole"),
+            _run(0, _xdotool_out("77", "Konsole", "org.kde.konsole")),
         ]
         result = manager.get_active_window()
         assert result is not None
         assert result.method == "xdotool"
         assert result.class_ == "Konsole"
+        assert result.title == "Konsole"
+        assert result.window_id == "77"
 
     @patch(f"{MODULE}.os.environ.get")
     @patch(f"{MODULE}.shutil.which")
@@ -193,48 +215,10 @@ class TestGetActiveWindowResults:
     def test_qdbus_fallback_returns_correct_window_info(self, mock_run, mock_which, mock_env, manager):
         mock_env.return_value = "wayland-0"
         mock_which.side_effect = lambda n: "/usr/bin/qdbus6" if n == "qdbus6" else None
-        
-        # We don't patch uuid, we just let it generate a real uuid
-        # and we mock subprocess.run to return a line that happens to match our test logic
-        # by patching the return of the script load/run.
-        def mock_subprocess_run(cmd, *args, **kwargs):
-            cmd_str = " ".join(cmd)
-            print("MOCK CALLED WITH:", cmd_str)
-            if "kdotool" in cmd_str:
-                return _run(1)  # Force kdotool to be unavailable
-            if "loadScript" in cmd_str:
-                return _run(0, "42")
-            if "unloadScript" in cmd_str:
-                return _run(0)
-            if "Script.run" in cmd_str:
-                return _run(0)
-            if "journalctl" in cmd_str:
-                # To bypass the unique marker, we just force the test string to have |||
-                # Actually, the logic looks for marker_id in line. So we must extract marker_id 
-                # from the dumped script file.
-                marker_id = "unknown"
-                try:
-                    with open(manager._kwin_script_path, "r") as f:
-                        content = f.read()
-                        # print("{marker_id}|" + active.caption ...
-                        marker_id = content.split('print("')[1].split('|')[0]
-                except Exception as e:
-                    print("Failed to read script path", e)
-                
-                print("USING MARKER", marker_id)
-                return _run(0, f"some line\njs: {marker_id}|Vivaldi|||vivaldi-stable\nother line")
-            
-            # Default success for availability checks
-            return _run(0)
+        mock_run.side_effect = _fake_kwin("Vivaldi|||vivaldi-stable")
 
-        mock_run.side_effect = mock_subprocess_run
-        
-        manager._kwin_script_path = "/tmp/fake_fake.js"
-        # Write dummy file so open() doesn't crash in mock
-        with open(manager._kwin_script_path, "w") as f:
-            f.write('print("fakehash123|Vivaldi|||vivaldi-stable");')
-            
         result = manager.get_active_window()
+
         assert result is not None
         assert result.method == "qdbus_kwin"
         assert result.class_ == "vivaldi-stable"
@@ -322,3 +306,160 @@ class TestSearchWindowByName:
         result = manager.search_window_by_name("Fallback App")
         assert result == "33"  # Expected bottom of stack for xdotool
 
+
+# ---------------------------------------------------------------------------
+# Polling cost, kdotool back-off and the qdbus fallback
+# ---------------------------------------------------------------------------
+
+class TestActiveWindowPolling:
+
+    @patch(f"{MODULE}.shutil.which")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_kdotool_poll_is_a_single_process(self, mock_run, mock_which, manager):
+        # Guards three kdotool processes per 0.5 s poll.
+        mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
+        mock_run.return_value = _run(0, "{id}\nTitle\nfirefox\n")
+        manager.is_kdotool_available()
+        mock_run.reset_mock()
+
+        manager.get_active_window()
+
+        assert mock_run.call_count == 1
+
+    @patch(f"{MODULE}.shutil.which")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_xdotool_poll_is_a_single_process(self, mock_run, mock_which, manager):
+        mock_which.side_effect = lambda n: "/usr/bin/xdotool" if n == "xdotool" else None
+        mock_run.return_value = _run(0, _xdotool_out("5", "T", "c"))
+        manager.is_xdotool_available()
+        mock_run.reset_mock()
+
+        manager.get_active_window()
+
+        assert mock_run.call_count == 1
+
+    @patch(f"{MODULE}.shutil.which")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_xdotool_null_class_falls_back_to_title(self, mock_run, mock_which, manager):
+        mock_which.side_effect = lambda n: "/usr/bin/xdotool" if n == "xdotool" else None
+        mock_run.side_effect = [_run(0), _run(0, _xdotool_out("5", "Doc - Firefox", "(null)"))]
+
+        result = manager.get_active_window()
+
+        assert result.class_ == "Firefox"
+
+    @patch(f"{MODULE}.os.environ.get", return_value="wayland-0")
+    @patch(f"{MODULE}.shutil.which", return_value="/usr/bin/tool")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_null_active_window_is_no_window_without_fallback(self, mock_run, mock_which, mock_env, manager):
+        # Guards the lock screen pushing every poll onto the journal-writing qdbus path.
+        null = _run(1, "", "TypeError: Cannot read property 'internalId' of null")
+        mock_run.return_value = null
+
+        assert manager.get_active_window() is None
+
+        cmds = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+        assert manager.is_kdotool_available() is True
+        assert not any("qdbus6" in c or "journalctl" in c or "xdotool" in c for c in cmds)
+
+    @patch(f"{MODULE}.os.environ.get", return_value="wayland-0")
+    @patch(f"{MODULE}.shutil.which", return_value="/usr/bin/tool")
+    @patch(f"{MODULE}.subprocess.run")
+    @patch(f"{MODULE}.time.monotonic")
+    def test_kdotool_timeout_backs_off_then_reprobes(self, mock_clock, mock_run, mock_which, mock_env, manager):
+        # Guards one slow KWin reply disabling kdotool for the whole session,
+        # and the qdbus fallback being used while kdotool merely backs off.
+        mock_clock.return_value = 1000.0
+        manager._kdotool_available = True
+
+        def timeout_kdotool(cmd, *args, **kwargs):
+            if cmd[0] == "kdotool":
+                raise subprocess.TimeoutExpired(cmd, 1)
+            return _run(1)
+        mock_run.side_effect = timeout_kdotool
+
+        manager.get_active_window()
+        mock_run.reset_mock()
+        manager.get_active_window()
+
+        cmds = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+        assert not any(c.startswith("kdotool") for c in cmds)
+        assert not any("qdbus6" in c or "journalctl" in c for c in cmds)
+
+        mock_clock.return_value = 1000.0 + 61
+        mock_run.side_effect = None
+        mock_run.return_value = _run(0, "{id}\nTitle\nfirefox\n")
+
+        result = manager.get_active_window()
+
+        assert result is not None and result.method == "kdotool"
+
+    @patch(f"{MODULE}.shutil.which", return_value="/usr/bin/qdbus6")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_qdbus_runs_with_c_locale(self, mock_run, mock_which, manager):
+        # Guards qdbus6 writing a locale warning to the journal on every call.
+        mock_run.return_value = _run(0)
+
+        manager.is_qdbus_kwin_available()
+
+        assert mock_run.call_args.kwargs["env"]["LC_ALL"] == "C.UTF-8"
+
+
+# ---------------------------------------------------------------------------
+# KWin one-shot scripts
+# ---------------------------------------------------------------------------
+
+class TestKWinScript:
+
+    def test_caption_containing_separator_is_kept(self, manager):
+        # Guards a caption with "|||" in it losing the window or its class.
+        with patch(f"{MODULE}.subprocess.run", side_effect=_fake_kwin("a|||b|||konsole")), \
+                patch(f"{MODULE}.time.sleep"):
+            result = manager._qdbus_get_active_window()
+
+        assert result.title == "a|||b"
+        assert result.class_ == "Konsole"
+
+    def test_script_file_is_fresh_private_and_removed(self, manager, tmp_path, monkeypatch):
+        # Guards script files piling up in /tmp or being reused across calls.
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        calls = []
+        with patch(f"{MODULE}.subprocess.run", side_effect=_fake_kwin("T|||c", calls)), \
+                patch(f"{MODULE}.time.sleep"):
+            manager._qdbus_get_active_window()
+            manager._qdbus_get_active_window()
+
+        loads = [c for c in calls if c[-3].endswith(".loadScript")]
+        assert len(loads) == 2
+        assert loads[0][-2] != loads[1][-2]
+        assert all(c[-2].startswith(str(tmp_path)) for c in loads)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_script_unloaded_and_removed_when_run_fails(self, manager, tmp_path, monkeypatch):
+        # Guards a failing call leaving the script loaded in KWin or on disk.
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        calls = []
+
+        def fake(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if "Script.run" in " ".join(cmd):
+                raise subprocess.TimeoutExpired(cmd, 1)
+            return _run(0, "42")
+
+        with patch(f"{MODULE}.subprocess.run", side_effect=fake):
+            assert manager._qdbus_get_active_window() is None
+
+        assert any(c[-2].endswith("unloadScript") for c in calls)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_journal_read_is_bounded_by_time_not_line_count(self, manager):
+        # Guards the result scrolling out of a fixed "-n 20" window on a busy journal.
+        calls = []
+        with patch(f"{MODULE}.subprocess.run", side_effect=_fake_kwin("T|||c", calls)), \
+                patch(f"{MODULE}.time.sleep"):
+            manager._qdbus_get_active_window()
+
+        journal = next(c for c in calls if c[0] == "journalctl")
+        assert any(a.startswith("--since=@") for a in journal)
+        assert "-n" not in journal
+        assert ["-o", "cat"] == journal[journal.index("-o"):journal.index("-o") + 2]
