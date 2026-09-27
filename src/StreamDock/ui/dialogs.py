@@ -12,9 +12,17 @@ import shlex
 from pathlib import Path
 
 from StreamDock.application.config_document import (
-    DEFAULT_DOUBLE_PRESS_INTERVAL, DEFAULT_LONG_PRESS_DURATION, DEFAULT_TEXT_POSITION,
-    KeyDefinition)
+    DEFAULT_BRIGHTNESS, DEFAULT_DOUBLE_PRESS_INTERVAL, DEFAULT_LONG_PRESS_DURATION,
+    DEFAULT_TEXT_POSITION, MIN_BRIGHTNESS, KeyDefinition)
 from StreamDock.business_logic.action_type import ActionType
+from StreamDock.business_logic.screensaver import (
+    MAX_INTERVAL,
+    MAX_TURN_OFF_AFTER,
+    MIN_INTERVAL,
+    ONLINE_PROVIDERS,
+    SOURCE_FOLDER,
+    SOURCE_ONLINE,
+)
 from StreamDock.application.configuration_manager import (
     MAX_FONT_SIZE,
     MIN_FONT_SIZE,
@@ -66,6 +74,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStyle,
     QStyledItemDelegate,
@@ -2430,4 +2439,180 @@ class AdvancedSettingsDialog(ThemedDialog):
         return {
             'double_press_interval': self.interval_spin.value(),
             'long_press_duration': self.long_press_spin.value(),
+        }
+
+
+class ScreensaverDialog(ThemedDialog):
+    """
+    The lock-screen slideshow: when to show it, where its pictures come from,
+    how fast they change and when the deck finally goes dark.
+    """
+
+    def __init__(self, settings, config_dir: str, parent=None):
+        """
+        Args:
+            settings: The document's ScreensaverSettings, read but not changed
+            config_dir: Directory of the config file; a folder picked under it
+                is stored relative, like a key icon
+        """
+        super().__init__("Screensaver", parent=parent)
+        self.config_dir = config_dir or os.getcwd()
+        self.setMinimumWidth(520)
+        layout = self.content_layout
+        layout.setSpacing(current_theme().metrics.spacing)
+
+        self.enabled_toggle = ToggleSwitch(
+            "Show a slideshow when the computer locks")
+        self.enabled_toggle.setToolTip(
+            "Instead of turning off, the deck spreads each picture over all of its keys. "
+            "The keys do nothing until the computer is unlocked.")
+        self.enabled_toggle.setChecked(bool(settings.enabled))
+        layout.addWidget(self.enabled_toggle)
+
+        self.options = QWidget()
+        form = QFormLayout(self.options)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(12)
+
+        self.folder_radio = QRadioButton("Pictures in a folder")
+        self.online_radio = QRadioButton("Pictures from the internet")
+        source_group = QButtonGroup(self)
+        source_group.addButton(self.folder_radio)
+        source_group.addButton(self.online_radio)
+        source_box = QVBoxLayout()
+        source_box.setSpacing(4)
+        source_box.addWidget(self.folder_radio)
+        source_box.addWidget(self.online_radio)
+        form.addRow("Source:", source_box)
+
+        self.folder_edit = QLineEdit(settings.folder or "")
+        self.folder_edit.setPlaceholderText("~/Pictures/Wallpapers")
+        browse = create_styled_button("Browse...")
+        browse.clicked.connect(self.select_folder)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(self.folder_edit, stretch=1)
+        folder_row.addWidget(browse)
+        self.folder_widget = QWidget()
+        self.folder_widget.setLayout(folder_row)
+        folder_row.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Folder:", self.folder_widget)
+
+        self.shuffle_toggle = ToggleSwitch("Random order")
+        self.shuffle_toggle.setChecked(bool(settings.shuffle))
+        form.addRow("", self.shuffle_toggle)
+
+        self.provider_combo = QComboBox()
+        for provider, label in ONLINE_PROVIDERS.items():
+            self.provider_combo.addItem(label, provider)
+        index = self.provider_combo.findData(settings.provider)
+        self.provider_combo.setCurrentIndex(max(0, index))
+        self.provider_combo.setToolTip(
+            "Free services that need no account. Downloaded pictures are kept, "
+            "so the slideshow goes on if the network drops.")
+        form.addRow("Service:", self.provider_combo)
+
+        # Decimal spin boxes: a hand-written 2.5 must survive opening the dialog.
+        self.interval_spin = QDoubleSpinBox()
+        self.interval_spin.setDecimals(1)
+        self.interval_spin.setRange(MIN_INTERVAL, MAX_INTERVAL)
+        self.interval_spin.setValue(_as_float(settings.interval, MIN_INTERVAL))
+        self.interval_spin.setSuffix(" sec")
+        self.interval_spin.setMaximumWidth(140)
+        form.addRow("Next picture every:", self.interval_spin)
+
+        self.turn_off_spin = QDoubleSpinBox()
+        self.turn_off_spin.setDecimals(1)
+        self.turn_off_spin.setRange(0, MAX_TURN_OFF_AFTER)
+        self.turn_off_spin.setValue(_as_float(settings.turn_off_after, 0))
+        self.turn_off_spin.setSuffix(" min")
+        self.turn_off_spin.setSpecialValueText("Never")
+        self.turn_off_spin.setMaximumWidth(140)
+        self.turn_off_spin.setToolTip("How long the slideshow runs before the deck turns off.")
+        form.addRow("Turn off after:", self.turn_off_spin)
+
+        self.brightness_toggle = ToggleSwitch("Own brightness")
+        self.brightness_toggle.setToolTip(
+            "Otherwise the slideshow keeps the brightness the deck had. "
+            "Unlocking brings that brightness back either way.")
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(MIN_BRIGHTNESS, 100)
+        self.brightness_slider.setPageStep(5)
+        self.brightness_value = QLabel()
+        self.brightness_value.setMinimumWidth(40)
+        self.brightness_slider.valueChanged.connect(
+            lambda value: self.brightness_value.setText(f"{value}%"))
+        # A hand-written value below what the editor offers is shown clamped,
+        # but kept unless the slider is moved.
+        self._brightness = settings.brightness
+        brightness = settings.brightness if settings.brightness is not None else DEFAULT_BRIGHTNESS
+        self.brightness_slider.setValue(int(_as_float(brightness, DEFAULT_BRIGHTNESS)))
+        self.brightness_value.setText(f"{self.brightness_slider.value()}%")
+        self.brightness_slider.valueChanged.connect(self._brightness_moved)
+        self.brightness_toggle.setChecked(settings.brightness is not None)
+        self.brightness_toggle.toggled.connect(self._update_visibility)
+        brightness_row = QHBoxLayout()
+        brightness_row.setContentsMargins(0, 0, 0, 0)
+        brightness_row.addWidget(self.brightness_toggle)
+        brightness_row.addWidget(self.brightness_slider, stretch=1)
+        brightness_row.addWidget(self.brightness_value)
+        form.addRow("Brightness:", brightness_row)
+
+        layout.addWidget(self.options)
+        layout.addStretch()
+
+        if settings.source == SOURCE_ONLINE:
+            self.online_radio.setChecked(True)
+        else:
+            self.folder_radio.setChecked(True)
+        self._form = form
+        self.enabled_toggle.toggled.connect(self._update_visibility)
+        self.folder_radio.toggled.connect(self._update_visibility)
+        self._update_visibility()
+
+        self.add_actions("Save", self.validate_and_accept)
+
+    def _update_visibility(self, *_args) -> None:
+        self.options.setEnabled(self.enabled_toggle.isChecked())
+        folder = self.folder_radio.isChecked()
+        self._form.setRowVisible(self.folder_widget, folder)
+        self._form.setRowVisible(self.shuffle_toggle, folder)
+        self._form.setRowVisible(self.provider_combo, not folder)
+        own_brightness = self.brightness_toggle.isChecked()
+        self.brightness_slider.setEnabled(own_brightness)
+        self.brightness_value.setEnabled(own_brightness)
+
+    def _brightness_moved(self, value: int) -> None:
+        self._brightness = value
+
+    def select_folder(self) -> None:
+        start = resolve_icon_path(self.folder_edit.text(), self.config_dir) \
+            if self.folder_edit.text().strip() else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Select Picture Folder", start)
+        if folder:
+            self.folder_edit.setText(relativize_icon_path(folder, self.config_dir))
+
+    def validate_and_accept(self) -> None:
+        if self.enabled_toggle.isChecked() and self.folder_radio.isChecked():
+            folder = self.folder_edit.text().strip()
+            if not folder:
+                QMessageBox.warning(self, "Screensaver", "Choose the folder to show pictures from.")
+                return
+            if not os.path.isdir(resolve_icon_path(folder, self.config_dir)):
+                QMessageBox.warning(self, "Screensaver", f"The folder '{folder}' does not exist.")
+                return
+        self.accept()
+
+    def get_settings(self) -> dict:
+        """The form's values, keyed as in settings.screensaver."""
+        return {
+            'enabled': self.enabled_toggle.isChecked(),
+            'source': SOURCE_FOLDER if self.folder_radio.isChecked() else SOURCE_ONLINE,
+            'folder': self.folder_edit.text().strip(),
+            'provider': self.provider_combo.currentData(),
+            'interval': self.interval_spin.value(),
+            'turn_off_after': self.turn_off_spin.value(),
+            'shuffle': self.shuffle_toggle.isChecked(),
+            'brightness': (self._brightness if self._brightness is not None
+                           else self.brightness_slider.value())
+                          if self.brightness_toggle.isChecked() else None,
         }

@@ -93,9 +93,8 @@ class ThemedDialog(QDialog):
         if title:
             self.setWindowTitle(title)
         # Parented to the main window, a closed dialog otherwise lives as long
-        # as the window does - every edit leaked one. The deletion is deferred
-        # to the event loop, so a caller reading results right after exec()
-        # still has the dialog; one that spins an event loop first does not.
+        # as the window does - every edit leaked one. exec() takes this off
+        # again: see there.
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         metrics = current_theme().metrics
@@ -123,6 +122,20 @@ class ThemedDialog(QDialog):
             The content layout
         """
         return self._content_layout
+
+    def exec(self) -> int:
+        """
+        Run modally, and free the dialog once the caller has read its results.
+
+        Qt 6's QDialog.exec() deletes a WA_DeleteOnClose dialog before it
+        returns, so every ``if dialog.exec(): dialog.get_...()`` hit a deleted
+        C++ object. deleteLater() instead waits for the event loop, which the
+        caller only returns to after reading.
+        """
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        result = super().exec()
+        self.deleteLater()
+        return result
 
     def add_actions(self, affirmative: str, on_affirmative: Callable,
                     cancel: Optional[str] = CANCEL_TEXT,

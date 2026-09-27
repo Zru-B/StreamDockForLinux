@@ -13,6 +13,7 @@ from StreamDock.ui.dialogs import (
     KeyPickerDialog,
     LayoutEditorDialog,
     ManageKeysDialog,
+    ScreensaverDialog,
     WindowRuleDialog,
     run_key_editor,
 )
@@ -42,6 +43,7 @@ from StreamDock.ui.widget_support import (
     shared_registry,
 )
 from StreamDock.ui.widgets import (
+    DevicePanel,
     KeySquare,
     LayoutListWidget,
     ToggleSwitch,
@@ -61,7 +63,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -320,23 +321,18 @@ class MainWindow(QMainWindow):
         grid_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.grid_container_layout = QVBoxLayout(grid_container)
 
-        # Key grid (3 rows x 5 columns)
-        grid_widget = QWidget()
-        self.grid_layout = QGridLayout(grid_widget)
+        # Key grid (3 rows x 5 columns), spaced and outlined like the device
+        self.device_panel = DevicePanel()
+        for position in range(1, 16):
+            key_square = KeySquare(position)
+            key_square.set_preview_service(shared_previews())
+            key_square.clicked.connect(self.on_key_square_clicked)
+            key_square.key_moved.connect(self.on_key_moved)
+            self.device_panel.add_key(key_square, position)
+            self.key_squares.append(key_square)
 
-        # Create 15 key squares (3x5)
-        position = 1
-        for row in range(3):
-            for col in range(5):
-                key_square = KeySquare(position)
-                key_square.set_preview_service(shared_previews())
-                key_square.clicked.connect(self.on_key_square_clicked)
-                key_square.key_moved.connect(self.on_key_moved)
-                self.grid_layout.addWidget(key_square, row, col)
-                self.key_squares.append(key_square)
-                position += 1
-
-        self.grid_container_layout.addWidget(grid_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.grid_container_layout.addWidget(self.device_panel,
+                                             alignment=Qt.AlignmentFlag.AlignCenter)
         self.content_layout.addWidget(grid_container, stretch=1)
 
         # Device settings, as a form
@@ -434,7 +430,6 @@ class MainWindow(QMainWindow):
 
         self.device_slot.setSpacing(0)
         self.grid_container_layout.setContentsMargins(margin, margin, margin, margin)
-        self.grid_layout.setSpacing(metrics.spacing)
         self.settings_form.setSpacing(metrics.spacing)
 
     # ── commands and chrome ───────────────────────────────────────────────
@@ -472,6 +467,9 @@ class MainWindow(QMainWindow):
         self.manage_widgets_action = self._command(
             "&Widgets...", self.manage_widgets,
             icon=('preferences-desktop-plasma', 'applications-utilities'))
+        self.screensaver_action = self._command(
+            "&Screensaver...", self.show_screensaver_settings,
+            icon=('preferences-desktop-screensaver', 'image-x-generic'))
         self.advanced_settings_action = self._command(
             "&Advanced Settings...", self.show_advanced_settings,
             icon=('configure', 'preferences-system'))
@@ -494,7 +492,8 @@ class MainWindow(QMainWindow):
                                    self.save_action, self.save_as_action,
                                    SEPARATOR, self.quit_action]),
                 MenuSpec("&Keys", [self.manage_keys_action, self.manage_widgets_action]),
-                MenuSpec("&Settings", [self.advanced_settings_action,
+                MenuSpec("&Settings", [self.screensaver_action,
+                                       self.advanced_settings_action,
                                        SEPARATOR, appearance]),
             ],
             open_action=self.open_action,
@@ -1054,6 +1053,13 @@ class MainWindow(QMainWindow):
         """Write only the lock switch, so a brightness like 42.5 is not rewritten."""
         self.config.settings.lock_monitor = checked
         self.mark_modified()
+
+    def show_screensaver_settings(self):
+        """Show the lock-screen slideshow settings"""
+        screensaver = self.config.settings.screensaver
+        dialog = ScreensaverDialog(screensaver, self.config.config_dir, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and screensaver.update(dialog.get_settings()):
+            self.mark_modified()
 
     def show_advanced_settings(self):
         """Show the advanced settings dialog"""

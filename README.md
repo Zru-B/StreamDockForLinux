@@ -8,7 +8,7 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 
 - 🎯 **YAML Configuration** - Simple, readable config files.
 - 🪟 **Context-Aware** - Automatically switch layouts when you open Firefox, VSCode, or Spotify.
-- 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks.
+- 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks, or shows a slideshow screensaver across all keys (local folder or free online wallpapers) with the keys disabled.
 - 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME).
 - 🎭 **Desktop Native** - Wears Breeze on Plasma the way Plasma 6 applications
   do - toolbar, menu button, sidebar and status bar, in your own colour

@@ -14,6 +14,7 @@ from StreamDock.domain.Models import WindowInfo
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 from StreamDock.business_logic import LayoutManager, LayoutRule, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.domain.device_geometry import panel_size
 from StreamDock.business_logic.layout_manager import rule_patterns
 from StreamDock.infrastructure import (
     DeviceRegistry,
@@ -23,6 +24,7 @@ from StreamDock.infrastructure import (
     SystemInterface,
     USBHardware,
 )
+from StreamDock.infrastructure.image_sources import make_image_source
 from StreamDock.orchestration import DeviceOrchestrator
 from StreamDock.widgets.host import WidgetHost, widget_key_specs
 from StreamDock.widgets.registry import WidgetRegistry
@@ -286,6 +288,10 @@ class Application:
             self._device.double_press_interval = self._config.double_press_interval
             self._device.long_press_duration = self._config.long_press_duration
         self._orchestrator.set_layout_changed_callback(self._notify_layout_changed)
+        screensaver = self._config.screensaver
+        if screensaver.enabled:
+            self._orchestrator.set_screensaver(screensaver,
+                                               make_image_source(screensaver, panel_size()))
 
         # 6. Create layouts using LayoutFactory (if device is ready)
         if self._device:

@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, Optional
 
 from StreamDock.business_logic import LayoutManager, SystemEvent, SystemEventMonitor
 from StreamDock.business_logic.action_executor import ActionExecutor
+from StreamDock.business_logic.screensaver import ImageSource, Screensaver, ScreensaverConfig
+from StreamDock.domain.device_geometry import KEY_COLUMNS, KEY_GAP_PIXELS, KEY_PIXELS, KEY_ROWS
 from StreamDock.devices.product_ids import STREAMDOCK_293V3_PID, STREAMDOCK_VID
 from StreamDock.infrastructure import (
     DeviceRegistry,
@@ -19,6 +21,7 @@ from StreamDock.infrastructure import (
     SystemInterface,
     TrackedDevice,
 )
+from StreamDock.image_helpers.pil_helper import tile_image
 from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
@@ -132,6 +135,14 @@ class DeviceOrchestrator:
         self._is_locked: bool = False
         # device_id -> brightness when the screen was locked (see _on_lock)
         self._brightness_at_lock: Dict[str, int] = {}
+
+        self._screensaver_config: Optional[ScreensaverConfig] = None
+        self._screensaver_source: Optional[ImageSource] = None
+        # The slideshow running while locked, if any.
+        self._screensaver: Optional[Screensaver] = None
+        # Devices the screensaver kept open through the lock; the rest were
+        # closed and must be reopened on unlock.
+        self._kept_open: set = set()
 
         # Guards every device-touching operation (see @_serialized)
         self._device_lock = threading.RLock()
@@ -304,6 +315,19 @@ class DeviceOrchestrator:
             return self._default_brightness
         return int(current)
 
+    def set_screensaver(self, config: Optional[ScreensaverConfig],
+                        source: Optional[ImageSource]) -> None:
+        """
+        Show a slideshow instead of turning the deck off when the computer locks.
+
+        Args:
+            config: The screensaver settings; None or disabled turns it off
+            source: Where its pictures come from
+        """
+        enabled = config is not None and config.enabled and source is not None
+        self._screensaver_config = config if enabled else None
+        self._screensaver_source = source if enabled else None
+
     def set_layout_changed_callback(self, callback: Optional[Callable[[str], None]]) -> None:
         """
         Register a callback fired whenever the active layout changes.
@@ -372,6 +396,9 @@ class DeviceOrchestrator:
                 )
                 self._on_lock(SystemEvent.LOCK)
             elif self._devices:
+                # A reload while the screensaver ran leaves the kept device
+                # ignoring its keys; the new runtime starts unlocked.
+                self._resume_input()
                 # Apply the context-aware layout for the current active window
                 # immediately at startup, without waiting for the first poll cycle.
                 # If window detection fails (e.g. display not yet ready), the
@@ -409,6 +436,7 @@ class DeviceOrchestrator:
         """
         try:
             self._event_monitor.stop_monitoring()
+            self._stop_screensaver()
             self._cleanup_devices(release=release_devices)
             logger.info("DeviceOrchestrator stopped")
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -480,22 +508,35 @@ class DeviceOrchestrator:
     @_serialized
     def _on_lock(self, event: SystemEvent) -> None:
         """
-        Handle lock event - turn off device screens and close connections.
+        Handle lock event - start the screensaver, or turn off device screens
+        and close connections.
 
         Args:
             event: LOCK event from SystemEventMonitor
 
         Design:
-        - Turns off device screen
-        - Closes connection to stop input processing
         - Tracks locked state
         - Called by SystemEventMonitor after verification
         """
-        logger.info("🔒 Lock event received - turning off device screens and closing connections")
+        was_locked, self._is_locked = self._is_locked, True
 
-        self._is_locked = True
+        if self._screensaver is not None:
+            logger.debug("Lock event while the screensaver runs - nothing to do")
+            return
+        # Already locked with no slideshow means it timed out: stay dark.
+        if self._screensaver_config is not None and self._devices and not was_locked:
+            self._start_screensaver()
+            return
 
-        # Turn off all device screens and close connections
+        self._turn_off_devices()
+
+    def _turn_off_devices(self) -> None:
+        """
+        Turn off device screens and close connections, so a locked computer
+        leaves nothing lit and no key live. Runs under the device lock.
+        """
+        logger.info("🔒 Turning off device screens and closing connections")
+
         for device_id, device in list(self._devices.items()):
             try:
                 device = _unwrap(device)
@@ -520,17 +561,104 @@ class DeviceOrchestrator:
 
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error turning off device %s: %s", device_id, e)
+            finally:
+                self._kept_open.discard(device_id)
 
-    @_serialized
+    def _start_screensaver(self) -> None:
+        """
+        Blank the keys, stop them acting and start the slideshow. Runs under
+        the device lock.
+
+        The keys are blanked here rather than left to the first picture,
+        which may be a download away: the layout must not stay readable on a
+        locked computer meanwhile.
+        """
+        logger.info("🔒 Lock event received - starting the screensaver")
+        for device_id, device in list(self._devices.items()):
+            try:
+                device = _unwrap(device)
+                self._brightness_at_lock.setdefault(device_id, self._device_brightness(device))
+                device.suspend_input()
+                self._kept_open.add(device_id)
+                # The unlock restores the brightness recorded above.
+                if self._screensaver_config.brightness is not None:
+                    device.set_brightness(self._screensaver_config.brightness)
+                device.clear_all_icons()
+                device.refresh()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.exception("Error preparing device %s for the screensaver: %s", device_id, e)
+
+        self._screensaver = Screensaver(self._screensaver_config, self._screensaver_source,
+                                        show=self._show_screensaver_image,
+                                        expire=self._screensaver_expired)
+        self._screensaver.start()
+
+    def _show_screensaver_image(self, saver: Screensaver, image: Any) -> None:
+        """Spread one picture over every key. Runs on the screensaver thread."""
+        tiles = tile_image(image, KEY_COLUMNS, KEY_ROWS, (KEY_PIXELS, KEY_PIXELS),
+                           gap=KEY_GAP_PIXELS)
+        with self._device_lock:
+            # An unlock does not wait out a slow download, so a picture can
+            # arrive after its slideshow was stopped.
+            if self._screensaver is not saver or saver.stopped or not self._is_locked:
+                return
+            for device_id in list(self._kept_open):
+                device = self._devices.get(device_id)
+                if device is None:
+                    continue
+                try:
+                    device = _unwrap(device)
+                    for key, tile in enumerate(tiles, start=1):
+                        device.set_key_pil_image(key, tile)
+                    device.refresh()
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.exception("Error drawing the screensaver on %s: %s", device_id, e)
+
+    def _screensaver_expired(self, saver: Screensaver) -> None:
+        """The slideshow ran its time, or had nothing to show: go dark as without it."""
+        with self._device_lock:
+            if self._screensaver is not saver or not self._is_locked:
+                return
+            self._screensaver = None
+            self._turn_off_devices()
+
+    def _stop_screensaver(self) -> None:
+        """
+        End the slideshow, if one runs.
+
+        Called without the device lock: the slideshow thread may be waiting
+        for it to draw a picture, and stop() waits for that thread.
+        """
+        with self._device_lock:
+            saver, self._screensaver = self._screensaver, None
+        if saver is not None:
+            saver.stop()
+            logger.info("Screensaver stopped")
+
+    def _resume_input(self) -> None:
+        for device in list(self._devices.values()):
+            resume = getattr(_unwrap(device), 'resume_input', None)
+            if callable(resume):
+                resume()
+
     def _on_unlock(self, event: SystemEvent) -> None:
         """
-        Handle unlock event - restore device screens and connections.
+        Handle unlock event - stop the screensaver, then restore device
+        screens and connections.
 
         Args:
             event: UNLOCK event from SystemEventMonitor
+        """
+        self._stop_screensaver()
+        self._restore_devices()
+
+    @_serialized
+    def _restore_devices(self) -> None:
+        """
+        Bring the devices back after a lock.
 
         Design:
-        - Reopens active connection to device
+        - Reopens the connection, unless the screensaver kept it open
         - Turns screen back on
         - Restores the brightness the device had when it was locked
         - Reapplies current layout
@@ -550,7 +678,10 @@ class DeviceOrchestrator:
 
                 # Reopen connection
                 success = True
-                if hasattr(device, 'open'):
+                if device_id in self._kept_open:
+                    self._kept_open.discard(device_id)
+                    logger.debug("Device %s stayed open for the screensaver", device_id)
+                elif hasattr(device, 'open'):
                     success = device.open()
                     if not success:
                         path_str = getattr(device, 'path', 'unknown')
@@ -577,6 +708,12 @@ class DeviceOrchestrator:
                 if not success:
                     logger.warning("Skipping restoration for %s due to closed connection", device_id)
                     continue
+
+                # Also after a reopen: a screensaver that timed out closed
+                # the device with its keys still ignored.
+                resume = getattr(device, 'resume_input', None)
+                if callable(resume):
+                    resume()
 
                 # Initialize hardware or turn on screen physically to break out of factory mode
                 if hasattr(device, 'init'):

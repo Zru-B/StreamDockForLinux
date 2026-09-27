@@ -9,10 +9,13 @@ nothing behind.
 """
 
 import pytest
+from PyQt6 import sip
+from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
 from PyQt6.QtGui import QAction, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenuBar,
     QStatusBar,
@@ -422,6 +425,36 @@ class TestThemedDialogs:
 
         assert dialog.content_layout is not dialog._outer
         assert isinstance(dialog, QDialog)
+
+
+class TestDialogLifetime:
+    """
+    Dialogs are freed after use, but only once the caller has read them:
+    Qt 6's exec() deletes a WA_DeleteOnClose dialog before returning, which
+    broke every "exec(), then read the form" caller at once.
+    """
+
+    def run_and_accept(self, dialog):
+        field = QLineEdit("typed")
+        dialog.content_layout.addWidget(field)
+        dialog.add_actions("Save", dialog.accept)
+        QTimer.singleShot(0, dialog.affirmative_button.click)
+        result = dialog.exec()
+        return result, field
+
+    def test_the_form_is_readable_after_exec(self, qtbot):
+        result, field = self.run_and_accept(ThemedDialog("Edit"))
+
+        assert result == QDialog.DialogCode.Accepted
+        assert field.text() == "typed"
+
+    def test_the_dialog_is_freed_once_the_event_loop_runs(self, qtbot):
+        dialog = ThemedDialog("Edit")
+        self.run_and_accept(dialog)
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+        assert sip.isdeleted(dialog)
 
 
 class TestHeaderButtonConnections:

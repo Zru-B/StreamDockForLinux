@@ -108,6 +108,10 @@ class StreamDock(ABC):
         # Last brightness applied to the device, used by brightness up/down actions
         self._current_brightness = DEFAULT_BRIGHTNESS
 
+        # Set while the computer is locked but the deck stays lit (the
+        # screensaver): reports are still read, but no key does anything.
+        self._input_suspended = False
+
     def __del__(self):
         """
         Delete handler for the StreamDock, automatically closing the transport
@@ -214,6 +218,24 @@ class StreamDock(ABC):
             except queue.Empty:
                 return
             self._event_queue.task_done()
+
+    def suspend_input(self):
+        """
+        Ignore every key until resume_input(), dropping gestures in flight.
+
+        Unlike close() the screen stays usable, so something else can keep
+        drawing on it while a locked computer must not act on key presses.
+        """
+        self._input_suspended = True
+        self._cancel_gestures()
+        self._drain_event_queue()
+
+    def resume_input(self):
+        self._input_suspended = False
+
+    @property
+    def input_suspended(self):
+        return self._input_suspended
 
     def disconnected(self):
         self.transport.disconnected()
@@ -670,7 +692,9 @@ class StreamDock(ABC):
         while self.run_read_thread:
             try:
                 arr=self.read(timeout_ms=1000)
-                if arr is not None and len(arr) >= 11:
+                if self._input_suspended:
+                    pass
+                elif arr is not None and len(arr) >= 11:
                     if arr[9] != 0xFF and arr[9] not in KEY_MAPPING:
                         logger.debug("Ignoring report for unknown key 0x%02x: %s",
                                      arr[9], bytes(arr).hex())
