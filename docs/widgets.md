@@ -392,8 +392,8 @@ One `busctl monitor` process serves every counter.
 
 The VPN widget in `auto` mode counts you as connected if NetworkManager has an
 active VPN or WireGuard connection, or if an interface matching `interfaces`
-(default `tun*,wg*,ppp*`) is up. Add `tailscale0` to that list if you use
-Tailscale.
+(default `tun*,wg*,ppp*,fctvpn*`) is up. `fctvpn*` is the interface FortiClient
+VPN creates. Add `tailscale0` to that list if you use Tailscale.
 
 ## Third-party widgets
 

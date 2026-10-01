@@ -357,6 +357,14 @@ def test_interface_detection_uses_the_up_flag(tmp_path, monkeypatch):
     assert vpn_connected.interface_up('ppp*', str(tmp_path)) is False
 
 
+def test_forticlient_interfaces_count_by_default(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    (tmp_path / 'fctvpn1a2b3c').mkdir()
+    (tmp_path / 'fctvpn1a2b3c' / 'flags').write_text('0x1091')
+    default = next(option.default for option in vpn_connected.VpnConnected.options if option.key == 'interfaces')
+    assert vpn_connected.interface_up(default, str(tmp_path)) is True
+
+
 def test_pactl_mute_output_is_parsed(monkeypatch):
     class Result:
         returncode = 0
