@@ -12,7 +12,8 @@ from PIL import Image
 from streamdock_sdk.options import resolve_options
 from streamdock_sdk.scheduler import WidgetDriver
 from StreamDock.widgets.builtin import (
-    _common, _notifications, _pulse, now_playing, system_stats, vpn_connected, weather)
+    _common, _dnd, _notifications, _pulse, audio_output, battery, countdown, network_speed, now_playing, pomodoro,
+    system_stats, temperature, vpn_connected, weather)
 from StreamDock.infrastructure import mpris as _mpris
 from StreamDock.widgets.registry import load_builtin_specs
 
@@ -25,6 +26,15 @@ VARIANTS = {
     'system_stats': [{'metric': name} for name in ('cpu', 'ram', 'both')],
     'mic_muted': [{}, {'show_caption': False}],
     'sound_muted': [{}],
+    'audio_output': [{}, {'show_name': False}, {'outputs': 'hdmi', 'names': 'hdmi=TV'}],
+    'countdown': [{}, {'target': '2026-12-24', 'title': 'Christmas'}, {'target': 'garbage'}],
+    'temperature': [{}, {'sensor': 'nvme/Composite', 'units': 'fahrenheit', 'label': 'SSD'}],
+    'battery': [{}, {'devices': 'mouse', 'label': 'Mouse'}],
+    'network_speed': [{}, {'units': 'bits', 'interfaces': 'wlan*'}],
+    'pomodoro': [{}, {'work_minutes': 50, 'break_minutes': 10, 'show_time': True}],
+    'do_not_disturb': [{}, {'show_caption': False}],
+    'volume': [{}, {'max_volume': 150}],
+    'volume_column': [{'button': name} for name in ('up', 'mute', 'down')] + [{'show_level_bar': False}],
     'vpn_connected': [{}, {'source': 'interfaces'}],
     'media_playing': [{}, {'player': 'spotify'}],
     'now_playing': [{}, {'show_art': False}],
@@ -34,6 +44,28 @@ VARIANTS = {
     'telegram_notifications': [{}],
 }
 
+
+class FakeDnd:
+    def __init__(self, on=False):
+        self.on = on
+        self.writes = []
+
+    def read(self):
+        return self.on
+
+    def write(self, on):
+        self.writes.append(on)
+        self.on = on
+
+
+SINKS = [_pulse.Sink('alsa_output.pci.analog-stereo', 'Built-in Audio Analog Stereo', 'speakers'),
+         _pulse.Sink('bluez_output.AA_BB', 'Sony WH-1000XM5', 'headphones'),
+         _pulse.Sink('alsa_output.pci.hdmi-stereo', 'HDMI / DisplayPort 1 Output', 'hdmi')]
+
+DEVICES = [battery.Device('system', 'Laptop', 'system', battery.Reading(64, 'Discharging')),
+           battery.Device('/org/bluez/hci0/dev_AA', 'WH-1000XM5', 'headphones', battery.Reading(40, 'Charging')),
+           battery.Device('hidpp_battery_0', 'MX Master 3', 'mouse', battery.Reading(15, 'Discharging', True))]
+
 PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Very Long Song Title Indeed',
                               ['Some Artist'])
 
@@ -42,6 +74,7 @@ PLAYING = _mpris.PlayerStatus('org.mpris.MediaPlayer2.spotify', 'playing', 'A Ve
 def frozen_world(monkeypatch):
     monkeypatch.setattr(_common, 'now', lambda zone=None: datetime(2026, 9, 23, 16, 5, 7, tzinfo=zone))
     monkeypatch.setattr(_pulse, 'read_muted', lambda kind: True)
+    monkeypatch.setattr(_pulse, 'read_level', lambda kind: _pulse.AudioLevel(40, False))
     monkeypatch.setattr(_pulse.HUB, 'subscribe', lambda callback: None)
     monkeypatch.setattr(_pulse.HUB, 'unsubscribe', lambda callback: None)
     monkeypatch.setattr(vpn_connected, 'networkmanager_vpn', lambda: False)
@@ -54,6 +87,13 @@ def frozen_world(monkeypatch):
     monkeypatch.setattr(weather, 'fetch', lambda position, units, timeout=0: weather.Reading(21.4, 'rain'))
     monkeypatch.setattr(_notifications.HUB, 'subscribe', lambda callback: None)
     monkeypatch.setattr(_notifications.HUB, 'unsubscribe', lambda callback: None)
+    monkeypatch.setattr(_dnd, 'backend', lambda name: FakeDnd())
+    monkeypatch.setattr(network_speed, 'read_counters', lambda: {'eth0': (1000, 500), 'lo': (9, 9)})
+    monkeypatch.setattr(_pulse, 'list_sinks', lambda: list(SINKS))
+    monkeypatch.setattr(_pulse, 'default_sink', lambda: SINKS[0].name)
+    monkeypatch.setattr(battery, 'list_devices', lambda: list(DEVICES))
+    monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 47.0)
+    monkeypatch.setattr(network_speed, 'is_physical', lambda name: name == 'eth0')
 
 
 def test_every_builtin_has_variants_listed():
@@ -98,7 +138,9 @@ def test_states_report_what_the_widgets_see():
     # These are the names users map images to in state_icons.
     cases = {'mic_muted': 'muted', 'vpn_connected': 'disconnected', 'media_playing': 'playing', 'weather': 'rain',
              'now_playing': 'playing', 'slack_notifications': 'none', 'system_stats': 'normal',
-             'whatsapp_notifications': 'none', 'telegram_notifications': 'none'}
+             'whatsapp_notifications': 'none', 'telegram_notifications': 'none', 'do_not_disturb': 'off',
+             'pomodoro': 'idle', 'battery': 'discharging', 'audio_output': 'speakers',
+             'temperature': 'normal', 'countdown': 'soon'}
     for widget_id, state in cases.items():
         driver = driver_for(widget_id)
         driver.render_once()
@@ -315,6 +357,14 @@ def test_interface_detection_uses_the_up_flag(tmp_path, monkeypatch):
     assert vpn_connected.interface_up('ppp*', str(tmp_path)) is False
 
 
+def test_forticlient_interfaces_count_by_default(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    (tmp_path / 'fctvpn1a2b3c').mkdir()
+    (tmp_path / 'fctvpn1a2b3c' / 'flags').write_text('0x1091')
+    default = next(option.default for option in vpn_connected.VpnConnected.options if option.key == 'interfaces')
+    assert vpn_connected.interface_up(default, str(tmp_path)) is True
+
+
 def test_pactl_mute_output_is_parsed(monkeypatch):
     class Result:
         returncode = 0
@@ -407,3 +457,564 @@ def test_mute_events_are_coalesced(monkeypatch):
     # One read from on_show's refresh at most, plus one for the whole burst.
     assert reads.count('source') <= 2
     widget.stop_watching()
+
+
+def test_pactl_volume_output_is_parsed(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = ('Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: 32768 /  50% / -18.06 dB\n'
+                  '        balance 0.10\n')
+
+    monkeypatch.undo()
+    monkeypatch.setattr(_pulse.subprocess, 'run', lambda *args, **kwargs: Result())
+    assert _pulse.read_volume('sink') == 45
+    Result.returncode = 1
+    assert _pulse.read_volume('sink') is None
+
+
+class TestStepVolume:
+    @pytest.fixture
+    def pactl(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+        monkeypatch.setattr(_pulse.subprocess, 'run', lambda command, **kwargs: calls.append(command))
+        monkeypatch.setattr(_pulse, 'read_level', lambda kind: _pulse.AudioLevel(None, None))
+        return calls
+
+    def volume_is(self, monkeypatch, percent):
+        monkeypatch.setattr(_pulse, 'read_volume', lambda kind: percent)
+
+    def test_steps_are_relative_so_the_balance_stays(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 40)
+        _pulse.step_volume('sink', -5, unmute=False)
+        assert pactl == [['pactl', 'set-sink-volume', '--', '@DEFAULT_SINK@', '-5%']]
+
+    def test_raising_stops_at_the_maximum(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 97)
+        _pulse.step_volume('sink', 5, maximum=100, unmute=False)
+        assert pactl == [['pactl', 'set-sink-volume', '--', '@DEFAULT_SINK@', '100%']]
+        pactl.clear()
+        self.volume_is(monkeypatch, 100)
+        _pulse.step_volume('sink', 5, maximum=100, unmute=False)
+        assert pactl == []
+
+    def test_raising_unmutes(self, pactl, monkeypatch):
+        self.volume_is(monkeypatch, 40)
+        _pulse.step_volume('sink', 5, unmute=True)
+        assert pactl[-1] == ['pactl', 'set-sink-mute', '@DEFAULT_SINK@', '0']
+        pactl.clear()
+        _pulse.step_volume('sink', -5, unmute=True)
+        assert len(pactl) == 1
+
+
+class TestVolumeColumn:
+    @pytest.mark.parametrize('button, step', [('up', 5), ('down', -5)])
+    def test_up_and_down_step_the_volume(self, monkeypatch, button, step):
+        steps = []
+        monkeypatch.setattr(_pulse, 'step_volume',
+                            lambda kind, change, maximum, unmute: steps.append((kind, change, maximum)))
+        driver, widget = started('volume_column', button=button)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: fn())
+        widget.on_press(driver.ctx)
+        assert steps == [('sink', step, 100)]
+
+    def test_middle_button_toggles_mute(self, monkeypatch):
+        toggled = []
+        monkeypatch.setattr(_pulse, 'toggle_muted', toggled.append)
+        driver, widget = started('volume_column', button='mute')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        widget.on_press(driver.ctx)
+        assert toggled == ['sink']
+
+    def test_reports_mute_state_and_volume_badge(self, monkeypatch):
+        driver, widget = started('volume_column')
+        assert (driver.state, driver.badge) == ('unmuted', '40%')
+        widget.update(driver.ctx, _pulse.AudioLevel(55, True))
+        assert (driver.state, driver.badge) == ('muted', '55%')
+
+
+class TestVolume:
+    def test_press_raises_double_press_lowers(self, monkeypatch):
+        steps = []
+        monkeypatch.setattr(_pulse, 'step_volume',
+                            lambda kind, change, maximum, unmute: steps.append((kind, change, maximum, unmute)))
+        driver, widget = started('volume', step=10, max_volume=120)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: fn())
+        widget.on_press(driver.ctx)
+        widget.on_double_press(driver.ctx)
+        assert steps == [('sink', 10, 120, True), ('sink', -10, 120, True)]
+
+    def test_long_press_toggles_mute(self, monkeypatch):
+        toggled = []
+        monkeypatch.setattr(_pulse, 'toggle_muted', toggled.append)
+        driver, widget = started('volume')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        widget.on_long_press(driver.ctx)
+        assert toggled == ['sink']
+
+    def test_handles_all_three_gestures(self):
+        assert set(SPECS['volume'].events) == {'press', 'double_press', 'long_press'}
+
+
+class TestDoNotDisturb:
+    def test_each_press_toggles_and_the_state_follows(self, monkeypatch):
+        fake = FakeDnd(on=False)
+        monkeypatch.setattr(_dnd, 'backend', lambda name: fake)
+        driver, widget = started('do_not_disturb')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        assert driver.state == 'off'
+        widget.on_press(driver.ctx)
+        assert (driver.state, fake.writes) == ('on', [True])
+        widget.on_press(driver.ctx)
+        assert (driver.state, fake.writes) == ('off', [True, False])
+
+    def test_picks_up_a_switch_made_elsewhere(self, monkeypatch):
+        fake = FakeDnd(on=False)
+        monkeypatch.setattr(_dnd, 'backend', lambda name: fake)
+        driver, widget = started('do_not_disturb')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        fake.on = True
+        widget.check(driver.ctx)
+        assert driver.state == 'on'
+
+    def test_no_backend_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(_dnd, 'backend', lambda name: None)
+        driver, widget = started('do_not_disturb')
+        widget.on_press(driver.ctx)
+        assert driver.state == 'unavailable'
+        assert driver.widget.render(driver.ctx).size == (112, 112)
+
+    @pytest.mark.parametrize('desktop, expected', [
+        ('KDE', 'kde'), ('ubuntu:GNOME', 'gnome'), ('XFCE', 'xfce'), ('Unity', 'gnome')])
+    def test_desktop_picks_the_backend(self, desktop, expected):
+        assert _dnd.detect(desktop) == expected
+
+    def test_other_desktops_look_for_a_running_daemon(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setattr(_dnd, '_run', lambda *command: 'false' if command[0] == 'dunstctl' else None)
+        assert _dnd.detect('sway') == 'dunst'
+        monkeypatch.setattr(_dnd, '_run', lambda *command: None)
+        assert _dnd.detect('sway') is None
+
+    def test_gnome_dnd_is_banners_off(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+
+        def run(*command):
+            calls.append(command)
+            return 'false'
+        monkeypatch.setattr(_dnd, '_run', run)
+        gnome = _dnd.GnomeBackend()
+        assert gnome.read() is True
+        gnome.write(False)
+        assert calls[-1][-2:] == ('show-banners', 'true')
+
+
+class TestPomodoro:
+    class Timer:
+        """Stands in for threading.Timer; the tests end phases by moving the clock."""
+
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    @pytest.fixture
+    def world(self, monkeypatch):
+        now = [1000.0]
+        notes = []
+        monkeypatch.setattr(pomodoro, 'clock', lambda: now[0])
+        monkeypatch.setattr(pomodoro, 'notify', lambda summary, body: notes.append(summary))
+        monkeypatch.setattr(pomodoro.threading, 'Timer', self.Timer)
+        return now, notes
+
+    def start(self, monkeypatch, **options):
+        driver, widget = started('pomodoro', **options)
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: fn())
+        return driver, widget
+
+    def test_defaults_are_25_and_5_minutes(self):
+        options = {option.key: option.default for option in SPECS['pomodoro'].options}
+        assert (options['work_minutes'], options['break_minutes']) == (25, 5)
+
+    def test_press_starts_pauses_and_resumes(self, world, monkeypatch):
+        now, _ = world
+        driver, widget = self.start(monkeypatch)
+        assert (driver.state, driver.badge) == ('idle', None)
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('work', '25:00')
+        now[0] += 60
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('paused', '24:00')
+        now[0] += 600  # paused time doesn't count
+        widget.on_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('work', '24:00')
+
+    def test_long_press_resets(self, world, monkeypatch):
+        driver, widget = self.start(monkeypatch)
+        widget.on_press(driver.ctx)
+        widget.on_long_press(driver.ctx)
+        assert (driver.state, driver.badge) == ('idle', None)
+
+    def test_work_then_break_then_waits(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1)
+        widget.on_press(driver.ctx)
+        now[0] += 120
+        widget.tick(driver.ctx)
+        assert (driver.state, driver.badge, notes) == ('break', '1:00', ['Time for a break'])
+        now[0] += 60
+        widget.tick(driver.ctx)
+        assert (driver.state, notes[-1]) == ('idle', 'Break is over')
+
+    def test_auto_start_work_after_a_break(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1, auto_start_work=True)
+        widget.on_press(driver.ctx)
+        now[0] += 180
+        widget.advance(driver.ctx)
+        assert (driver.state, driver.badge, notes) == ('work', '2:00', ['Back to work'])
+
+    def test_catches_up_after_a_long_sleep(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=2, break_minutes=1)
+        widget.on_press(driver.ctx)
+        now[0] += 3600
+        widget.on_show(driver.ctx)
+        assert driver.state == 'idle'
+        assert notes == ['Break is over']
+
+    def test_notifications_can_be_turned_off(self, world, monkeypatch):
+        now, notes = world
+        driver, widget = self.start(monkeypatch, work_minutes=1, notify=False)
+        widget.on_press(driver.ctx)
+        now[0] += 60
+        widget.advance(driver.ctx)
+        assert (driver.state, notes) == ('break', [])
+
+    def test_paused_ring_blinks_at_2_hz(self, world, monkeypatch):
+        driver, widget = self.start(monkeypatch)
+        assert [(timer.interval, timer.align) for timer in driver._timers] == [(0.25, True)]
+        widget.on_press(driver.ctx)
+        widget.on_press(driver.ctx)
+        frames = []
+        for _ in range(2):
+            widget.tick(driver.ctx)
+            frames.append(widget.render(driver.ctx).tobytes())
+        assert frames[0] != frames[1]
+        widget.tick(driver.ctx)
+        assert widget.render(driver.ctx).tobytes() == frames[0]
+
+
+class TestNetworkSpeed:
+    def test_proc_net_dev_is_parsed(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        path = tmp_path / 'dev'
+        path.write_text(
+            'Inter-|   Receive                            |  Transmit\n'
+            ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets ...\n'
+            '    lo:  1234      10    0    0    0     0          0         0     1234      10 0 0 0 0 0 0\n'
+            '  eth0: 987654   321    0    0    0     0          0         0   123456     111 0 0 0 0 0 0\n')
+        assert network_speed.read_counters(str(path)) == {'lo': (1234, 1234), 'eth0': (987654, 123456)}
+
+    def test_physical_interfaces_by_default(self):
+        names = ['lo', 'eth0', 'wlan0', 'docker0', 'tun0']
+        physical = {'eth0', 'wlan0'}.__contains__
+        assert network_speed.selected(names, '', physical) == ['eth0', 'wlan0']
+        assert network_speed.selected(names, 'tun*, docker0', physical) == ['docker0', 'tun0']
+
+    @pytest.mark.parametrize('rate, bits, text', [
+        (0, False, '0 B/s'), (999, False, '999 B/s'), (1500, False, '1.5 kB/s'), (2_500_000, False, '2.5 MB/s'),
+        (45_000_000, False, '45 MB/s'), (125_000, True, '1.0 Mb/s'), (3e12, False, '3000 GB/s')])
+    def test_rates_are_short(self, rate, bits, text):
+        assert network_speed.format_rate(rate, bits) == text
+
+    def test_speed_is_the_difference_of_two_readings(self, monkeypatch):
+        readings = iter([{'eth0': (1000, 0), 'lo': (0, 0)}, {'eth0': (5_001_000, 200_000), 'lo': (9e9, 9e9)}])
+        times = iter([100.0, 102.0])
+        monkeypatch.setattr(network_speed, 'read_counters', lambda: next(readings))
+        monkeypatch.setattr(network_speed, 'clock', lambda: next(times))
+        driver, widget = started('network_speed')
+        widget.sample(driver.ctx)
+        assert (widget.down, widget.up) == (2_500_000, 100_000)
+        assert (driver.state, driver.badge) == ('active', '2.5MB/s')
+
+
+UPOWER_DUMP = """\
+Device: /org/freedesktop/UPower/devices/line_power_AC
+  native-path:          AC
+  power supply:         yes
+  line-power
+    online:              yes
+
+Device: /org/freedesktop/UPower/devices/battery_BAT0
+  native-path:          BAT0
+  vendor:               SMP
+  model:                5B10W13930
+  power supply:         yes
+  battery
+    present:             yes
+    state:               discharging
+    percentage:          81%
+
+Device: /org/freedesktop/UPower/devices/battery_BAT1
+  native-path:          BAT1
+  power supply:         yes
+  battery
+    present:             yes
+    state:               charging
+    percentage:          41.5%
+
+Device: /org/freedesktop/UPower/devices/mouse_hidpp_battery_0
+  native-path:          hidpp_battery_0
+  model:                MX Master 3
+  power supply:         no
+  mouse
+    present:             yes
+    state:               discharging
+    battery-level:       low
+    percentage:          10% (should be ignored)
+
+Device: /org/freedesktop/UPower/devices/headset_dev_AA
+  native-path:          /org/bluez/hci0/dev_AA
+  model:                WH-1000XM5
+  power supply:         no
+  headset
+    present:             yes
+    state:               discharging
+    battery-level:       none
+    percentage:          70%
+
+Device: /org/freedesktop/UPower/devices/keyboard_dev_BB
+  native-path:          /org/bluez/hci0/dev_BB
+  power supply:         no
+  keyboard
+    present:             no
+    percentage:          0%
+
+Device: /org/freedesktop/UPower/devices/DisplayDevice
+  power supply:         yes
+  battery
+    present:             yes
+    percentage:          61%
+
+Daemon:
+  daemon-version:  1.90.2
+"""
+
+
+class TestBattery:
+    @staticmethod
+    def supply(root, name, **files):
+        folder = root / name
+        folder.mkdir()
+        for key, value in files.items():
+            (folder / key).write_text(value + '\n')
+
+    def test_upower_lists_the_laptop_first_then_devices(self, monkeypatch):
+        monkeypatch.undo()
+        R = battery.Reading
+        assert battery.parse_upower(UPOWER_DUMP) == [
+            battery.Device('system', 'Laptop', 'system', R(61, 'Charging')),
+            battery.Device('hidpp_battery_0', 'MX Master 3', 'mouse', R(15, 'Discharging', approximate=True)),
+            battery.Device('/org/bluez/hci0/dev_AA', 'WH-1000XM5', 'headset', R(70, 'Discharging')),
+        ]
+
+    def test_sysfs_when_there_is_no_upower(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        self.supply(tmp_path, 'AC', type='Mains', online='1')
+        self.supply(tmp_path, 'BAT0', type='Battery', capacity='80', status='Discharging')
+        self.supply(tmp_path, 'hidpp_battery_0', type='Battery', scope='Device', capacity='55',
+                    status='Discharging', model_name='MX Master 3')
+        monkeypatch.setattr(battery, 'upower_devices', lambda: None)
+        monkeypatch.setattr(battery, 'POWER_SUPPLY', str(tmp_path))
+        devices = battery.sysfs_devices(str(tmp_path))
+        assert [(device.name, device.reading.percent) for device in devices] == [('Laptop', 80), ('MX Master 3', 55)]
+        assert battery.sysfs_devices('/nonexistent') == []
+
+    def test_press_cycles_through_the_devices(self, monkeypatch):
+        driver, widget = started('battery')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: then(fn()))
+        seen = [(driver.state, driver.badge)]
+        for _ in range(3):
+            widget.on_press(driver.ctx)
+            seen.append((driver.state, driver.badge))
+        assert seen == [('discharging', '64%'), ('charging', '40%'), ('low', '15%'), ('discharging', '64%')]
+
+    def test_devices_option_picks_and_orders(self):
+        chosen = battery.matching(DEVICES, 'mouse, laptop')
+        assert [device.name for device in chosen] == ['MX Master 3', 'Laptop']
+        assert battery.matching(DEVICES, 'headphones')[0].name == 'WH-1000XM5'
+
+    def test_keeps_its_device_when_others_come_and_go(self, monkeypatch):
+        driver, widget = started('battery')
+        widget.on_press(driver.ctx)  # the headphones
+        widget.update(driver.ctx, [DEVICES[2], DEVICES[1]])
+        assert driver.badge == '40%'
+        widget.update(driver.ctx, [DEVICES[0]])  # the headphones went away
+        assert driver.badge == '64%'
+
+    @pytest.mark.parametrize('reading, state', [
+        (battery.Reading(64, 'Discharging'), 'discharging'), (battery.Reading(12, 'Discharging'), 'low'),
+        (battery.Reading(12, 'Charging'), 'charging'), (battery.Reading(100, 'Full'), 'full'),
+        (battery.Reading(100, 'Not charging'), 'full'), (None, 'unavailable')])
+    def test_states(self, monkeypatch, reading, state):
+        devices = [] if reading is None else [battery.Device('system', 'Laptop', 'system', reading)]
+        monkeypatch.setattr(battery, 'list_devices', lambda: devices)
+        driver, widget = started('battery')
+        assert driver.state == state
+        assert driver.badge == (None if reading is None else f'{reading.percent}%')
+        assert widget.render(driver.ctx).size == (112, 112)
+
+
+class TestAudioOutput:
+    def test_press_cycles_through_the_outputs(self, monkeypatch):
+        switched = []
+        monkeypatch.setattr(_pulse, 'set_default_sink', lambda name, move: switched.append((name, move)))
+        driver, widget = started('audio_output')
+        monkeypatch.setattr(driver, 'run_in_background', lambda fn, then=None, skip=False: fn())
+        for _ in range(3):
+            widget.on_press(driver.ctx)
+        assert [name for name, _ in switched] == [SINKS[1].name, SINKS[2].name, SINKS[0].name]
+        assert driver.state == 'speakers'
+
+    def test_outputs_option_picks_and_orders(self):
+        chosen = audio_output.cycle(SINKS, 'hdmi, built-in')
+        assert [sink.kind for sink in chosen] == ['hdmi', 'speakers']
+        assert audio_output.next_sink(chosen, SINKS[1].name) is chosen[0]
+        assert audio_output.next_sink([], None) is None
+
+    def test_short_names(self):
+        assert audio_output.display_name(SINKS[1], 'Built-in=Desk, sony = Buds') == 'Buds'
+        assert audio_output.display_name(SINKS[2], 'Built-in=Desk') == 'HDMI / DisplayPort 1 Output'
+
+    @pytest.mark.parametrize('args, kind', [
+        (('alsa_output.pci-0000_00_1f.3.hdmi-stereo',), 'hdmi'),
+        (('bluez_output.00_11', 'Buds', '', '', 'bluetooth'), 'headphones'),
+        (('alsa_output.usb-headset', 'USB', '', 'headset'), 'headphones'),
+        (('alsa_output.pci.analog-stereo', 'Built-in', 'analog-output-headphones'), 'headphones'),
+        (('alsa_output.pci.analog-stereo', 'Built-in', 'analog-output-speaker'), 'speakers')])
+    def test_kind_of_output(self, args, kind):
+        assert _pulse.sink_kind(*args) == kind
+
+    def test_pactl_json_is_read(self, monkeypatch):
+        monkeypatch.undo()
+        output = ('[{"name": "bluez_output.X", "description": "Buds", "active_port": null,'
+                  ' "properties": {"device.bus": "bluetooth"}}]')
+        monkeypatch.setattr(_pulse, '_pactl_output', lambda *args: output if args[0] == '--format=json' else None)
+        assert _pulse.list_sinks() == [_pulse.Sink('bluez_output.X', 'Buds', 'headphones')]
+
+    def test_old_pactl_falls_back_to_names(self, monkeypatch):
+        monkeypatch.undo()
+        short = '0\talsa_output.pci.hdmi-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n'
+        monkeypatch.setattr(_pulse, '_pactl_output', lambda *args: short if args[0] == 'list' else None)
+        name = 'alsa_output.pci.hdmi-stereo'
+        assert _pulse.list_sinks() == [_pulse.Sink(name, name, 'hdmi')]
+
+    def test_streams_move_on_pulseaudio(self, monkeypatch):
+        monkeypatch.undo()
+        calls = []
+
+        def pactl(*args):
+            calls.append(args)
+            return '12\t0\t34\tPipeWire\tfloat32le 2ch 48000Hz\n' if args[:2] == ('list', 'short') else ''
+        monkeypatch.setattr(_pulse, '_pactl_output', pactl)
+        _pulse.set_default_sink('sink2')
+        assert calls == [('set-default-sink', 'sink2'), ('list', 'short', 'sink-inputs'),
+                         ('move-sink-input', '12', 'sink2')]
+
+
+class TestTemperature:
+    @staticmethod
+    def chip(root, index, name, readings):
+        folder = root / f'hwmon{index}'
+        folder.mkdir()
+        (folder / 'name').write_text(name + '\n')
+        for number, (label, millidegrees) in enumerate(readings, start=1):
+            (folder / f'temp{number}_input').write_text(f'{millidegrees}\n')
+            if label:
+                (folder / f'temp{number}_label').write_text(label + '\n')
+
+    @pytest.fixture
+    def hwmon(self, tmp_path, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setattr(temperature, 'nvidia_celsius', lambda: None)
+        self.chip(tmp_path, 0, 'acpitz', [('', 30000)])
+        self.chip(tmp_path, 1, 'coretemp', [('Core 0', 51000), ('Package id 0', 55000)])
+        self.chip(tmp_path, 2, 'nvme', [('Composite', 38850), ('Sensor 1', 41000)])
+        return str(tmp_path)
+
+    def test_presets_pick_the_best_reading(self, hwmon):
+        assert temperature.read_celsius('cpu', hwmon) == 55.0
+        assert temperature.read_celsius('nvme', hwmon) == 38.85
+
+    def test_a_chip_and_reading_by_name(self, hwmon):
+        assert temperature.read_celsius('nvme/Sensor 1', hwmon) == 41.0
+        assert temperature.read_celsius('acpitz', hwmon) == 30.0
+        assert temperature.read_celsius('k10temp', hwmon) is None
+
+    def test_gpu_falls_back_to_nvidia_smi(self, hwmon, monkeypatch):
+        monkeypatch.setattr(temperature, 'nvidia_celsius', lambda: 63.0)
+        assert temperature.read_celsius('gpu', hwmon) == 63.0
+
+    @pytest.mark.parametrize('celsius, state', [(47.0, 'normal'), (70.0, 'warm'), (85.0, 'hot'), (None, 'unavailable')])
+    def test_states(self, monkeypatch, celsius, state):
+        monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: celsius)
+        driver, widget = started('temperature')
+        assert driver.state == state
+        assert widget.render(driver.ctx).size == (112, 112)
+
+    def test_fahrenheit_badge(self, monkeypatch):
+        monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 50.0)
+        driver, _ = started('temperature', units='fahrenheit')
+        assert driver.badge == '122°'
+
+    def test_redraws_only_when_the_shown_degrees_change(self, monkeypatch):
+        monkeypatch.setattr(temperature, 'read_celsius', lambda sensor: 50.2)
+        driver, widget = started('temperature')
+        renders = []
+        monkeypatch.setattr(driver, 'request_render', lambda: renders.append(1))
+        widget.update(driver.ctx, 50.4)
+        assert renders == []
+        widget.update(driver.ctx, 51.0)
+        assert (renders, driver.badge) == ([1], '51°')
+
+
+class TestCountdown:
+    # frozen_world pins the clock at 2026-09-23 16:05:07.
+    NOW = datetime(2026, 9, 23, 16, 5, 7)
+
+    @pytest.mark.parametrize('text, expected, daily', [
+        ('17:00', datetime(2026, 9, 23, 17, 0), True),
+        ('09:30', datetime(2026, 9, 24, 9, 30), True),
+        ('2026-12-24', datetime(2026, 12, 24), False),
+        ('2026-12-24 18:00', datetime(2026, 12, 24, 18, 0), False),
+    ])
+    def test_targets(self, text, expected, daily):
+        assert countdown.parse_target(text, self.NOW) == (expected, daily)
+
+    @pytest.mark.parametrize('text', ['', 'tomorrow', '25:99'])
+    def test_bad_targets(self, text):
+        assert countdown.parse_target(text, self.NOW) is None
+
+    @pytest.mark.parametrize('seconds, text, badge', [
+        (3 * 86400 + 5, '3 days', '3d'), (86400 + 3600 * 2 + 60 * 5, '26h 05m', '26h'),
+        (3600 + 59, '1h 00m', '1h'), (125, '2:05', '2m'), (9, '0:09', '9s')])
+    def test_remaining_text(self, seconds, text, badge):
+        assert countdown.remaining_text(seconds) == (text, badge)
+
+    @pytest.mark.parametrize('target, state, badge', [
+        ('2026-10-23', 'counting', '29d'), ('16:30', 'soon', '24m'), ('2026-09-01', 'done', None),
+        ('nope', 'invalid', None)])
+    def test_states(self, target, state, badge):
+        driver, _ = started('countdown', target=target)
+        assert (driver.state, driver.badge) == (state, badge)
+
+    def test_ticks_every_second_on_the_second(self):
+        driver, _ = started('countdown')
+        assert [(timer.interval, timer.align) for timer in driver._timers] == [(1, True)]
