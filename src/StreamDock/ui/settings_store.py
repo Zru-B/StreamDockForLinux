@@ -20,6 +20,7 @@ DEFAULT_CONFIG_KEY = "config/default_path"
 DESIGN_KEY = "appearance/design"
 SCHEME_KEY = "appearance/scheme"
 MENUBAR_KEY = "chrome/menubar_visible"
+DEBUG_LOGGING_KEY = "logging/debug"
 
 AUTO = "auto"
 DESIGNS = ("auto", "kde", "gnome")
@@ -139,3 +140,18 @@ def set_menubar_visible(visible: bool) -> None:
         visible: True to show it
     """
     _settings().setValue(MENUBAR_KEY, bool(visible))
+
+
+def get_debug_logging() -> bool:
+    """Whether the user asked for debug logging to stay on between runs."""
+    return bool(_settings().value(DEBUG_LOGGING_KEY, False, type=bool))
+
+
+def set_debug_logging(enabled: bool) -> None:
+    """
+    Remember whether debug logging should be on.
+
+    Args:
+        enabled: True for debug logging
+    """
+    _settings().setValue(DEBUG_LOGGING_KEY, bool(enabled))
