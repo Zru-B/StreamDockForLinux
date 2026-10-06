@@ -12,6 +12,7 @@ import sys
 import time
 from typing import Optional
 
+from StreamDock.logging_control import set_debug
 from StreamDock.dependency_check import DependencyChecker
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 def setup_logging(debug: bool = False) -> None:
     """Configure root logging."""
     logging.basicConfig(
-        level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(levelname)s:%(name)s:%(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    # PIL is extremely chatty at debug level.
-    logging.getLogger('PIL.PngImagePlugin').setLevel(logging.INFO)
+    set_debug(debug)
 
 
 def check_dependencies(check_only: bool = False, headless: bool = False) -> None:
@@ -258,7 +257,9 @@ def main(argv=None) -> int:
         return run_headless(config_path, args.device)
 
     # Qt only from here on: --headless must never import it.
-    from StreamDock.ui.settings_store import get_default_config_path
+    from StreamDock.ui.settings_store import get_debug_logging, get_default_config_path
+    if get_debug_logging():
+        set_debug(True)
     config_path = determine_config_path(args.config, required=False, gui=True,
                                         remembered=get_default_config_path())
     logging.info("Using configuration file: %s", config_path or "(none)")

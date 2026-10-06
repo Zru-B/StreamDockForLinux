@@ -6,8 +6,8 @@ and what is edited must come back out as edited.
 from unittest.mock import Mock, patch
 
 import pytest
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import QRadioButton
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QDialog, QRadioButton
 
 from StreamDock.application.config_document import KeyDefinition
 from StreamDock.application.configuration_manager import MAX_FONT_SIZE, MIN_FONT_SIZE
@@ -236,6 +236,19 @@ class TestKeyEditorLifetime:
         editor = key_editor(qtbot)
 
         assert editor.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+    def test_fields_can_be_read_after_exec(self, qtbot):
+        # QDialog.exec() deleted a WA_DeleteOnClose dialog before returning,
+        # so creating a key failed reading its name.
+        editor = key_editor(qtbot)
+        editor.name_edit.setText("Fresh")
+        QTimer.singleShot(0, editor.accept)
+
+        assert editor.exec() == QDialog.DialogCode.Accepted
+        assert editor.get_key_definition().name == "Fresh"
+        destroyed = []
+        editor.destroyed.connect(lambda: destroyed.append(True))
+        qtbot.waitUntil(lambda: bool(destroyed), timeout=2000)
 
     def test_the_widget_description_is_plain_text(self, qtbot):
         """It comes from third-party manifests."""

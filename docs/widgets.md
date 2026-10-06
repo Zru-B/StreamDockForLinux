@@ -93,10 +93,19 @@ can see where it will go.
 |---|---|---|
 | Digital Clock | `digital_clock` | `format` (`24h`/`12h`), `show_seconds`, `timezone`, `color`, `background` |
 | Analog Clock | `analog_clock` | `show_seconds`, `timezone`, `face_color`, `hand_color`, `second_hand_color`, `background` |
+| Countdown | `countdown` | `target`, `title`, `done_text`, `soon_minutes`, `timezone`, `color`, `soon_color`, `done_color`, `background` |
 | Date | `date` | `format` (`weekday_day_month`, `day_month`, `iso`, `numeric`), `color`, `accent`, `background` |
+| Battery | `battery` | `devices`, `label`, `low`, `interval`, `color`, `background` |
+| Network Speed | `network_speed` | `interfaces`, `units` (`bytes`/`bits`), `interval`, `idle_below`, `down_color`, `up_color`, `color`, `background` |
+| Temperature | `temperature` | `sensor`, `label`, `units` (`celsius`/`fahrenheit`), `warm`, `hot`, `interval`, `color`, `background` |
 | System Stats | `system_stats` | `metric` (`cpu`, `ram`, `both`), `interval`, `color`, `bar_color`, `alert_color`, `background` |
 | Microphone Mute | `mic_muted` | `toggle_on_press`, `show_caption`, `muted_color`, `unmuted_color`, `color` |
 | Sound Mute | `sound_muted` | same as Microphone Mute |
+| Pomodoro | `pomodoro` | `work_minutes`, `break_minutes`, `auto_start_work`, `notify`, `show_time`, `work_color`, `break_color`, `background` |
+| Do Not Disturb | `do_not_disturb` | `backend` (`auto`, `kde`, `gnome`, `xfce`, `dunst`, `swaync`), `interval`, `show_caption`, `on_color`, `off_color`, `color` |
+| Audio Output | `audio_output` | `outputs`, `move_streams`, `show_name`, `names`, `color`, `background` |
+| Volume | `volume` | `step`, `max_volume`, `unmute_on_raise`, `color`, `gauge_color`, `muted_color`, `background` |
+| Volume Column (1x3) | `volume_column` | `button` (`up`, `mute`, `down`), `step`, `max_volume`, `unmute_on_raise`, `show_level_bar`, colours |
 | VPN Status | `vpn_connected` | `source` (`auto`, `networkmanager`, `interfaces`), `interfaces`, `interval`, colours |
 | Weather | `weather` | `location`, `units` (`celsius`/`fahrenheit`), `refresh_minutes`, `color`, `background` |
 | Now Playing | `now_playing` | `player`, `show_art`, `art_brightness`, `toggle_on_press`, `interval`, `color`, `background` |
@@ -109,8 +118,16 @@ States and badges, for `state_icons` and badge overlays:
 
 | Widget | States | Badge |
 |---|---|---|
+| `countdown` | `counting`, `soon`, `done`, `invalid` | the time left, e.g. `3d`, `5h`, `12m` |
 | `mic_muted`, `sound_muted` | `muted`, `unmuted`, `unknown` | — |
+| `do_not_disturb` | `on`, `off`, `unavailable` | — |
+| `pomodoro` | `idle`, `work`, `break`, `paused` | the time left, e.g. `12:34` |
+| `audio_output` | `speakers`, `headphones`, `hdmi`, `unknown` | — |
+| `volume`, `volume_column` | `muted`, `unmuted`, `unknown` | the volume, e.g. `45%` |
 | `vpn_connected` | `connected`, `disconnected`, `unknown` | — |
+| `battery` | `charging`, `discharging`, `full`, `low`, `unavailable` | the charge, e.g. `64%` |
+| `network_speed` | `idle`, `active` | the download speed, e.g. `2.5MB/s` |
+| `temperature` | `normal`, `warm`, `hot`, `unavailable` | the temperature, e.g. `64°` |
 | `system_stats` | `normal`, `high` (anything shown above 85%) | the first figure shown, e.g. `35%` |
 | `weather` | `clear`, `clear_night`, `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `storm`, `unknown` | temperature, e.g. `21°` |
 | `media_playing`, `now_playing` | `playing`, `paused`, `stopped`, `none` | — |
@@ -131,6 +148,209 @@ the key updates it straight away.
 VLC, mpv…) through `busctl`, which comes with systemd. They show the player
 that's playing, or the one named in `player`, e.g. `spotify`. Pressing the key
 plays or pauses.
+
+### Battery
+
+**Battery** shows the charge of the laptop and of connected devices: a
+wireless mouse or keyboard, Bluetooth headphones, a game controller. Each
+press shows the next device; the device's name is above the battery and a row
+of dots below shows which one of how many is on show. The battery is green,
+amber below 50% and red at or below `low` (20% by default), with a bolt while
+it charges.
+
+`devices` limits and orders the devices a press cycles through, by part of
+their name or their kind (`laptop`, `mouse`, `keyboard`, `headset`,
+`headphones`...): `laptop, mouse, WH-1000` shows those three in that order.
+Empty shows every device found, the laptop first. For a key that always shows
+one device, give just that one, e.g. `devices: MX Master`, and a `label` if
+you want another name above it.
+
+Devices come from UPower (`upower --dump` lists what it sees), which knows
+Bluetooth headphones through BlueZ. Without UPower they come from
+`/sys/class/power_supply`, which has the laptop and devices whose kernel
+driver reports a battery, such as most Logitech ones, but not Bluetooth
+headphones. The key checks every `interval` seconds, and on each press, so a
+device that just connected turns up.
+
+Some devices report only a level (critical, low, normal, high, full) rather
+than a percentage; the key then shows the level's name. A laptop with two
+batteries counts as one.
+
+### Countdown
+
+**Countdown** shows the time left until `target`, with an optional `title`
+above it:
+
+| `target` | Counts down to |
+|---|---|
+| `2026-12-24` | midnight at the start of that day |
+| `2026-12-24 18:00` | that moment |
+| `17:30` | the next 17:30, every day; the end of the workday, say |
+
+Two days or more show as days, then hours and minutes, and in the last hour
+minutes and seconds. The time turns amber `soon_minutes` before (60 by
+default) and shows `done_text` (`Now!`) in green once it's reached; a date in
+the past stays that way. A `target` it can't read shows **Bad date**.
+
+### Network Speed
+
+**Network Speed** shows the download (blue, arrow down) and upload (orange,
+arrow up) speed, over a graph of the last 40 readings: download as a filled
+area, upload as a line.
+
+It counts every physical interface (wired and wireless) by default, and
+leaves out tunnels, bridges and containers, so traffic through a VPN isn't
+counted twice. To count something else, set `interfaces` to names or patterns,
+e.g. `wlan0` or `en*, wg0`. `units: bits` shows Mb/s, as speed tests do; the
+default is MB/s, as file managers show. The state is `idle` while both
+directions stay below `idle_below` kB/s.
+
+### Audio Output
+
+**Audio Output** shows which output sound plays through, as speakers,
+headphones or a monitor with the output's name, and each press switches to the
+next one. What's playing moves along to the new output.
+
+- `outputs` limits and orders the outputs a press cycles through, by part of
+  their name: `Speakers, Buds` switches between those two only. Empty cycles
+  through all of them.
+- `names` gives outputs short names for the key: `Built-in=Desk, Sony=Buds`.
+- Bluetooth outputs, and outputs named or plugged in as headphones or a
+  headset, show headphones. HDMI and DisplayPort outputs show a monitor.
+  Everything else shows a speaker.
+
+It uses `pactl`, like the volume widgets, and follows changes made elsewhere.
+PipeWire moves playing streams to the new output by itself. On PulseAudio the
+widget moves them, unless `move_streams` is off.
+
+### Temperature
+
+**Temperature** shows a temperature and a thermometer that's green, amber from
+`warm` (70 °C) and red from `hot` (85 °C). The thresholds are always in °C,
+even with `units: fahrenheit`.
+
+`sensor` picks what to show:
+
+| `sensor` | Reads |
+|---|---|
+| `cpu` (default) | Intel `coretemp` package, AMD `k10temp`/`zenpower`, or the board's `cpu_thermal` / `acpitz` |
+| `gpu` | `amdgpu`, `nouveau`, `radeon` or Intel; NVIDIA's own driver through `nvidia-smi` |
+| `nvme` | The SSD's composite temperature |
+| a chip, e.g. `k10temp` | That chip's first reading |
+| a chip and reading, e.g. `nvme/Sensor 1` | That reading |
+
+The chips and readings are the ones `sensors` (from lm-sensors) lists, or the
+`name` and `temp*_label` files under `/sys/class/hwmon`.
+
+### Volume
+
+**Volume** puts the default speaker's volume on one key, as a gauge with the
+percentage under a speaker icon.
+
+| Gesture | Does |
+|---|---|
+| Press | Raises the volume by `step` percent (default 5), up to `max_volume` |
+| Double press | Lowers it by `step` percent |
+| Long press | Mutes, or unmutes; the gauge turns red while muted |
+
+`max_volume` is 100 by default; up to 150 amplifies. With `unmute_on_raise`
+(the default), raising the volume also unmutes, as keyboard volume keys do.
+
+Because the key tells a press from a double press and a hold, a press takes
+effect when you let go of the key, after the double-press window
+(`double_press_interval`, 0.3 s by default). Hold the key for
+`long_press_duration` (0.5 s) to mute. If a single, immediate press matters
+more, use the volume column below. [Action Triggers](configuration.md#action-triggers)
+explains the timing.
+
+### Volume column
+
+**Volume Column (1x3)** fills one column of the device with three keys: volume
+up on top, mute in the middle, volume down at the bottom. A key shows one
+widget, so the column is three keys that each use `volume_column` with a
+different `button`. Stack them in one column, top to bottom `up`, `mute`,
+`down`. Each draws its third of a shared level bar, so the column reads as one
+tall meter.
+
+```yaml
+keys:
+  VolumeUp:
+    widget: volume_column
+    widget_options: { button: up }
+  VolumeMute:
+    widget: volume_column
+    widget_options: { button: mute }
+  VolumeDown:
+    widget: volume_column
+    widget_options: { button: down }
+
+layouts:
+  Main:
+    keys:
+      - 5: VolumeUp        # the right-hand column: 5, 10, 15
+      - 10: VolumeMute
+      - 15: VolumeDown
+```
+
+- **up** and **down** change the default speaker's volume by `step` percent
+  (default 5). Raising stops at `max_volume` (default 100; up to 150
+  amplifies). With `unmute_on_raise` (the default), raising also unmutes, as
+  keyboard volume keys do.
+- **mute** toggles the mute and shows the volume, or **MUTED** on red.
+
+Give all three keys the same `step`, `max_volume` and colours. The level bar
+reads them per key, so different values split it unevenly. The keys follow
+volume changes made anywhere, through `pactl` like the mute widgets.
+
+### Do Not Disturb
+
+**Do Not Disturb** silences desktop notifications. Each press switches it on or
+off, and the key shows which: a moon on purple while it's on, a bell while
+notifications are shown, a grey bell when no supported desktop was found.
+
+`backend` is `auto` by default: KDE Plasma, GNOME or XFCE by the desktop you're
+running, otherwise a running SwayNotificationCenter or dunst. The key checks
+every `interval` seconds, so Do Not Disturb switched elsewhere shows too. On
+KDE that covers apps that hold notifications back, but not Plasma's own tray
+switch, which the key can't read.
+
+| Backend | How |
+|---|---|
+| `kde` | Asks Plasma's notification server to hold notifications back. Plasma shows this as Do Not Disturb in the tray. Needs `dbus-python` (see [Installation](installation.md)). It ends when StreamDock quits. The key can't switch off a Do Not Disturb that another app asked for. |
+| `gnome` | Turns off notification banners, as GNOME's own Do Not Disturb switch does. |
+| `xfce` | The `xfce4-notifyd` Do Not Disturb setting, through `xfconf-query`. |
+| `dunst` | `dunstctl set-paused`. |
+| `swaync` | `swaync-client --dnd-on` / `--dnd-off`. |
+
+### Pomodoro
+
+**Pomodoro** times work sessions and breaks: 25 minutes of work, then a
+5-minute break, by default. Set `work_minutes` (1-180) and `break_minutes`
+(1-60) to change them.
+
+| Gesture | Does |
+|---|---|
+| Press | Starts a work session; while one is running, pauses it; while paused, resumes |
+| Long press | Resets to idle |
+
+What the key shows:
+
+| State | Key |
+|---|---|
+| Idle | A tomato with watch hands |
+| Work | The same tomato inside an amber ring that shortens as the session runs out |
+| Paused | The tomato, with the ring as it was blinking twice a second |
+| Break | A smiling tomato inside a green ring that shortens as the break runs out |
+
+When the work session ends the break starts on its own. When the break ends
+the timer goes back to idle and waits for a press, unless `auto_start_work` is
+on. Each change of phase sends a desktop notification (`notify-send`); turn
+`notify` off to stop them. `show_time` draws the minutes and seconds left on
+the tomato instead of its hands or face.
+
+The timer keeps running while you switch layouts or lock the screen, and the
+notification still comes on time. Because the key has a long press, a press
+takes effect when you let go of the key.
 
 ### Notification counters
 
@@ -172,8 +392,8 @@ One `busctl monitor` process serves every counter.
 
 The VPN widget in `auto` mode counts you as connected if NetworkManager has an
 active VPN or WireGuard connection, or if an interface matching `interfaces`
-(default `tun*,wg*,ppp*`) is up. Add `tailscale0` to that list if you use
-Tailscale.
+(default `tun*,wg*,ppp*,fctvpn*`) is up. `fctvpn*` is the interface FortiClient
+VPN creates. Add `tailscale0` to that list if you use Tailscale.
 
 ## Third-party widgets
 
