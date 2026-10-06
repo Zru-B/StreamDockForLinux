@@ -217,4 +217,4 @@ streamdock [CONFIG] [--headless] [--minimized] [--device ID] [--design NAME]
 | `--device ID` | Connect to a specific device, as shown in the device list |
 | `--design NAME` | Force `kde`, `gnome` or `auto` for this run only |
 | `--check-deps` | Print a dependency report and exit |
-| `--debug` | Verbose logging |
+| `--debug` | Verbose logging. The same switch is in Advanced Settings (Logging), where it applies at once and is remembered |
