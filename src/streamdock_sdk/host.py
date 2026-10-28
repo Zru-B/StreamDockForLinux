@@ -78,7 +78,8 @@ def main(argv=None) -> int:
     channel = _Channel(os.fdopen(os.dup(1), 'w', encoding='utf-8'))
     os.dup2(2, 1)
     sys.stdout = sys.stderr
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO,
+    logging.basicConfig(stream=sys.stderr,
+                        level=logging.DEBUG if os.environ.get('STREAMDOCK_DEBUG') else logging.INFO,
                         format='%(levelname)s %(name)s: %(message)s')
     try:
         os.nice(10)

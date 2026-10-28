@@ -3,6 +3,8 @@ The Device Settings panel: the brightness slider and the lock switch, plus the
 Advanced Settings dialog with its gesture timings.
 """
 
+import logging
+import os
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +15,9 @@ from StreamDock.application.config_document import (
     DEFAULT_LONG_PRESS_DURATION,
     MIN_BRIGHTNESS,
 )
+from StreamDock.logging_control import set_debug
 from StreamDock.ui.dialogs import AdvancedSettingsDialog
+from StreamDock.ui.settings_store import get_debug_logging, set_debug_logging
 from StreamDock.ui.main_window import MainWindow
 from StreamDock.ui.widgets import ToggleSwitch
 
@@ -198,3 +202,46 @@ class TestAdvancedSettings:
         assert dialog.get_settings() == {
             'double_press_interval': DEFAULT_DOUBLE_PRESS_INTERVAL,
             'long_press_duration': DEFAULT_LONG_PRESS_DURATION}
+
+
+class TestDebugLoggingSwitch:
+    """The checkbox flips every logger at once, and the choice is remembered."""
+
+    @pytest.fixture(autouse=True)
+    def restore_logging(self):
+        root = logging.getLogger()
+        level = root.level
+        yield
+        set_debug(False)
+        root.setLevel(level)
+        set_debug_logging(False)
+
+    def test_toggling_it_changes_every_logger(self, qtbot, window):
+        stubborn = logging.getLogger('streamdock.test.stubborn')
+        stubborn.setLevel(logging.WARNING)
+        dialog = AdvancedSettingsDialog(window.config)
+        qtbot.addWidget(dialog)
+
+        dialog.debug_check.setChecked(True)
+        assert stubborn.isEnabledFor(logging.DEBUG)
+        assert logging.getLogger('anything.else').isEnabledFor(logging.DEBUG)
+        assert not logging.getLogger('PIL.PngImagePlugin').isEnabledFor(logging.DEBUG)
+
+        dialog.debug_check.setChecked(False)
+        assert not stubborn.isEnabledFor(logging.DEBUG)
+
+    def test_the_choice_is_remembered(self, qtbot, window):
+        dialog = AdvancedSettingsDialog(window.config)
+        qtbot.addWidget(dialog)
+
+        dialog.debug_check.setChecked(True)
+
+        assert get_debug_logging()
+        assert os.environ['STREAMDOCK_DEBUG'] == '1'
+
+    def test_it_starts_checked_when_debug_is_already_on(self, qtbot, window):
+        set_debug(True)
+        dialog = AdvancedSettingsDialog(window.config)
+        qtbot.addWidget(dialog)
+
+        assert dialog.debug_check.isChecked()

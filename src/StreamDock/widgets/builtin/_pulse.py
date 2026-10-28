@@ -7,9 +7,12 @@ the desktop's volume applet - shows on the key at once instead of at the next
 poll.
 """
 
+import json
+import re
 import subprocess
 import threading
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable, List, Optional
 
 from streamdock_sdk import Option, Widget
 from StreamDock.widgets.builtin import _common
@@ -43,10 +46,191 @@ def toggle_muted(kind: str) -> Optional[bool]:
     return read_muted(kind)
 
 
-# One ``pactl subscribe`` serves every mute key in the process.
+@dataclass(frozen=True)
+class AudioLevel:
+    """The default device's volume in percent and its mute; None where pactl can't tell."""
+
+    volume: Optional[int] = None
+    muted: Optional[bool] = None
+
+
+def read_volume(kind: str) -> Optional[int]:
+    """The default source's or sink's volume in percent, averaged over its channels."""
+    try:
+        result = subprocess.run(['pactl', f'get-{kind}-volume', TARGETS[kind]], capture_output=True,
+                                text=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    # "Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 /  40% / ..."
+    first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ''
+    percents = [int(value) for value in re.findall(r'(\d+)%', first_line)]
+    if not percents:
+        return None
+    return round(sum(percents) / len(percents))
+
+
+def read_level(kind: str) -> AudioLevel:
+    return AudioLevel(read_volume(kind), read_muted(kind))
+
+
+def step_volume(kind: str, step: int, maximum: int = 100, unmute: bool = True) -> AudioLevel:
+    """
+    Raise (``step`` > 0) or lower the volume by ``step`` percent, never above ``maximum``.
+
+    A relative change keeps the channels' balance; only the last step up to
+    ``maximum`` sets an absolute value. With ``unmute``, raising the volume
+    also unmutes, as desktop volume keys do.
+    """
+    current = read_volume(kind)
+    if current is None:
+        return read_level(kind)
+    if step > 0 and current >= maximum:
+        change = None
+    elif step > 0 and current + step > maximum:
+        change = f'{maximum}%'
+    else:
+        change = f'{step:+d}%'
+    commands = []
+    if change is not None:
+        # '--' so pactl doesn't read '-5%' as an option.
+        commands.append(['pactl', f'set-{kind}-volume', '--', TARGETS[kind], change])
+    if unmute and step > 0:
+        commands.append(['pactl', f'set-{kind}-mute', TARGETS[kind], '0'])
+    try:
+        for command in commands:
+            subprocess.run(command, capture_output=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return read_level(kind)
+
+
+@dataclass(frozen=True)
+class Sink:
+    """An audio output: its pactl name, what the desktop calls it, and what kind of device it is."""
+
+    name: str
+    description: str
+    # 'speakers', 'headphones' or 'hdmi'.
+    kind: str = 'speakers'
+
+
+HEADPHONE_FORMS = ('headphone', 'headset', 'hands-free', 'handsfree', 'earbuds')
+
+
+def sink_kind(name: str, description: str = '', port: str = '', form_factor: str = '', bus: str = '') -> str:
+    text = ' '.join((name, description, port)).lower()
+    if 'hdmi' in text or 'displayport' in text:
+        return 'hdmi'
+    if form_factor.lower() in HEADPHONE_FORMS or bus.lower() == 'bluetooth' or \
+            any(word in text for word in ('headphone', 'headset')):
+        return 'headphones'
+    return 'speakers'
+
+
+def _pactl_output(*args: str) -> Optional[str]:
+    try:
+        result = subprocess.run(['pactl', *args], capture_output=True, text=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def list_sinks() -> Optional[List[Sink]]:
+    """Every output, or None when pactl can't be asked."""
+    output = _pactl_output('--format=json', 'list', 'sinks')
+    if output is not None:
+        try:
+            sinks = []
+            for entry in json.loads(output):
+                properties = entry.get('properties') or {}
+                name = entry.get('name', '')
+                description = entry.get('description') or name
+                sinks.append(Sink(name, description, sink_kind(
+                    name, description, entry.get('active_port') or '',
+                    properties.get('device.form_factor', ''), properties.get('device.bus', ''))))
+            return sinks
+        except (ValueError, AttributeError, TypeError):
+            pass
+    # pactl older than 16 has no JSON: names only.
+    output = _pactl_output('list', 'short', 'sinks')
+    if output is None:
+        return None
+    names = [line.split('\t')[1] for line in output.splitlines() if line.count('\t') >= 1]
+    return [Sink(name, name, sink_kind(name)) for name in names]
+
+
+def default_sink() -> Optional[str]:
+    output = _pactl_output('get-default-sink')
+    return output.strip() or None if output is not None else None
+
+
+def set_default_sink(name: str, move_streams: bool = True) -> None:
+    """
+    Make ``name`` the default output.
+
+    PipeWire moves the playing streams along by itself; PulseAudio leaves
+    them where they are, so with ``move_streams`` they're moved explicitly.
+    """
+    _pactl_output('set-default-sink', name)
+    if not move_streams:
+        return
+    for line in (_pactl_output('list', 'short', 'sink-inputs') or '').splitlines():
+        stream = line.split('\t')[0]
+        if stream.isdigit():
+            _pactl_output('move-sink-input', stream, name)
+
+
+# One ``pactl subscribe`` serves every mute and volume key in the process.
 HUB = _common.ProcessHub(['pactl', 'subscribe'], 'pactl-subscribe')
 # A volume slider dragged across sends dozens of events; they become one read.
 DEBOUNCE = 0.1
+
+
+class ChangeWatch:
+    """
+    Calls ``on_change`` once per burst of ``pactl subscribe`` change events concerning ``kind``.
+
+    ``on_change`` runs on a timer thread, DEBOUNCE after the burst's first event.
+    """
+
+    def __init__(self, kind: str, on_change: Callable[[], None]):
+        # 'server' events fire when the default device changes.
+        self._wanted = (f"on {kind} #", 'on server')
+        self._on_change = on_change
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+        self._subscribed = False
+
+    def start(self) -> None:
+        if not self._subscribed:
+            self._subscribed = True
+            HUB.subscribe(self._event)
+
+    def stop(self) -> None:
+        if self._subscribed:
+            HUB.unsubscribe(self._event)
+            self._subscribed = False
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+    def _event(self, line: Optional[str]) -> None:
+        if line is None or "'change'" not in line or not any(token in line for token in self._wanted):
+            return
+        with self._lock:
+            if self._timer is not None:
+                return
+            self._timer = threading.Timer(DEBOUNCE, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _fire(self) -> None:
+        with self._lock:
+            self._timer = None
+        self._on_change()
 
 
 class MuteWidget(Widget):
@@ -67,23 +251,13 @@ class MuteWidget(Widget):
         # One quick pactl call, so the first frame shows the real state.
         self.muted: Optional[bool] = read_muted(self.kind)
         ctx.set_state(self.state_name())
-        self._listener: Optional[Callable[[Optional[str]], None]] = None
-        self._debounce_lock = threading.Lock()
-        self._debounce: Optional[threading.Timer] = None
+        self.watch = ChangeWatch(self.kind, lambda: self._read_now(ctx))
         # A backstop for a pactl subscribe that died unnoticed.
         ctx.every(10, lambda: self.refresh(ctx))
 
     def on_show(self, ctx):
         # Watch for changes only while the key is on the device.
-        if self._listener is None:
-            # 'server' events fire when the default device changes.
-            wanted = (f"on {self.kind} #", 'on server')
-
-            def listener(line):
-                if line is not None and "'change'" in line and any(token in line for token in wanted):
-                    self.changed(ctx)
-            self._listener = listener
-            HUB.subscribe(listener)
+        self.watch.start()
         self.refresh(ctx)
 
     def on_hide(self, ctx):
@@ -93,28 +267,11 @@ class MuteWidget(Widget):
         self.stop_watching()
 
     def stop_watching(self):
-        if self._listener is not None:
-            HUB.unsubscribe(self._listener)
-            self._listener = None
-        with self._debounce_lock:
-            if self._debounce is not None:
-                self._debounce.cancel()
-                self._debounce = None
-
-    def changed(self, ctx):
-        """A change event: read the state once the burst it belongs to is over."""
-        with self._debounce_lock:
-            if self._debounce is not None:
-                return
-            self._debounce = threading.Timer(DEBOUNCE, self._read_now, args=(ctx,))
-            self._debounce.daemon = True
-            self._debounce.start()
+        self.watch.stop()
 
     def _read_now(self, ctx):
         # Read here rather than through the backstop's refresh(), which skips
         # a read while one is in flight - and that one may predate the change.
-        with self._debounce_lock:
-            self._debounce = None
         muted = read_muted(self.kind)
         ctx.call_soon(lambda: self.update(ctx, muted))
 

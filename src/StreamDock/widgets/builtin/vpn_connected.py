@@ -55,7 +55,7 @@ class VpnConnected(Widget):
     options = [
         Option.choice('source', ['auto', 'networkmanager', 'interfaces'], default='auto', label='Detect with',
                       description='auto: connected if either NetworkManager or an interface says so.'),
-        Option.string('interfaces', default='tun*,wg*,ppp*', label='Interface names',
+        Option.string('interfaces', default='tun*,wg*,ppp*,fctvpn*', label='Interface names',
                       description='Comma-separated patterns, e.g. tun*,wg0,tailscale0'),
         Option.int('interval', default=3, minimum=1, maximum=300, label='Check every (s)'),
         Option.color('connected_color', default='#1b5e20', label='Connected background'),

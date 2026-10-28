@@ -21,6 +21,8 @@ from StreamDock.application.configuration_manager import (
     relativize_icon_path,
     resolve_icon_path,
 )
+from StreamDock.logging_control import is_debug, set_debug
+from StreamDock.ui.settings_store import set_debug_logging
 from StreamDock.ui.chrome import ThemedDialog, make_button
 from StreamDock.ui.widgets import (
     ActionListContainer,
@@ -2374,9 +2376,45 @@ class AdvancedSettingsDialog(ThemedDialog):
             "On keys that have long-press actions, the press actions run when the key is "
             "released early instead of when it goes down. Default: 0.5 seconds (500ms).")
 
+        self._add_debug_card(layout)
+
         layout.addStretch()
         
         self.add_actions("Save", self.accept)
+
+    def _add_debug_card(self, layout):
+        """Add the debug-logging switch, which acts the moment it is toggled."""
+        metrics = current_theme().metrics
+        card = QWidget()
+        card.setObjectName("card")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card_layout = QVBoxLayout(card)
+        pad = metrics.card_padding + 4
+        card_layout.setContentsMargins(pad, pad, pad, pad)
+        card_layout.setSpacing(metrics.spacing)
+
+        section_title = QLabel("Logging")
+        section_title.setProperty("headingLevel", "2")
+        card_layout.addWidget(section_title)
+
+        self.debug_check = QCheckBox("Enable debug logging")
+        self.debug_check.setChecked(is_debug())
+        self.debug_check.toggled.connect(self._on_debug_toggled)
+        card_layout.addWidget(self.debug_check)
+
+        help_label = QLabel(
+            "Writes detailed messages from every part of the application to the "
+            "terminal or journal it was started from. Applies immediately and is "
+            "remembered. Widgets that are already running pick it up when they restart.")
+        help_label.setProperty("textRole", "caption")
+        help_label.setWordWrap(True)
+        card_layout.addWidget(help_label)
+        layout.addWidget(card)
+
+    @staticmethod
+    def _on_debug_toggled(checked: bool):
+        set_debug(checked)
+        set_debug_logging(checked)
     
     def _add_timing_card(self, layout, title, label, value, minimum, maximum,
                          default, help_text):

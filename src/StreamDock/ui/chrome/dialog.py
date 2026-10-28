@@ -93,9 +93,8 @@ class ThemedDialog(QDialog):
         if title:
             self.setWindowTitle(title)
         # Parented to the main window, a closed dialog otherwise lives as long
-        # as the window does - every edit leaked one. The deletion is deferred
-        # to the event loop, so a caller reading results right after exec()
-        # still has the dialog; one that spins an event loop first does not.
+        # as the window does - every edit leaked one. exec() defers the
+        # deletion; see there.
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         metrics = current_theme().metrics
@@ -113,6 +112,23 @@ class ThemedDialog(QDialog):
 
         self.affirmative_button: Optional[QPushButton] = None
         self.cancel_button: Optional[QPushButton] = None
+
+    def exec(self) -> int:
+        """
+        Run the dialog modally; it is deleted once control is back in the event loop.
+
+        QDialog.exec() deletes a WA_DeleteOnClose dialog before it returns, so
+        the caller could not read what was entered - every editor reads its
+        fields right after exec(). The deletion is deferred instead, which
+        still frees the dialog.
+        """
+        delete_on_close = self.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        try:
+            return super().exec()
+        finally:
+            if delete_on_close:
+                self.deleteLater()
 
     @property
     def content_layout(self) -> QVBoxLayout:
