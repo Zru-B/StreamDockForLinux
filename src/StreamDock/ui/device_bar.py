@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from StreamDock.application.device_discovery import device_key, device_label
+from StreamDock.application.device_discovery import device_key, device_label, device_name
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 from StreamDock.ui.device_service import (
     STATE_CONNECTED,
@@ -242,8 +242,7 @@ class DeviceBar(QWidget):
         previous = self.selected_device_id()
 
         icon = load_app_icon()
-        names = [device.product or device.manufacturer or "Stream Dock"
-                 for device in devices]
+        names = [device_name(device) for device in devices]
 
         self.device_combo.blockSignals(True)
         self.device_combo.clear()

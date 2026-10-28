@@ -346,7 +346,7 @@ class TestHotplug:
         with qtbot.waitSignal(service.device_detached) as blocker:
             service._on_devices_changed([])
 
-        assert 'StreamDock' in blocker.args[0]
+        assert 'Stream Dock 293V3' in blocker.args[0]
 
     def test_unplugging_leaves_a_reason_in_the_state(self, service, app,
                                                      config_path):
@@ -410,7 +410,7 @@ class TestHotplug:
             service._on_devices_changed([make_device('/dev/hidraw0'),
                                          make_device('/dev/hidraw1')])
 
-        assert 'StreamDock' in blocker.args[0]
+        assert 'Stream Dock 293V3' in blocker.args[0]
 
     def test_a_second_device_does_not_disturb_the_connection(self, service, app,
                                                              config_path):

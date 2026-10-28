@@ -9,7 +9,7 @@ headless entry point needs to resolve a --device argument up front.
 import logging
 from typing import List, Optional
 
-from StreamDock.devices.product_ids import STREAMDOCK_VID, SUPPORTED_PIDS
+from StreamDock.devices.product_ids import MODEL_NAMES, STREAMDOCK_VID, SUPPORTED_PIDS
 from StreamDock.infrastructure import HardwareInterface, USBHardware
 from StreamDock.infrastructure.hardware_interface import DeviceInfo
 
@@ -61,6 +61,24 @@ def device_key(device: DeviceInfo) -> str:
     return f"{device.vendor_id:04x}:{device.product_id:04x}@{device.path}"
 
 
+def device_name(device: DeviceInfo) -> str:
+    """
+    Friendly model name for a device.
+
+    Known models are named from their product id rather than the USB product
+    string, which the 293V3 firmware reports as "HOTSPOTEKUSB HID DEMO".
+
+    Args:
+        device: Discovered device
+
+    Returns:
+        Display name, e.g. 'Stream Dock 293V3'
+    """
+    if device.vendor_id == STREAMDOCK_VID and device.product_id in MODEL_NAMES:
+        return MODEL_NAMES[device.product_id]
+    return device.product or device.manufacturer or "Stream Dock"
+
+
 def device_label(device: DeviceInfo) -> str:
     """
     Build a human-readable name for a device picker entry.
@@ -69,9 +87,9 @@ def device_label(device: DeviceInfo) -> str:
         device: Discovered device
 
     Returns:
-        Display string, e.g. 'Stream Dock 293v3 (1-3:1.0)'
+        Display string, e.g. 'Stream Dock 293V3 (0300D0782D35)'
     """
-    name = device.product or device.manufacturer or "Stream Dock"
+    name = device_name(device)
     detail = device.serial_number or device.path
     return f"{name} ({detail})" if detail else name
 

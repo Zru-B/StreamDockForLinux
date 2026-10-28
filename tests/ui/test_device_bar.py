@@ -63,7 +63,7 @@ class TestDeviceList:
     def test_devices_are_labelled_readably(self, bar):
         bar.set_devices([make_device('/dev/hidraw0')])
 
-        assert 'StreamDock' in bar.device_combo.currentText()
+        assert 'Stream Dock 293V3' == bar.device_combo.currentText()
 
 
 class TestState:
