@@ -18,8 +18,8 @@ startup when a configuration is loaded.
 | Connect / Disconnect | Open or release the device. |
 | Apply to Device | Send the configuration currently open in the window. |
 
-If the list is empty, check that you are in the `plugdev` group and that the
-udev rule is installed — see [Installation](installation.md).
+If the list is empty, check that the udev rule is installed and replug the
+deck — see [Installation](installation.md).
 
 ## Plugging and unplugging
 
@@ -57,16 +57,38 @@ there is a brief flicker rather than the screen going dark.
 right after an apply, the device already matches what is on screen, so the
 button is greyed out. It becomes available again as soon as you edit
 something, open a different configuration file, or the device is unplugged and
-reconnected. Note that saving does not enable it and applying does not clear
+reconnected. Connecting while the window holds unsaved edits leaves it enabled:
+the device loads the file on disk, not what is on screen. Note that saving does not enable it and applying does not clear
 the modified marker in the title bar — writing the file and pushing to the
 device stay independent.
+
+## Icons with a label
+
+An icon key has an optional **Label**. Fill it in and the device draws the text
+over the icon, where **Label Position** puts it, in the chosen colour, size and
+weight; the grid previews it the same way. Leave it empty for a plain icon.
+
+## Widgets
+
+**Keys → Widgets…** lists the built-in widgets and any you have installed, and
+installs, removes or re-approves third-party ones. After a change the
+configuration is applied again if a device is connected, so the device picks
+up the change. To put a widget on a key, open the key and choose
+**Display Type → Widget**. See [Widgets](widgets.md).
 
 ## The default configuration
 
 The application opens the same configuration each time. When you open a
 different file it asks whether that should become the new default; answering
-*No* keeps the current one. Without a stored default it looks for `config.yml`
-in the working directory, then next to `main.py`, and otherwise starts empty.
+*No* keeps the current one. Without a stored default it uses the `config.yml`
+installed next to the program, and otherwise starts empty. The GUI never picks
+up a `config.yml` from the working directory — pass the file on the command
+line to open one. (`--headless` does still look in the working directory first,
+and logs which file it chose.)
+
+**Save As** into another directory rewrites relative icon paths so they still
+point at the same images; a path that would leave the new directory is written
+absolute.
 
 ## Appearance
 
@@ -83,6 +105,21 @@ Dolphin and Kate are:
 - A **sidebar** on the left lists the layouts (the default one starred) and
   the window rules, ruled off from a framed **view** holding the key grid.
   The heading over the view names the layout showing and counts its keys.
+  - Each layout row says how full it is and what leads to it
+    (`12 / 15 keys · 2 rules · via key`); a layout nothing switches to is
+    flagged *unreachable*. Right-click to edit, rename (F2), duplicate, make it
+    the default, or start a window rule aimed at it.
+  - Each rule row reads as what it does - `firefox`, then `→ FirefoxLayout · by
+    class` - listed in the order rules are tried. Drag rows, or use *Try
+    Earlier / Later*, to change which rule wins; clicking a rule shows its
+    layout.
+  - On both lists, double-click or Enter edits and Delete removes.
+  - The rule editor lists recently focused windows (while a deck is
+    connected): click one to take its class or title, and the windows the
+    pattern matches are shown in bold. A blank rule name is generated from the
+    pattern.
+  - Deleting a layout asks whether its window rules move to another layout or
+    go with it.
 - Device settings are a form under the view, and messages land in a **status
   bar** that also shows the path of the open configuration.
 - **Apply** turns orange while there are changes the device has not seen -
@@ -160,7 +197,8 @@ machine with no display. Press Ctrl+C to stop.
 ## One instance at a time
 
 Only one process can drive the device. A second launch raises the existing
-window rather than starting again, and if something else already holds the
+window rather than starting again (the check uses a socket private to your
+user, so other users on the same machine are unaffected), and if something else already holds the
 device the application says so and lets you keep editing configurations with
 connecting disabled.
 
@@ -179,4 +217,4 @@ streamdock [CONFIG] [--headless] [--minimized] [--device ID] [--design NAME]
 | `--device ID` | Connect to a specific device, as shown in the device list |
 | `--design NAME` | Force `kde`, `gnome` or `auto` for this run only |
 | `--check-deps` | Print a dependency report and exit |
-| `--debug` | Verbose logging |
+| `--debug` | Verbose logging. The same switch is in Advanced Settings (Logging), where it applies at once and is remembered |

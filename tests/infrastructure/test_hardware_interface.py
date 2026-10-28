@@ -8,7 +8,7 @@ error handling, and design contract compliance.
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
-from StreamDock.infrastructure.hardware_interface import HardwareInterface, DeviceInfo, InputEvent
+from StreamDock.infrastructure.hardware_interface import HardwareInterface, DeviceInfo
 from StreamDock.infrastructure.usb_hardware import USBHardware
 
 
@@ -38,17 +38,6 @@ class TestDeviceInfo:
         assert device.manufacturer == ""
         assert device.product == ""
 
-
-class TestInputEvent:
-    """Tests for InputEvent dataclass."""
-    
-    def test_input_event_creation(self):
-        """Design contract: InputEvent captures button press with timestamp."""
-        event = InputEvent(button_index=5, event_type='press')
-        
-        assert event.button_index == 5
-        assert event.event_type == 'press'
-        assert event.timestamp > 0
 
 
 class TestUSBHardware:
@@ -263,82 +252,7 @@ class TestUSBHardware:
     
     # ==================== Input Reading Tests ====================
     
-    def test_read_input_returns_event_on_button_press(self, usb_hardware, mock_transport):
-        """Design contract: Converts HIDTransport data to InputEvent."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        # HIDTransport.read_() returns: (raw_bytes, ack, ok, key, status)
-        mock_transport.read_.return_value = (b'data', True, True, 5, 0)
-        
-        event = usb_hardware.read_input(timeout_ms=100)
-        
-        assert event is not None
-        assert event.button_index == 5
-        assert event.event_type == 'press'
-    
-    def test_read_input_returns_none_on_timeout(self, usb_hardware, mock_transport):
-        """Design contract: Returns None on timeout (not an error)."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        mock_transport.read_.return_value = None  # Timeout
-        
-        event = usb_hardware.read_input(timeout_ms=100)
-        
-        assert event is None
-    
-    def test_read_input_timeout_parameter_passed_correctly(self, usb_hardware, mock_transport):
-        """Implementation: Timeout parameter passed to HIDTransport."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        usb_hardware.read_input(timeout_ms=500)
-        
-        # Verify timeout was passed
-        call_args = mock_transport.read_.call_args[0]
-        assert call_args[1] == 500  # timeout_ms parameter
-    
-    def test_read_input_returns_none_when_no_device(self, usb_hardware):
-        """Design contract: Returns None when no device is open."""
-        event = usb_hardware.read_input()
-        
-        assert event is None
-    
     # ==================== Image Tests ====================
-    
-    def test_send_image_delegates_to_transport(self, usb_hardware, mock_transport):
-        """Design contract: Image sending delegated to HIDTransport."""
-        mock_transport.open.return_value = 1
-        mock_transport.set_key_img.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        image_data = b'fake_image_data'
-        result = usb_hardware.send_image(image_data, button_index=3)
-        
-        assert result is True
-        mock_transport.set_key_img.assert_called_once_with(image_data, len(image_data), 3)
-    
-    def test_send_image_returns_false_when_no_device(self, usb_hardware):
-        """Design contract: Returns False when no device is open."""
-        result = usb_hardware.send_image(b'data', button_index=0)
-        
-        assert result is False
-    
-    def test_send_image_handles_transport_failure(self, usb_hardware, mock_transport):
-        """Error handling: Returns False on transport failure."""
-        mock_transport.open.return_value = 1
-        mock_transport.set_key_img.return_value = -1  # Failure
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        result = usb_hardware.send_image(b'data', button_index=0)
-        
-        assert result is False
     
     # ==================== Additional Edge Cases ====================
     
@@ -377,40 +291,3 @@ class TestUSBHardware:
         
         assert result is False
     
-    def test_read_input_handles_exception(self, usb_hardware, mock_transport):
-        """Error handling: Returns None on exception."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        mock_transport.read_.side_effect = Exception("Read error")
-        
-        event = usb_hardware.read_input()
-        
-        assert event is None
-    
-    def test_send_image_handles_exception(self, usb_hardware, mock_transport):
-        """Error handling: Returns False on exception."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        mock_transport.set_key_img.side_effect = Exception("Image error")
-        
-        result = usb_hardware.send_image(b'data', button_index=0)
-        
-        assert result is False
-    
-    def test_read_input_handles_invalid_key_index(self, usb_hardware, mock_transport):
-        """Edge case: Negative key index means no button press."""
-        mock_transport.open.return_value = 1
-        device = DeviceInfo(0x1234, 0x5678, 'TEST', '/dev/hidraw0')
-        usb_hardware.open_device(device)
-        
-        # Negative key means no press
-        mock_transport.read_.return_value = (b'data', True, True, -1, 0)
-        
-        event = usb_hardware.read_input()
-        
-        assert event is None
-

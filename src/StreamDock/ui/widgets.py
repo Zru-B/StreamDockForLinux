@@ -3,21 +3,35 @@
 Custom widgets for StreamDock Configuration Editor
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Optional, Tuple
 
 from StreamDock.application.config_document import (
+    DEFAULT_BACKGROUND_COLOR,
     DEFAULT_FONT_SIZE,
+    DEFAULT_TEXT_COLOR,
     KeyDefinition,
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
+from StreamDock.domain.device_geometry import (
+    KEY_COLUMNS,
+    KEY_GAP_PIXELS,
+    KEY_PIXELS,
+    KEY_ROWS,
+    KEYCAP_BORDER_PIXELS,
+    PIXELS_PER_MM,
+)
+from StreamDock.image_helpers.pil_helper import render_key_image
 from StreamDock.ui.styles import get_colors
 from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
+from StreamDock.widgets.appearance import Appearance
 from PyQt6.QtCore import (
     QEasingCurve,
     QMimeData,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -29,10 +43,15 @@ from PyQt6.QtGui import (
     QColor,
     QDrag,
     QFont,
+    QFontMetrics,
     QIcon,
+    QKeySequence,
     QPainter,
+    QPalette,
     QPen,
+    QImage,
     QPixmap,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -40,6 +59,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -47,6 +67,9 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +79,8 @@ COLORS = get_colors()
 # Carried by a row being dragged to a new position in its list. Its own
 # format, so a row cannot be dropped on anything else that takes text.
 ACTION_MIME_TYPE = "application/x-streamdock-action"
+# Carried by a key being dragged to another square of the grid.
+KEY_MIME_TYPE = "application/x-streamdock-key-position"
 
 
 def _font_size(value) -> int:
@@ -73,6 +98,17 @@ def _font_size(value) -> int:
     except (TypeError, ValueError):
         return DEFAULT_FONT_SIZE
     return size if size > 0 else DEFAULT_FONT_SIZE
+
+
+def _css_color(value, default: str) -> str:
+    """
+    A configured colour as #rrggbb for a stylesheet, or the default.
+
+    The value comes straight from the file; interpolated raw, a stray ';' or
+    '}' would inject rules into the square's stylesheet.
+    """
+    color = QColor(value) if isinstance(value, str) else QColor()
+    return color.name() if color.isValid() else QColor(default).name()
 
 
 def _rgba(color: str, alpha: int) -> str:
@@ -204,6 +240,9 @@ class KeySquare(QFrame):
         # Directory relative icon paths resolve against; set by the main
         # window whenever the open configuration changes.
         self.config_dir: str = os.getcwd()
+        # Draws widget snapshots; set by the main window. Without one a
+        # widget key shows its name.
+        self.preview_service = None
         
         # Fixed size matching physical device screen
         self.setFixedSize(112, 112)
@@ -270,42 +309,61 @@ class KeySquare(QFrame):
         self.repaint()
         self.label.repaint()
     
+    def set_preview_service(self, service) -> None:
+        self.preview_service = service
+        service.preview_ready.connect(self._on_preview_ready)
+
+    def _widget_preview_args(self, key_def: KeyDefinition):
+        return (key_def.widget, key_def.widget_options,
+                Appearance.from_key_config(key_def.to_dict(), self.config_dir))
+
+    def _on_preview_ready(self, key: str) -> None:
+        key_def = self.key_definition
+        if key_def is not None and key_def.is_widget() and \
+                key == self.preview_service.key(*self._widget_preview_args(key_def)):
+            self.set_key(self.key_name, key_def)
+
+    def _show_widget(self, key_def: KeyDefinition) -> None:
+        """A snapshot of the widget, as the device will show it."""
+        pixmap = None
+        if self.preview_service is not None:
+            pixmap = self.preview_service.pixmap(*self._widget_preview_args(key_def))
+        self.setStyleSheet("""
+            KeySquare { background-color: #000000; border: none; }
+            KeySquare:hover { background-color: #000000; }
+        """)
+        if pixmap is not None:
+            self.label.setText("")
+            self.label.setPixmap(pixmap)
+            self.label.setStyleSheet("background-color: #000000; padding: 0px; margin: 0px;")
+        else:
+            self.label.setPixmap(QPixmap())
+            self.label.setText(f"{key_def.widget}\n…")
+            font = QFont()
+            font.setPointSize(8)
+            self.label.setFont(font)
+            self.label.setStyleSheet("color: #9e9e9e; background-color: #000000;")
+
     def set_key(self, key_name: str, key_def: KeyDefinition):
         """Set the square to display a key"""
         self.key_name = key_name
         self.key_definition = key_def
         
-        if key_def.is_icon_based():
-            # Icon mode: fill entire square with icon.
+        if key_def.is_widget():
+            self._show_widget(key_def)
+
+        elif key_def.has_icon():
             # Relative paths resolve against the config file's directory, the
             # same rule the runtime applies, so the preview matches the device.
             icon_path = Path(resolve_icon_path(key_def.icon, self.config_dir))
-            
-            if icon_path.exists():
-                original_pixmap = QPixmap(str(icon_path))
-                
-                if not original_pixmap.isNull():
-                    # Scale icon to fill entire 112x112 square
-                    scaled_pixmap = original_pixmap.scaled(
-                        112, 112,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    
-                    # Create canvas and fill with black
-                    canvas = QPixmap(112, 112)
-                    canvas.fill(QColor(0, 0, 0))
-                    
-                    # Center the icon
-                    x = (112 - scaled_pixmap.width()) // 2
-                    y = (112 - scaled_pixmap.height()) // 2
-                    
-                    painter = QPainter(canvas)
-                    painter.drawPixmap(x, y, scaled_pixmap)
-                    painter.end()
-                    
-                    self.label.setPixmap(canvas)
-                    
+            if not icon_path.exists():
+                self._show_error("Not Found")
+            else:
+                pixmap = self._icon_pixmap(key_def, icon_path)
+                if pixmap is None:
+                    self._show_error("Error")
+                else:
+                    self.label.setPixmap(pixmap)
                     # No border, no padding - just the icon
                     self.setStyleSheet("""
                         KeySquare {
@@ -317,18 +375,9 @@ class KeySquare(QFrame):
                         }
                     """)
                     self.label.setStyleSheet("background-color: #000000; padding: 0px; margin: 0px;")
-                else:
-                    # Failed to load
-                    self._show_error("Error")
-            else:
-                # Icon not found
-                self._show_error("Not Found")
-        
+
         elif key_def.has_text():
             # Text mode: centered text with specified colors.
-            # has_text() rather than is_text_based() so a key carrying both an
-            # icon and text still renders something; the icon branch above
-            # already handled the case where the icon loaded.
             self.label.setPixmap(QPixmap())  # Clear any pixmap
             self.label.setText(str(key_def.text))
             
@@ -341,8 +390,8 @@ class KeySquare(QFrame):
             self.label.setFont(font)
             
             # Fill entire square with background color
-            bg_color = key_def.background_color
-            text_color = key_def.text_color
+            bg_color = _css_color(key_def.background_color, DEFAULT_BACKGROUND_COLOR)
+            text_color = _css_color(key_def.text_color, DEFAULT_TEXT_COLOR)
             
             self.setStyleSheet(f"""
                 KeySquare {{
@@ -376,6 +425,40 @@ class KeySquare(QFrame):
         self.update()
         self.label.update()
     
+    @staticmethod
+    def _icon_pixmap(key_def: KeyDefinition, icon_path: Path) -> Optional[QPixmap]:
+        """
+        The key as the device draws it: the icon centred on black, and a label
+        drawn over it by the runtime's own renderer when the key has one.
+        """
+        text = key_def.text if isinstance(key_def.text, str) else ""
+        if text.strip():
+            try:
+                image = render_key_image(
+                    size=(112, 112), icon_path=str(icon_path), text=text,
+                    text_color=key_def.text_color,
+                    background_color=key_def.background_color,
+                    font_size=_font_size(key_def.font_size), bold=bool(key_def.bold),
+                    text_position=key_def.text_position).convert("RGBA")
+                data = image.tobytes("raw", "RGBA")
+                return QPixmap.fromImage(QImage(data, image.width, image.height,
+                                                QImage.Format.Format_RGBA8888).copy())
+            except Exception:  # pylint: disable=broad-exception-caught
+                # The runtime falls back to the bare icon too.
+                pass
+
+        original = QPixmap(str(icon_path))
+        if original.isNull():
+            return None
+        scaled = original.scaled(112, 112, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        canvas = QPixmap(112, 112)
+        canvas.fill(QColor(0, 0, 0))
+        painter = QPainter(canvas)
+        painter.drawPixmap((112 - scaled.width()) // 2, (112 - scaled.height()) // 2, scaled)
+        painter.end()
+        return canvas
+
     def _show_error(self, message: str):
         """Show error message on square"""
         self.label.setText(message)
@@ -430,7 +513,7 @@ class KeySquare(QFrame):
         # Start drag
         drag = QDrag(self)
         mime_data = QMimeData()
-        mime_data.setText(str(self.position))
+        mime_data.setData(KEY_MIME_TYPE, str(self.position).encode())
         drag.setMimeData(mime_data)
         
         # Create drag pixmap (snapshot of this square)
@@ -453,17 +536,22 @@ class KeySquare(QFrame):
             A key position, or None when the drag is not one of ours or
             started on this very square
         """
-        if not mime.hasText():
+        if not mime.hasFormat(KEY_MIME_TYPE):
             return None
         try:
-            position = int(mime.text())
+            position = int(bytes(mime.data(KEY_MIME_TYPE)).decode())
         except ValueError:
             return None
         return None if position == self.position else position
 
+    def _from_this_grid(self, event) -> bool:
+        """True when the drag started on a square of this same window."""
+        source = event.source()
+        return isinstance(source, KeySquare) and source.window() is self.window()
+
     def dragEnterEvent(self, event):
         """Take any key dragged from another square"""
-        if self.dragged_position(event.mimeData()) is None:
+        if not self._from_this_grid(event) or self.dragged_position(event.mimeData()) is None:
             event.ignore()
             return
 
@@ -481,7 +569,7 @@ class KeySquare(QFrame):
         """Move the dragged key here, trading places with whatever is here"""
         self._clear_highlight()
         from_position = self.dragged_position(event.mimeData())
-        if from_position is None:
+        if from_position is None or not self._from_this_grid(event):
             event.ignore()
             return
 
@@ -524,6 +612,119 @@ class KeySquare(QFrame):
         return self.key_definition is None
 
 
+# Second line under a sidebar row's title, drawn smaller and quieter.
+SIDEBAR_CAPTION_ROLE = Qt.ItemDataRole.UserRole + 1
+# A palette name ('warning', 'danger') for a caption reporting a problem.
+SIDEBAR_PROBLEM_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class DevicePanel(QWidget):
+    """
+    The key grid at the device's own proportions.
+
+    Keys sit as far apart as their screens do on the deck, relative to the
+    112px they are drawn at, and each gets the outline of its transparent
+    keycap, so what lines up here lines up on the device - a screensaver
+    picture, or an image split over several keys.
+    """
+
+    # A keycap's corner, in millimetres.
+    KEYCAP_RADIUS_MM = 1.5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.grid = QGridLayout(self)
+        border = math.ceil(KEYCAP_BORDER_PIXELS)
+        self.grid.setContentsMargins(border, border, border, border)
+        self.grid.setSpacing(round(KEY_GAP_PIXELS))
+        theme_manager().changed.connect(self.update)
+
+    def add_key(self, square: QWidget, position: int) -> None:
+        """Place a key by its device number, 1 at the top left."""
+        row, column = divmod(position - 1, KEY_COLUMNS)
+        self.grid.addWidget(square, row, column)
+
+    def keycap_rects(self) -> list:
+        """Where each keycap outline is drawn, one per key in the grid."""
+        rects = []
+        for index in range(self.grid.count()):
+            widget = self.grid.itemAt(index).widget()
+            if widget is not None:
+                rects.append(QRectF(widget.geometry()).adjusted(
+                    -KEYCAP_BORDER_PIXELS, -KEYCAP_BORDER_PIXELS,
+                    KEYCAP_BORDER_PIXELS, KEYCAP_BORDER_PIXELS))
+        return rects
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        border = QColor(COLORS['border_strong'])
+        fill = QColor(COLORS['border'])
+        fill.setAlpha(90)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(fill)
+        radius = self.KEYCAP_RADIUS_MM * PIXELS_PER_MM
+        for rect in self.keycap_rects():
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        painter.end()
+
+
+class SidebarRowDelegate(QStyledItemDelegate):
+    """An icon, a title, and an optional caption line beneath it."""
+
+    def sizeHint(self, option, index):
+        metrics = option.fontMetrics
+        lines = metrics.height() * 2 + 2 if index.data(SIDEBAR_CAPTION_ROLE) else metrics.height()
+        return QSize(0, max(current_theme().metrics.list_row_height, lines + 10))
+
+    def paint(self, painter, option, index):
+        # The view hands every row the same option; initStyleOption writes
+        # the row's own colours into it, so work on a copy.
+        option = QStyleOptionViewItem(option)
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QApplication.style()
+        painter.save()
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
+
+        rect = option.rect.adjusted(8, 0, -8, 0)
+        size = option.decorationSize
+        if not option.icon.isNull():
+            icon_rect = QRect(rect.x(), rect.y() + (rect.height() - size.height()) // 2,
+                              size.width(), size.height())
+            option.icon.paint(painter, icon_rect)
+            rect.setLeft(icon_rect.right() + 8)
+
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        text_color = option.palette.color(
+            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text)
+        caption = index.data(SIDEBAR_CAPTION_ROLE)
+        metrics = option.fontMetrics
+        small_font = QFont(option.font)
+        small_font.setBold(False)
+        small_font.setPointSizeF(max(6.0, option.font.pointSizeF() * 0.85))
+        small = QFontMetrics(small_font)
+        block = metrics.height() + (small.height() + 2 if caption else 0)
+        top = rect.y() + (rect.height() - block) // 2
+
+        painter.setFont(option.font)
+        painter.setPen(text_color)
+        painter.drawText(QRect(rect.x(), top, rect.width(), metrics.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         metrics.elidedText(option.text, Qt.TextElideMode.ElideRight, rect.width()))
+        if caption:
+            painter.setFont(small_font)
+            if selected:
+                painter.setPen(text_color)
+            elif index.data(SIDEBAR_PROBLEM_ROLE):
+                painter.setPen(QColor(COLORS[index.data(SIDEBAR_PROBLEM_ROLE)]))
+            else:
+                painter.setPen(QColor(COLORS['text_secondary']))
+            painter.drawText(QRect(rect.x(), top + metrics.height() + 2, rect.width(), small.height()),
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             small.elidedText(caption, Qt.TextElideMode.ElideRight, rect.width()))
+        painter.restore()
+
+
 class SidebarSection(QWidget):
     """
     One titled list in the sidebar: a heading with an add button, then the rows.
@@ -532,7 +733,13 @@ class SidebarSection(QWidget):
     heading ruled off from the rows beneath it, sitting straight on the
     window - and on GNOME as a card. The stylesheet decides; the widget only
     names its parts.
+
+    Every row answers the same way: double-click or Enter edits it, Delete
+    removes it, and right-click offers the rest.
     """
+
+    edit_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
 
     def __init__(self, title: str, add_tooltip: str, parent=None):
         super().__init__(parent)
@@ -566,10 +773,16 @@ class SidebarSection(QWidget):
         self.list_widget.setObjectName("sidebarList")
         self.list_widget.setFrameShape(QFrame.Shape.NoFrame)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.setItemDelegate(SidebarRowDelegate(self.list_widget))
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.itemActivated.connect(self._on_item_activated)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self._layout.addWidget(self.list_widget)
+
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.list_widget)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self._delete_current)
 
         theme_manager().changed.connect(self._apply_metrics)
         self._apply_metrics()
@@ -590,11 +803,11 @@ class SidebarSection(QWidget):
             self._layout.setSpacing(metrics.spacing)
         self.rule.setVisible(breeze)
         self.list_widget.setIconSize(QSize(metrics.icon_size, metrics.icon_size))
-        for index in range(self.list_widget.count()):
-            self.list_widget.item(index).setSizeHint(QSize(0, metrics.list_row_height))
+        self.list_widget.doItemsLayout()
 
     def _add_row(self, text: str, key: str, icon: QIcon = None,
-                 bold: bool = False, tooltip: str = "") -> QListWidgetItem:
+                 bold: bool = False, tooltip: str = "", caption: str = "",
+                 problem: Optional[str] = None) -> QListWidgetItem:
         """
         Append one row.
 
@@ -604,13 +817,16 @@ class SidebarSection(QWidget):
             icon: The picture at its left, if any
             bold: Whether to weight the text
             tooltip: Hover text
+            caption: A quieter second line
+            problem: Palette name to draw the caption in, flagging it
 
         Returns:
             The item
         """
         item = QListWidgetItem(icon if icon is not None else QIcon(), text)
         item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
+        item.setData(SIDEBAR_CAPTION_ROLE, caption or None)
+        item.setData(SIDEBAR_PROBLEM_ROLE, problem)
         if bold:
             font = item.font()
             font.setBold(True)
@@ -629,7 +845,6 @@ class SidebarSection(QWidget):
         """
         item = QListWidgetItem(text)
         item.setFlags(Qt.ItemFlag.NoItemFlags)
-        item.setSizeHint(QSize(0, current_theme().metrics.list_row_height))
         self.list_widget.addItem(item)
 
     def select(self, key: str) -> None:
@@ -644,9 +859,31 @@ class SidebarSection(QWidget):
                 self.list_widget.setCurrentRow(index)
                 return
 
+    def keys(self) -> list:
+        """Every row's key, top to bottom."""
+        return [self.list_widget.item(index).data(Qt.ItemDataRole.UserRole)
+                for index in range(self.list_widget.count())
+                if self.list_widget.item(index).data(Qt.ItemDataRole.UserRole)]
+
     def _selected_key(self) -> Optional[str]:
         current = self.list_widget.currentItem()
         return current.data(Qt.ItemDataRole.UserRole) if current else None
+
+    def _on_item_activated(self, item: QListWidgetItem) -> None:
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if key:
+            self.edit_requested.emit(key)
+
+    def _delete_current(self) -> None:
+        key = self._selected_key()
+        if key:
+            self.delete_requested.emit(key)
+
+    def _menu_action(self, menu: QMenu, icon_names, text: str, handler) -> QAction:
+        action = QAction(themed_icon(*icon_names) if icon_names else QIcon(), text, menu)
+        action.triggered.connect(handler)
+        menu.addAction(action)
+        return action
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         raise NotImplementedError
@@ -656,17 +893,27 @@ class SidebarSection(QWidget):
 
 
 class LayoutListWidget(SidebarSection):
-    """The layouts a configuration holds, with the default marked."""
+    """The layouts a configuration holds, with the default marked and how each is reached."""
 
     layout_selected = pyqtSignal(str)  # Emits layout name
     add_layout_clicked = pyqtSignal()
     delete_layout_clicked = pyqtSignal(str)  # Emits layout name
     set_default_clicked = pyqtSignal(str)  # Emits layout name to set as default
     edit_layout_clicked = pyqtSignal(str)  # Emits layout name to edit
+    rename_layout_clicked = pyqtSignal(str)
+    duplicate_layout_clicked = pyqtSignal(str)
+    add_rule_for_layout_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__("Layouts", "Add new layout", parent)
+        self._default = None
         self.add_btn.clicked.connect(self.add_layout_clicked.emit)
+        self.edit_requested.connect(self.edit_layout_clicked.emit)
+        self.delete_requested.connect(self.delete_layout_clicked.emit)
+        rename_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F2), self.list_widget)
+        rename_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        rename_shortcut.activated.connect(
+            lambda: self._selected_key() and self.rename_layout_clicked.emit(self._selected_key()))
 
     def _show_context_menu(self, position):
         """Show context menu for layout items"""
@@ -679,28 +926,37 @@ class LayoutListWidget(SidebarSection):
             return
 
         menu = QMenu(self)
-
-        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Layout", self)
-        edit_action.triggered.connect(lambda: self.edit_layout_clicked.emit(layout_name))
-        menu.addAction(edit_action)
-
+        emit = lambda signal: (lambda: signal.emit(layout_name))  # noqa: E731
+        self._menu_action(menu, ('document-edit', 'edit-entry'), "Edit…",
+                          emit(self.edit_layout_clicked))
+        self._menu_action(menu, ('edit-rename',), "Rename…\tF2", emit(self.rename_layout_clicked))
+        self._menu_action(menu, ('edit-copy',), "Duplicate", emit(self.duplicate_layout_clicked))
+        if layout_name != self._default:
+            self._menu_action(menu, ('starred-symbolic', 'rating', 'emblem-favorite'),
+                              "Set as Default", emit(self.set_default_clicked))
+        self._menu_action(menu, ('preferences-system-windows', 'window'),
+                          "New Window Rule for This Layout…", emit(self.add_rule_for_layout_clicked))
         menu.addSeparator()
-
-        set_default_action = QAction(themed_icon('starred-symbolic', 'rating', 'emblem-favorite'),
-                                     "Set as Default", self)
-        set_default_action.triggered.connect(lambda: self.set_default_clicked.emit(layout_name))
-        menu.addAction(set_default_action)
-
-        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
-        delete_action.triggered.connect(lambda: self.delete_layout_clicked.emit(layout_name))
-        menu.addAction(delete_action)
+        self._menu_action(menu, ('edit-delete', 'edit-delete-symbolic'), "Delete\tDel",
+                          emit(self.delete_layout_clicked))
 
         menu.exec(self.list_widget.mapToGlobal(position))
+        menu.deleteLater()
 
-    def set_layouts(self, layout_names: list, default_layout: str = None):
-        """Set the list of layouts"""
+    def set_layouts(self, layout_names: list, default_layout: str = None,
+                    captions: dict = None, unreachable=(), tooltips: dict = None):
+        """
+        Set the list of layouts.
+
+        Args:
+            captions: Second line per layout, e.g. "12 / 15 keys · 2 rules"
+            unreachable: Layouts nothing switches to, drawn as a warning
+            tooltips: Hover text per layout
+        """
         selected = self._selected_key()
+        self._default = default_layout
         self.list_widget.clear()
+        captions, tooltips, unreachable = captions or {}, tooltips or {}, set(unreachable)
 
         layout_icon = themed_icon('view-grid', 'view-grid-symbolic')
         default_icon = themed_icon('starred-symbolic', 'rating', 'emblem-favorite')
@@ -709,7 +965,9 @@ class LayoutListWidget(SidebarSection):
             self._add_row(name, name,
                           icon=default_icon if is_default and not default_icon.isNull() else layout_icon,
                           bold=is_default,
-                          tooltip="Default layout" if is_default else "")
+                          tooltip=tooltips.get(name) or ("Default layout" if is_default else ""),
+                          caption=captions.get(name, ""),
+                          problem='warning' if name in unreachable else None)
 
         if selected is not None:
             self.select(selected)
@@ -1033,16 +1291,27 @@ class ActionListContainer(QWidget):
 
 
 class WindowRulesWidget(SidebarSection):
-    """The window rules a configuration holds."""
+    """
+    The window rules, in the order they are tried.
+
+    The first matching rule wins, so the order is the meaning: rows are
+    listed as the runtime tries them and can be dragged into a new order.
+    """
 
     rule_selected = pyqtSignal(str)  # Emits rule name
     add_rule_clicked = pyqtSignal()
     delete_rule_clicked = pyqtSignal(str)  # Emits rule name
     edit_rule_clicked = pyqtSignal(str)  # Emits rule name to edit
+    order_changed = pyqtSignal(list)  # Rule names in their new order
 
     def __init__(self, parent=None):
         super().__init__("Window Rules", "Add new window rule", parent)
         self.add_btn.clicked.connect(self.add_rule_clicked.emit)
+        self.edit_requested.connect(self.edit_rule_clicked.emit)
+        self.delete_requested.connect(self.delete_rule_clicked.emit)
+        self.list_widget.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list_widget.model().rowsMoved.connect(lambda *_: self.order_changed.emit(self.keys()))
 
     def _show_context_menu(self, position):
         """Show context menu for window rule items"""
@@ -1055,21 +1324,41 @@ class WindowRulesWidget(SidebarSection):
             return
 
         menu = QMenu(self)
-
-        edit_action = QAction(themed_icon('document-edit', 'edit-entry'), "Edit Rule", self)
-        edit_action.triggered.connect(lambda: self.edit_rule_clicked.emit(rule_name))
-        menu.addAction(edit_action)
-
+        row = self.list_widget.row(item)
+        self._menu_action(menu, ('document-edit', 'edit-entry'), "Edit…",
+                          lambda: self.edit_rule_clicked.emit(rule_name))
+        up = self._menu_action(menu, ('go-up',), "Try Earlier", lambda: self.move(rule_name, -1))
+        up.setEnabled(row > 0)
+        down = self._menu_action(menu, ('go-down',), "Try Later", lambda: self.move(rule_name, 1))
+        down.setEnabled(row < len(self.keys()) - 1)
         menu.addSeparator()
-
-        delete_action = QAction(themed_icon('edit-delete', 'edit-delete-symbolic'), "Delete", self)
-        delete_action.triggered.connect(lambda: self.delete_rule_clicked.emit(rule_name))
-        menu.addAction(delete_action)
+        self._menu_action(menu, ('edit-delete', 'edit-delete-symbolic'), "Delete\tDel",
+                          lambda: self.delete_rule_clicked.emit(rule_name))
 
         menu.exec(self.list_widget.mapToGlobal(position))
+        menu.deleteLater()
 
-    def set_rules(self, rules: dict):
-        """Set the list of window rules"""
+    def move(self, rule_name: str, step: int) -> None:
+        """Move a rule up (-1) or down (+1) in the order."""
+        names = self.keys()
+        index = names.index(rule_name)
+        target = index + step
+        if 0 <= target < len(names):
+            names.insert(target, names.pop(index))
+            self.order_changed.emit(names)
+
+    def set_rules(self, rules, layouts=None):
+        """
+        Set the list of window rules.
+
+        Args:
+            rules: WindowRule objects in the order they are tried (a dict
+                of them is taken in its own order)
+            layouts: Names of the layouts that exist, to flag rules whose
+                target is gone; None skips the check
+        """
+        if isinstance(rules, dict):
+            rules = list(rules.values())
         selected = self._selected_key()
         self.list_widget.clear()
         if not rules:
@@ -1077,11 +1366,19 @@ class WindowRulesWidget(SidebarSection):
             return
 
         icon = themed_icon('preferences-system-windows', 'window', 'window-symbolic')
-        for rule_name, rule in rules.items():
-            target = getattr(rule, 'layout', '') or ''
-            pattern = getattr(rule, 'window_name', '') or ''
-            tooltip = f"{pattern} → {target}" if pattern and target else ""
-            self._add_row(rule_name, rule_name, icon=icon, tooltip=tooltip)
+        for position, rule in enumerate(rules, start=1):
+            patterns = rule.patterns() if hasattr(rule, 'patterns') else [str(rule.window_name)]
+            pattern_text = ", ".join(patterns) or "(no pattern)"
+            field = getattr(rule, 'match_field', 'class') or 'class'
+            missing = layouts is not None and rule.layout not in layouts
+            caption = (f"→ {rule.layout} (missing!)" if missing else f"→ {rule.layout}") + f" · by {field}"
+            if getattr(rule, 'is_regex', False):
+                caption += " · regex"
+            verb = "matches the regex" if getattr(rule, 'is_regex', False) else "contains"
+            tooltip = (f"{rule.name}\nTried {_ordinal(position)}: when the window {field} {verb} "
+                       f"{' or '.join(repr(p) for p in patterns)}, switch to {rule.layout}")
+            self._add_row(pattern_text, rule.name, icon=icon, tooltip=tooltip,
+                          caption=caption, problem='danger' if missing else None)
 
         if selected is not None:
             self.select(selected)
@@ -1095,6 +1392,11 @@ class WindowRulesWidget(SidebarSection):
         rule_name = item.data(Qt.ItemDataRole.UserRole)
         if rule_name:
             self.rule_selected.emit(rule_name)
+
+
+def _ordinal(n: int) -> str:
+    suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
 
 
 class ToggleSwitch(QAbstractButton):

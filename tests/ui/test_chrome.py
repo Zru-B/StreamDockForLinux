@@ -9,10 +9,13 @@ nothing behind.
 """
 
 import pytest
+from PyQt6 import sip
+from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
 from PyQt6.QtGui import QAction, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenuBar,
     QStatusBar,
@@ -422,3 +425,87 @@ class TestThemedDialogs:
 
         assert dialog.content_layout is not dialog._outer
         assert isinstance(dialog, QDialog)
+
+
+class TestDialogLifetime:
+    """
+    Dialogs are freed after use, but only once the caller has read them:
+    Qt 6's exec() deletes a WA_DeleteOnClose dialog before returning, which
+    broke every "exec(), then read the form" caller at once.
+    """
+
+    def run_and_accept(self, dialog):
+        field = QLineEdit("typed")
+        dialog.content_layout.addWidget(field)
+        dialog.add_actions("Save", dialog.accept)
+        QTimer.singleShot(0, dialog.affirmative_button.click)
+        result = dialog.exec()
+        return result, field
+
+    def test_the_form_is_readable_after_exec(self, qtbot):
+        result, field = self.run_and_accept(ThemedDialog("Edit"))
+
+        assert result == QDialog.DialogCode.Accepted
+        assert field.text() == "typed"
+
+    def test_the_dialog_is_freed_once_the_event_loop_runs(self, qtbot):
+        dialog = ThemedDialog("Edit")
+        self.run_and_accept(dialog)
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+        assert sip.isdeleted(dialog)
+
+
+class TestHeaderButtonConnections:
+    """A design switch deletes the header buttons; the actions must let go of them."""
+
+    def test_a_header_button_follows_its_action(self, window, model, restore_theme):
+        theme_manager().set_preferences(flavor='gnome')
+        chrome = GnomeChrome(window, model)
+        chrome.install()
+        from PyQt6.QtWidgets import QPushButton
+        button = next(child for child in window.menuWidget().findChildren(QPushButton)
+                      if child.text() == "Save")
+
+        model.save_action.setEnabled(False)
+
+        assert not button.isEnabled()
+
+    def test_removing_the_chrome_drops_the_connection(self, window, model, restore_theme):
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        theme_manager().set_preferences(flavor='gnome')
+        before = model.save_action.receivers(model.save_action.enabledChanged)
+        chrome = GnomeChrome(window, model)
+        chrome.install()
+        assert model.save_action.receivers(model.save_action.enabledChanged) > before
+
+        chrome.remove()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+        assert model.save_action.receivers(model.save_action.enabledChanged) == before
+        model.save_action.setEnabled(False)
+
+
+class TestRebuildingOnlyForADesignChange:
+    """A light/dark flip repaints; only a design switch moves the furniture."""
+
+    def test_a_scheme_flip_keeps_the_chrome(self, qtbot, restore_theme):
+        from StreamDock.ui.main_window import MainWindow
+        main = MainWindow()
+        qtbot.addWidget(main)
+        chrome = main._chrome
+
+        theme_manager().set_preferences(scheme='light')
+
+        assert main._chrome is chrome
+
+    def test_a_design_switch_rebuilds_it(self, qtbot, restore_theme):
+        from StreamDock.ui.main_window import MainWindow
+        main = MainWindow()
+        qtbot.addWidget(main)
+        chrome = main._chrome
+
+        theme_manager().set_preferences(flavor='gnome')
+
+        assert isinstance(main._chrome, GnomeChrome) and main._chrome is not chrome

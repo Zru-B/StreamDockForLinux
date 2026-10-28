@@ -17,11 +17,10 @@ class MockDevice(StreamDock):
 
     def set_brightness(self, percent):
         self.logger.info("Setting brightness to %s", percent)
-        return self.transport.set_brightness(percent)
-
-    def set_touchscreen_image(self, path):
-        self.logger.info("Setting touchscreen image from %s", path)
-        return 1 # Success
+        result = self.transport.set_brightness(percent)
+        if result == 1:
+            self._current_brightness = percent
+        return result
 
     def set_key_image(self, key, path):
         origin = key

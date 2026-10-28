@@ -5,6 +5,8 @@ Window operations are verified through a mock WindowInterface (injected).
 Non-window operations (key combos, volume, lock) patch subprocess/dbus directly.
 """
 
+import subprocess
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch, call
 
@@ -65,7 +67,7 @@ class TestInputSimulation:
         assert result is True
         mock_run.assert_called_once_with(
             ["xdotool", "key", "ctrl+c"],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=5.0,
         )
 
     @patch(f"{LSI_MODULE}.subprocess.run")
@@ -89,6 +91,7 @@ class TestInputSimulation:
         mock_run.assert_called_once_with(
             ["xdotool", "type", "--delay", "12", "--", complex_text],
             check=True, capture_output=True,
+            timeout=pytest.approx(5 + 0.015 * len(complex_text)),
         )
 
     @patch(f"{LSI_MODULE}.subprocess.run")
@@ -111,8 +114,40 @@ class TestInputSimulation:
         mock_popen.side_effect = Exception("Command failed")
         assert system_interface.execute_command('invalid') is False
 
+    @patch(f"{LSI_MODULE}.subprocess.Popen")
+    def test_execute_command_error_logs_only_program(self, mock_popen, system_interface, caplog):
+        # Arguments may hold secrets (tokens, passwords); only the program is logged.
+        mock_popen.side_effect = OSError("boom")
+        with caplog.at_level('DEBUG', logger=LSI_MODULE):
+            system_interface.execute_command('curl -H "Authorization: secret"')
+
+        errors = [r.getMessage() for r in caplog.records if r.levelname == 'ERROR']
+        assert errors and 'curl' in errors[0]
+        assert all('secret' not in m for m in errors)
+        assert all(r.levelname == 'DEBUG' for r in caplog.records if 'Executing' in r.getMessage())
+
 
 # ==================== Lock Monitoring ====================
+
+class TestInputSimulationTimeouts:
+    # Guards a hung xdotool blocking the key-action thread forever.
+
+    @patch('StreamDock.infrastructure.linux_system_interface.subprocess.run')
+    def test_send_key_combo_has_timeout_and_survives_expiry(self, mock_run, system_interface):
+        mock_run.side_effect = subprocess.TimeoutExpired(['xdotool'], 5)
+        assert system_interface.send_key_combo('ctrl+c') is False
+        assert mock_run.call_args.kwargs['timeout'] == 5.0
+
+    @patch('StreamDock.infrastructure.linux_system_interface.subprocess.run')
+    def test_type_text_timeout_scales_with_length(self, mock_run, system_interface):
+        system_interface.type_text('x' * 200)
+        assert mock_run.call_args.kwargs['timeout'] == pytest.approx(5 + 0.015 * 200)
+
+    @patch('StreamDock.infrastructure.linux_system_interface.subprocess.run')
+    def test_type_text_survives_timeout(self, mock_run, system_interface):
+        mock_run.side_effect = subprocess.TimeoutExpired(['xdotool'], 5)
+        assert system_interface.type_text('abc') is False
+
 
 class TestLockMonitoring:
 
@@ -130,9 +165,41 @@ class TestLockMonitoring:
         mock_iface.GetActive.assert_called_once()
 
     @patch('dbus.SessionBus')
-    def test_poll_lock_state_returns_false_on_error(self, mock_bus, system_interface):
+    def test_poll_lock_state_returns_none_on_error(self, mock_bus, system_interface):
+        # An unknown state must not read as "unlocked" and wake a locked device.
         mock_bus.side_effect = Exception("D-Bus error")
-        assert system_interface.poll_lock_state() is False
+        assert system_interface.poll_lock_state() is None
+
+    @patch('dbus.SessionBus')
+    def test_poll_lock_state_warns_once_without_interface(self, mock_bus, system_interface, caplog):
+        # The monitor polls every second; a missing interface must not flood the log.
+        import dbus
+        mock_bus.return_value.get_object.side_effect = dbus.DBusException("absent")
+
+        with caplog.at_level('WARNING', logger=LSI_MODULE):
+            assert system_interface.poll_lock_state() is None
+            assert system_interface.poll_lock_state() is None
+
+        assert sum('No D-Bus screensaver' in r.getMessage() for r in caplog.records) == 1
+
+    def test_lock_monitor_loop_keeps_state_on_unknown(self, system_interface):
+        # A transient D-Bus failure while locked must not report an unlock.
+        callback = Mock()
+        system_interface._lock_monitor_callback = callback
+        states = iter([True, None, True])
+
+        def poll():
+            try:
+                return next(states)
+            except StopIteration:
+                system_interface._lock_monitor_stop_event.set()
+                return None
+
+        with patch.object(system_interface, 'poll_lock_state', side_effect=poll), \
+                patch.object(system_interface._lock_monitor_stop_event, 'wait'):
+            system_interface._lock_monitor_loop()
+
+        callback.assert_called_once_with(True)
 
     @patch('dbus.SessionBus')
     def test_poll_lock_state_tries_gnome_fallback(self, mock_bus, system_interface):
@@ -158,7 +225,7 @@ class TestLockMonitoring:
 
     def test_poll_lock_state_handles_import_error(self, system_interface):
         with patch.dict('sys.modules', {'dbus': None}):
-            assert system_interface.poll_lock_state() is False
+            assert system_interface.poll_lock_state() is None
 
     @patch('dbus.SessionBus')
     def test_start_lock_monitor_starts_thread(self, mock_bus, system_interface):
@@ -197,7 +264,7 @@ class TestMediaControls:
         assert result is True
         mock_run.assert_called_once_with(
             ["xdotool", "key", "XF86AudioPlay"],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=5.0,
         )
 
     @patch(f"{LSI_MODULE}.shutil.which")

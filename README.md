@@ -8,13 +8,14 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 
 - 🎯 **YAML Configuration** - Simple, readable config files.
 - 🪟 **Context-Aware** - Automatically switch layouts when you open Firefox, VSCode, or Spotify.
-- 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks.
+- 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks, or shows a slideshow screensaver across all keys (local folder or free online wallpapers) with the keys disabled.
 - 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME).
 - 🎭 **Desktop Native** - Wears Breeze on Plasma the way Plasma 6 applications
   do - toolbar, menu button, sidebar and status bar, in your own colour
   scheme, icons and font - and Adwaita on GNOME, header bar and all. It picks
   the right one on its own.
 - 🎨 **Visuals** - Support for PNG, JPG, GIF, SVG, and dynamic text generation.
+- 🕒 **Widgets** - Live keys: clocks, date, countdowns, weather, now playing, CPU/RAM, temperatures, network speed, battery, mic and speaker mute, a volume gauge and a 1x3 volume column, an audio output switcher, Do Not Disturb, a Pomodoro timer, VPN status, Slack/WhatsApp/Telegram unread counts. Show your own image per state, or a count badge over your own icon. Write your own widgets in Python and install them from the app.
 - 🛠️ **Hackable** - Pure Python with a plugin-friendly architecture.
 
 ---
@@ -35,7 +36,8 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
     ```
 
 3.  **Setup Device Permissions:**
-    Follow the [Device Setup Guide](docs/device_setup.md) to configure `udev` rules. This is **critical** to prevent the "Mouse Keys" bug.
+    Run `./scripts/install.sh` to install the `udev` rule, launcher and icon
+    (see [Device permissions](docs/installation.md#device-permissions--launcher-linux)).
 
 4.  **Run:**
     ```bash
@@ -54,21 +56,20 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 The documentation is organized into the following sections:
 
 ### Getting Started
-*   [**Installation Guide**](docs/installation.md) - Detailed dependency lists and setup steps.
-*   [**Device Setup**](docs/device_setup.md) - **Important:** `udev` rules and hardware configuration.
+*   [**Installation Guide**](docs/installation.md) - Dependencies, setup, and `udev` device permissions.
 *   [**The Application**](docs/gui.md) - Device selection, applying configs, and the system tray.
 *   [**Troubleshooting**](docs/troubleshooting.md) - Fixes for common issues (Device not found, Permissions).
 *   **Dependency Check**: Run `python src/main.py --check-deps` to verify your environment readiness.
 
 ### Configuration
 *   [**Configuration Guide**](docs/configuration.md) - How to write `config.yml`, define Keys, and create Layouts.
+*   [**Widgets**](docs/widgets.md) - Live keys (clock, mute, VPN...), and writing your own with the widget SDK.
 *   [**Actions Reference**](docs/actions_reference.md) - Dictionary of all available commands (`LAUNCH_APP`, `KEY_PRESS`, `DBUS`, etc.).
 
-### 🍳 Cookbook & Recipes
-Learn by example with these ready-to-use configurations:
-*   [**Basic App Launcher**](docs/recipes/basic_launcher.md) - A simple menu to start your favorite apps.
-*   [**Media Controller**](docs/recipes/media_control.md) - Volume, Mute, and Spotify controls.
-*   [**The Productivity Setup**](docs/recipes/productivity.md) - Advanced context-switching rules (e.g., auto-show browser keys when Firefox is focused).
+*   [**Examples**](docs/examples.md) - Complete configs: an app launcher, media controls, and layouts that follow the focused window.
+
+### Development
+*   [**Development**](docs/development.md) - Running the tests, code layout and layer rules.
 
 ---
 

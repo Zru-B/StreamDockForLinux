@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
@@ -103,6 +104,9 @@ class WindowChrome:
         """
         return False
 
+    def restyle(self) -> None:
+        """Follow a light/dark switch without being rebuilt; the stylesheet does the rest."""
+
 
 class KdeChrome(WindowChrome):
     """
@@ -140,6 +144,7 @@ class KdeChrome(WindowChrome):
     def remove(self) -> None:
         if self._watcher is not None:
             self.window.removeEventFilter(self._watcher)
+            self._watcher.deleteLater()
             self._watcher = None
 
         if self._toolbar is not None:
@@ -168,6 +173,12 @@ class KdeChrome(WindowChrome):
 
     def show_status(self, message: str, timeout: int = 0) -> None:
         self.window.statusBar().showMessage(message, timeout)
+
+    def restyle(self) -> None:
+        if self._menu_button is not None:
+            _set_menu_icon(self._menu_button)
+        if self._watcher is not None:
+            self._watcher.refresh()
 
     def current_status(self) -> str:
         status = self.window.statusBar()
@@ -299,9 +310,7 @@ class KdeChrome(WindowChrome):
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        glyph = assets_glyph('menu', current_theme().palette.text_primary)
-        button.setIcon(themed_icon('application-menu', 'open-menu-symbolic',
-                                   fallback=QIcon(glyph) if glyph else None))
+        _set_menu_icon(button)
 
         self._menu = QMenu(button)
         quit_actions: List[QAction] = []
@@ -343,6 +352,7 @@ class KdeChrome(WindowChrome):
 
         self._document_label = QLabel()
         self._document_label.setObjectName("statusDocument")
+        self._document_label.setTextFormat(Qt.TextFormat.PlainText)
         status.addPermanentWidget(self._document_label)
         return status
 
@@ -377,6 +387,7 @@ class GnomeChrome(WindowChrome):
         self._subtitle: Optional[QLabel] = None
         self._toast: Optional[Toast] = None
         self._menu: Optional[QMenu] = None
+        self._menu_button: Optional[QPushButton] = None
 
     def install(self) -> None:
         metrics = current_theme().metrics
@@ -413,6 +424,7 @@ class GnomeChrome(WindowChrome):
             self._toast.deleteLater()
             self._toast = None
         self._menu = None
+        self._menu_button = None
         self._title = None
         self._subtitle = None
         self._header = None
@@ -422,6 +434,10 @@ class GnomeChrome(WindowChrome):
     def show_status(self, message: str, timeout: int = 0) -> None:
         if self._toast is not None:
             self._toast.show_message(message, timeout or 0)
+
+    def restyle(self) -> None:
+        if self._menu_button is not None:
+            self._set_header_menu_icon(self._menu_button)
 
     def current_status(self) -> str:
         return self._toast.message() if self._toast is not None else ""
@@ -454,6 +470,7 @@ class GnomeChrome(WindowChrome):
 
         self._subtitle = QLabel("")
         self._subtitle.setObjectName("headerSubtitle")
+        self._subtitle.setTextFormat(Qt.TextFormat.PlainText)
         self._subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         column.addWidget(self._subtitle)
 
@@ -471,12 +488,8 @@ class GnomeChrome(WindowChrome):
         button.setToolTip("Main menu")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setIconSize(QSize(16, 16))
-
-        glyph = assets_glyph('menu', current_theme().palette.text_primary)
-        if glyph:
-            button.setIcon(QIcon(glyph))
-        else:  # pragma: no cover - only when the cache is unwritable
-            button.setText("☰")
+        self._set_header_menu_icon(button)
+        self._menu_button = button
 
         self._menu = QMenu(button)
         for index, spec in enumerate(self.model.menus):
@@ -486,6 +499,21 @@ class GnomeChrome(WindowChrome):
         button.setMenu(self._menu)
 
         return button
+
+    @staticmethod
+    def _set_header_menu_icon(button: QPushButton) -> None:
+        glyph = assets_glyph('menu', current_theme().palette.text_primary)
+        if glyph:
+            button.setIcon(QIcon(glyph))
+        else:  # pragma: no cover - only when the cache is unwritable
+            button.setText("☰")
+
+
+def _set_menu_icon(button: QToolButton) -> None:
+    """The toolbar's menu glyph, drawn in the current text colour."""
+    glyph = assets_glyph('menu', current_theme().palette.text_primary)
+    button.setIcon(themed_icon('application-menu', 'open-menu-symbolic',
+                               fallback=QIcon(glyph) if glyph else None))
 
 
 def make_chrome(window: QMainWindow, model: ChromeModel) -> WindowChrome:
@@ -518,6 +546,8 @@ class _ActivationWatcher(QObject):
         self._strips = strips
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if sip.isdeleted(self._window):
+            return False
         if event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate,
                             QEvent.Type.ActivationChange):
             self.refresh()
@@ -525,8 +555,13 @@ class _ActivationWatcher(QObject):
 
     def refresh(self) -> None:
         """Read the window's state and paint the strips to match."""
+        if sip.isdeleted(self._window):
+            return
         active = self._window.isActiveWindow() or not self._window.isVisible()
         for strip in self._strips:
+            # The menu bar goes with a design switch while this lingers.
+            if sip.isdeleted(strip):
+                continue
             if strip.property("windowActive") == active:
                 continue
             strip.setProperty("windowActive", active)
@@ -650,5 +685,7 @@ def _header_button(action: QAction) -> QPushButton:
     button.setToolTip(action.toolTip() or action.text().replace("&", ""))
     button.clicked.connect(action.trigger)
     button.setEnabled(action.isEnabled())
-    action.changed.connect(lambda: button.setEnabled(action.isEnabled()))
+    # A bound slot, so Qt drops the connection when the button goes with a
+    # design switch; a lambda kept the dead button connected for good.
+    action.enabledChanged.connect(button.setEnabled)
     return button

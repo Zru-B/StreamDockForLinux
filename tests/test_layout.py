@@ -71,7 +71,7 @@ class TestLayout:
         layout.apply()
         
         # Verify specific clears (icon and callback)
-        mock_device.cleaerIcon.assert_has_calls([call(5), call(6)], any_order=True)
+        mock_device.clear_icon.assert_has_calls([call(5), call(6)], any_order=True)
         
         # Note: key.py logic maps 6->6, 5->15 for callback clearing
         # We need to verify clear_key_callback is called.

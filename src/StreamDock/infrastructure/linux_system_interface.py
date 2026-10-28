@@ -18,6 +18,12 @@ from .linux_window_manager import LinuxWindowManager
 
 logger = logging.getLogger(__name__)
 
+# xdotool can hang (e.g. a stuck X connection); don't let a key action block forever.
+KEY_COMBO_TIMEOUT = 5.0
+TYPE_TEXT_BASE_TIMEOUT = 5.0
+# Per character, on top of the base; the typing delay below is 12 ms.
+TYPE_TEXT_PER_CHAR_TIMEOUT = 0.015
+
 
 class LinuxSystemInterface(SystemInterface):
     """
@@ -32,6 +38,7 @@ class LinuxSystemInterface(SystemInterface):
         self._lock_monitor_thread: Optional[threading.Thread] = None
         self._lock_monitor_callback: Optional[Callable[[bool], None]] = None
         self._lock_monitor_stop_event = threading.Event()
+        self._no_lock_interface_warned = False
         logger.debug("LinuxSystemInterface initialised")
 
     # ------------------------------------------------------------------ #
@@ -58,11 +65,14 @@ class LinuxSystemInterface(SystemInterface):
         try:
             subprocess.run(
                 ["xdotool", "key", key_sequence],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=KEY_COMBO_TIMEOUT,
             )
             return True
         except subprocess.CalledProcessError as exc:
             logger.error("Error pressing key combination: %s", exc)
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("xdotool key '%s' timed out after %.0f s", key_sequence, KEY_COMBO_TIMEOUT)
             return False
         except FileNotFoundError:
             logger.warning("xdotool not found; cannot send key combo")
@@ -79,10 +89,14 @@ class LinuxSystemInterface(SystemInterface):
             subprocess.run(
                 ["xdotool", "type", "--delay", "12", "--", text],
                 check=True, capture_output=True,
+                timeout=TYPE_TEXT_BASE_TIMEOUT + TYPE_TEXT_PER_CHAR_TIMEOUT * len(text),
             )
             return True
         except subprocess.CalledProcessError as exc:
             logger.error("xdotool type failed: %s", exc)
+            return False
+        except subprocess.TimeoutExpired as exc:
+            logger.error("xdotool type timed out after %.1f s (%d chars)", exc.timeout, len(text))
             return False
         except FileNotFoundError:
             logger.warning("xdotool not found; cannot type text")
@@ -94,7 +108,7 @@ class LinuxSystemInterface(SystemInterface):
     def execute_command(self, command: str) -> bool:
         """Execute *command* in the background, fully detached."""
         try:
-            logger.info("Executing command: %s", command)
+            logger.debug("Executing command: %s", command)
             subprocess.Popen(
                 command,
                 shell=True,
@@ -104,15 +118,23 @@ class LinuxSystemInterface(SystemInterface):
             )
             return True
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Error executing command '%s': %s", command, exc, exc_info=True)
+            # The full command line may carry secrets; name only the program.
+            program = command.split(maxsplit=1)[0] if command.strip() else command
+            logger.error("Error executing command '%s': %s", program, exc)
             return False
 
     # ------------------------------------------------------------------ #
     # Lock / Unlock monitoring                                             #
     # ------------------------------------------------------------------ #
 
-    def poll_lock_state(self) -> bool:
-        """Poll the D-Bus screensaver interface for the current lock state."""
+    def poll_lock_state(self) -> Optional[bool]:
+        """
+        Poll the D-Bus screensaver interface for the current lock state.
+
+        Returns None when the state is unknown (no dbus-python, no screensaver
+        interface, a D-Bus error) so callers keep their last known state
+        instead of reading "unlocked" and waking the device on a locked screen.
+        """
         try:
             import dbus  # pylint: disable=import-outside-toplevel
             bus = dbus.SessionBus()
@@ -124,17 +146,24 @@ class LinuxSystemInterface(SystemInterface):
             ]:
                 try:
                     proxy = bus.get_object(service, path)
-                    return bool(dbus.Interface(proxy, iface).GetActive())
+                    state = bool(dbus.Interface(proxy, iface).GetActive())
+                    self._no_lock_interface_warned = False
+                    return state
                 except dbus.DBusException:
                     continue
-            logger.warning("No D-Bus screensaver interface available")
-            return False
+            # The monitor polls every second; say it once until it recovers.
+            if not self._no_lock_interface_warned:
+                logger.warning("No D-Bus screensaver interface available")
+                self._no_lock_interface_warned = True
+            return None
         except ImportError:
-            logger.warning("dbus-python not available; cannot poll lock state")
-            return False
+            if not self._no_lock_interface_warned:
+                logger.warning("dbus-python not available; cannot poll lock state")
+                self._no_lock_interface_warned = True
+            return None
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error polling lock state: %s", exc, exc_info=True)
-            return False
+            return None
 
     def start_lock_monitor(self, callback: Callable[[bool], None]) -> bool:
         """Start a background thread that fires *callback* on lock-state changes."""
@@ -172,7 +201,7 @@ class LinuxSystemInterface(SystemInterface):
         while not self._lock_monitor_stop_event.is_set():
             try:
                 current_state = self.poll_lock_state()
-                if current_state != last_state:
+                if current_state is not None and current_state != last_state:
                     logger.info("Lock state changed: %s -> %s", last_state, current_state)
                     if self._lock_monitor_callback:
                         try:

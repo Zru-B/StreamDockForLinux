@@ -59,6 +59,11 @@ class DeviceWatcher:
         self._devices: List[DeviceInfo] = []
         self._keys: set = set()
         self._lock = threading.RLock()
+        # Held from enumeration through reporting. Scans overlap (a debounce
+        # timer, refresh() and the poll loop), and without it an older scan
+        # finishing last would overwrite a newer one's result and report it.
+        self._scan_lock = threading.RLock()
+        self._stop_event = threading.Event()
 
         self._observer = None
         self._monitor = None
@@ -80,6 +85,7 @@ class DeviceWatcher:
             return self._observer is not None
 
         self._running = True
+        self._stop_event.clear()
         # Seed the known set so the first real change is what gets reported.
         self._devices = self._scan()
         self._keys = {device_key(d) for d in self._devices}
@@ -96,6 +102,7 @@ class DeviceWatcher:
     def stop(self) -> None:
         """Stop watching. Safe to call when not started."""
         self._running = False
+        self._stop_event.set()
 
         with self._lock:
             if self._debounce_timer is not None:
@@ -178,12 +185,10 @@ class DeviceWatcher:
         self._poll_thread.start()
 
     def _poll_loop(self) -> None:
-        while self._running:
-            # Sleep first: start() has just scanned.
-            for _ in range(int(self._poll_interval * 10)):
-                if not self._running:
-                    return
-                threading.Event().wait(0.1)
+        # Sleep first: start() has just scanned.
+        while not self._stop_event.wait(self._poll_interval):
+            if not self._running:
+                return
             self._rescan()
 
     # ── scanning ──────────────────────────────────────────────────────────
@@ -202,18 +207,19 @@ class DeviceWatcher:
             if not self._running:
                 return
 
-        devices = self._scan()
-        keys = {device_key(d) for d in devices}
+        with self._scan_lock:
+            devices = self._scan()
+            keys = {device_key(d) for d in devices}
 
-        with self._lock:
-            if keys == self._keys:
-                return
-            added, removed = keys - self._keys, self._keys - keys
-            self._devices, self._keys = devices, keys
+            with self._lock:
+                if keys == self._keys:
+                    return
+                added, removed = keys - self._keys, self._keys - keys
+                self._devices, self._keys = devices, keys
 
-        logger.info("Device change: %d attached (+%d, -%d)",
-                    len(devices), len(added), len(removed))
-        try:
-            self._on_changed(devices)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.exception("Error in device change handler: %s", e)
+            logger.info("Device change: %d attached (+%d, -%d)",
+                        len(devices), len(added), len(removed))
+            try:
+                self._on_changed(devices)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.exception("Error in device change handler: %s", e)

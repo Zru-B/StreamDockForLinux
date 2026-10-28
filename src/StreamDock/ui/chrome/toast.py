@@ -28,6 +28,8 @@ class Toast(QFrame):
 
         self._label = QLabel("")
         self._label.setObjectName("toastText")
+        # Messages carry device names and error text; never read them as markup.
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
         row.addWidget(self._label)
 
         self._message = ""

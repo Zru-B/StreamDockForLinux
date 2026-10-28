@@ -11,7 +11,9 @@ deliberately free of Qt, so it can be tested without a display.
 
 import copy
 import os
+import shutil
 import tempfile
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -21,7 +23,10 @@ from StreamDock.application.configuration_manager import (
     ConfigValidationError,
     StreamDockConfig,
     read_streamdock_section,
+    relativize_icon_path,
+    resolve_icon_path,
 )
+from StreamDock.business_logic import screensaver as screensaver_defaults
 
 # Single source of truth. The editor used to default to 15 and the runtime to
 # 50, so a config written by the editor changed brightness on first save.
@@ -37,8 +42,10 @@ DEFAULT_TEXT_POSITION = "bottom"
 DEFAULT_MATCH_FIELD = "class"
 DEFAULT_LOCK_VERIFICATION_DELAY = 2.0
 DEFAULT_DOUBLE_PRESS_INTERVAL = 0.3
+DEFAULT_LONG_PRESS_DURATION = 0.5
 
-ACTION_FIELDS = ('on_press_actions', 'on_release_actions', 'on_double_press_actions')
+ACTION_FIELDS = ('on_press_actions', 'on_release_actions', 'on_double_press_actions',
+                 'on_long_press_actions')
 
 
 def _extras(data: Dict[str, Any], known: tuple) -> Dict[str, Any]:
@@ -96,12 +103,19 @@ class KeyDefinition:
     """A single key definition."""
 
     STYLE_FIELDS = ('text_color', 'background_color', 'font_size', 'bold', 'text_position')
-    KNOWN_FIELDS = ('icon', 'text') + STYLE_FIELDS + ACTION_FIELDS
+    KNOWN_FIELDS = ('icon', 'text', 'widget', 'widget_options', 'state_icons', 'badge') \
+        + STYLE_FIELDS + ACTION_FIELDS
 
     def __init__(self, name: str, data: Optional[Dict[str, Any]] = None):
         self.name = name
         self.icon: Optional[str] = None
         self.text: Optional[str] = None
+        self.widget: Optional[str] = None
+        self.widget_options: Dict[str, Any] = {}
+        # A widget key may show the user's images: per state, and/or one base
+        # icon with the widget's badge drawn on top.
+        self.state_icons: Dict[str, str] = {}
+        self.badge: Union[bool, Dict[str, Any], None] = None
         self.text_color: str = DEFAULT_TEXT_COLOR
         self.background_color: str = DEFAULT_BACKGROUND_COLOR
         self.font_size: int = DEFAULT_FONT_SIZE
@@ -110,6 +124,7 @@ class KeyDefinition:
         self.on_press_actions: List[Dict[str, Any]] = []
         self.on_release_actions: List[Dict[str, Any]] = []
         self.on_double_press_actions: List[Dict[str, Any]] = []
+        self.on_long_press_actions: List[Dict[str, Any]] = []
         self.extra: Dict[str, Any] = {}
         # Styling fields the source file spelled out. Written back even when
         # they equal the default, so opening and saving does not churn the
@@ -123,6 +138,10 @@ class KeyDefinition:
         """Populate from a YAML key definition."""
         self.icon = data.get('icon')
         self.text = data.get('text')
+        self.widget = data.get('widget')
+        self.widget_options = copy.deepcopy(data.get('widget_options') or {})
+        self.state_icons = dict(data.get('state_icons') or {})
+        self.badge = copy.deepcopy(data.get('badge'))
         self.text_color = data.get('text_color', DEFAULT_TEXT_COLOR)
         self.background_color = data.get('background_color', DEFAULT_BACKGROUND_COLOR)
         self.font_size = data.get('font_size', DEFAULT_FONT_SIZE)
@@ -131,6 +150,7 @@ class KeyDefinition:
         self.on_press_actions = copy.deepcopy(data.get('on_press_actions', []))
         self.on_release_actions = copy.deepcopy(data.get('on_release_actions', []))
         self.on_double_press_actions = copy.deepcopy(data.get('on_double_press_actions', []))
+        self.on_long_press_actions = copy.deepcopy(data.get('on_long_press_actions', []))
         self.extra = _extras(data, self.KNOWN_FIELDS)
         self._explicit = {f for f in self.STYLE_FIELDS if f in data}
 
@@ -138,20 +158,24 @@ class KeyDefinition:
         """Serialise back to a YAML key definition, preserving unknown fields."""
         result: Dict[str, Any] = dict(self.extra)
 
-        # icon and text are mutually exclusive: the runtime validator rejects a
-        # key carrying both.
-        if self.icon:
-            result['icon'] = self.icon
-        elif self.text:
-            result['text'] = self.text
-            for field, default in (('text_color', DEFAULT_TEXT_COLOR),
-                                   ('background_color', DEFAULT_BACKGROUND_COLOR),
-                                   ('font_size', DEFAULT_FONT_SIZE),
-                                   ('bold', DEFAULT_BOLD),
-                                   ('text_position', DEFAULT_TEXT_POSITION)):
-                value = getattr(self, field)
-                if value != default or field in self._explicit:
-                    result[field] = value
+        # A widget excludes icon and text; an icon may carry a text label drawn
+        # over it, styled like a text key.
+        if self.widget:
+            result['widget'] = self.widget
+            if self.widget_options:
+                result['widget_options'] = copy.deepcopy(self.widget_options)
+            if self.icon:
+                result['icon'] = self.icon
+            if self.state_icons:
+                result['state_icons'] = dict(self.state_icons)
+            if self.badge is not None:
+                result['badge'] = copy.deepcopy(self.badge)
+        elif self.icon or self.text:
+            if self.icon:
+                result['icon'] = self.icon
+            if self.text:
+                result['text'] = self.text
+                self._write_style(result)
 
         for field in ACTION_FIELDS:
             actions = getattr(self, field)
@@ -159,6 +183,20 @@ class KeyDefinition:
                 result[field] = copy.deepcopy(actions)
 
         return result
+
+    def _write_style(self, result: Dict[str, Any]) -> None:
+        for field, default in (('text_color', DEFAULT_TEXT_COLOR),
+                               ('background_color', DEFAULT_BACKGROUND_COLOR),
+                               ('font_size', DEFAULT_FONT_SIZE),
+                               ('bold', DEFAULT_BOLD),
+                               ('text_position', DEFAULT_TEXT_POSITION)):
+            value = getattr(self, field)
+            if value != default or field in self._explicit:
+                result[field] = value
+
+    def is_widget(self) -> bool:
+        """True if a widget draws this key."""
+        return bool(self.widget)
 
     def has_icon(self) -> bool:
         """True if this key renders an icon."""
@@ -188,6 +226,11 @@ class Layout:
         self.clear_all: bool = False
         self.keys: Dict[int, Optional[str]] = {}
         self.extra: Dict[str, Any] = {}
+        # What the file held that this model cannot represent, worded as the
+        # runtime would reject it. The model normalises those entries away, so
+        # without this the editor would call the file valid and quietly
+        # rewrite it on save.
+        self.load_issues: List[str] = []
 
         if data:
             self.load_from_dict(data)
@@ -199,16 +242,31 @@ class Layout:
         self.extra = _extras(data, self.KNOWN_FIELDS)
 
         self.keys = {}
-        for item in data.get('keys', []) or []:
-            if isinstance(item, dict):
-                for key_num, key_name in item.items():
-                    try:
-                        position = int(key_num)
-                    except (TypeError, ValueError) as e:
-                        raise ConfigValidationError(
-                            f"Layout '{self.name}': key position {key_num!r} "
-                            "is not a number") from e
-                    self.keys[position] = key_name
+        self.load_issues = []
+        for index, item in enumerate(data.get('keys', []) or []):
+            if not isinstance(item, dict):
+                self.load_issues.append(
+                    f"Layout '{self.name}' key at index {index} must be a dictionary")
+                continue
+            if len(item) != 1:
+                self.load_issues.append(
+                    f"Layout '{self.name}' key at index {index} must have exactly one "
+                    "key-value pair")
+            for key_num, key_name in item.items():
+                try:
+                    position = int(key_num)
+                except (TypeError, ValueError) as e:
+                    raise ConfigValidationError(
+                        f"Layout '{self.name}': key position {key_num!r} "
+                        "is not a number") from e
+                if not isinstance(key_num, int):
+                    self.load_issues.append(
+                        f"Layout '{self.name}': invalid key number {key_num!r}. "
+                        "Must be between 1 and 15")
+                if position in self.keys:
+                    self.load_issues.append(
+                        f"Layout '{self.name}': duplicate key number {position}")
+                self.keys[position] = key_name
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise back to a YAML layout definition, preserving unknown fields."""
@@ -241,7 +299,7 @@ class Layout:
 class WindowRule:
     """A rule mapping a focused window to a layout."""
 
-    KNOWN_FIELDS = ('window_name', 'layout', 'match_field', 'priority')
+    KNOWN_FIELDS = ('window_name', 'layout', 'match_field', 'priority', 'is_regex')
 
     def __init__(self, name: str, data: Optional[Dict[str, Any]] = None):
         self.name = name
@@ -249,6 +307,7 @@ class WindowRule:
         self.layout: str = ""
         self.match_field: str = DEFAULT_MATCH_FIELD
         self.priority: int = 0
+        self.is_regex: bool = False
         self.extra: Dict[str, Any] = {}
 
         if data:
@@ -261,6 +320,7 @@ class WindowRule:
         self.layout = data.get('layout', "")
         self.match_field = data.get('match_field', DEFAULT_MATCH_FIELD)
         self.priority = data.get('priority', 0)
+        self.is_regex = data.get('is_regex', False)
         self.extra = _extras(data, self.KNOWN_FIELDS)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -271,6 +331,8 @@ class WindowRule:
         result['match_field'] = self.match_field
         if self.priority:
             result['priority'] = self.priority
+        if self.is_regex:
+            result['is_regex'] = self.is_regex
         return result
 
     def patterns(self) -> List[str]:
@@ -280,17 +342,71 @@ class WindowRule:
         return [self.window_name] if self.window_name else []
 
 
+class ScreensaverSettings:
+    """The 'settings.screensaver' section, written back only as far as it was changed."""
+
+    DEFAULTS = {
+        'enabled': False,
+        'source': screensaver_defaults.SOURCE_FOLDER,
+        'folder': '',
+        'provider': screensaver_defaults.DEFAULT_PROVIDER,
+        'interval': screensaver_defaults.DEFAULT_INTERVAL,
+        'turn_off_after': screensaver_defaults.DEFAULT_TURN_OFF_AFTER,
+        'shuffle': True,
+        'brightness': None,
+    }
+
+    def __init__(self, data: Optional[Dict[str, Any]] = None):
+        self.enabled: bool = False
+        self.source: str = screensaver_defaults.SOURCE_FOLDER
+        self.folder: str = ''
+        self.provider: str = screensaver_defaults.DEFAULT_PROVIDER
+        self.interval: float = screensaver_defaults.DEFAULT_INTERVAL
+        self.turn_off_after: float = screensaver_defaults.DEFAULT_TURN_OFF_AFTER
+        self.shuffle: bool = True
+        self.brightness: Optional[int] = None
+        self.extra: Dict[str, Any] = {}
+        self._explicit: set = set()
+        if data:
+            self.load_from_dict(data)
+
+    def load_from_dict(self, data: Dict[str, Any]) -> None:
+        for name, default in self.DEFAULTS.items():
+            setattr(self, name, data.get(name, default))
+        self.extra = _extras(data, tuple(self.DEFAULTS))
+        self._explicit = {name for name in self.DEFAULTS if name in data}
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = dict(self.extra)
+        for name, default in self.DEFAULTS.items():
+            value = getattr(self, name)
+            if value != default or name in self._explicit:
+                result[name] = value
+        return result
+
+    def update(self, values: Dict[str, Any]) -> bool:
+        """Take the dialog's values; True if any of them differs."""
+        changed = False
+        for name, value in values.items():
+            if getattr(self, name) != value:
+                setattr(self, name, value)
+                changed = True
+        return changed
+
+
 class Settings:
     """The 'settings' section."""
 
     KNOWN_FIELDS = ('brightness', 'lock_monitor', 'lock_verification_delay',
-                    'double_press_interval')
+                    'double_press_interval', 'long_press_duration', 'screensaver')
 
     def __init__(self, data: Optional[Dict[str, Any]] = None):
         self.brightness: int = DEFAULT_BRIGHTNESS
         self.lock_monitor: bool = True
         self.lock_verification_delay: float = DEFAULT_LOCK_VERIFICATION_DELAY
         self.double_press_interval: float = DEFAULT_DOUBLE_PRESS_INTERVAL
+        self.long_press_duration: float = DEFAULT_LONG_PRESS_DURATION
+        self.screensaver = ScreensaverSettings()
         self.extra: Dict[str, Any] = {}
         # Settings the source file spelled out, so opening and saving does not
         # add entries the user never wrote.
@@ -307,7 +423,14 @@ class Settings:
             'lock_verification_delay', DEFAULT_LOCK_VERIFICATION_DELAY)
         self.double_press_interval = data.get(
             'double_press_interval', DEFAULT_DOUBLE_PRESS_INTERVAL)
-        self.extra = _extras(data, self.KNOWN_FIELDS)
+        self.long_press_duration = data.get(
+            'long_press_duration', DEFAULT_LONG_PRESS_DURATION)
+        screensaver = data.get('screensaver')
+        self.screensaver = ScreensaverSettings(screensaver if isinstance(screensaver, dict) else None)
+        # Anything but a mapping is kept verbatim, for validation to report.
+        known = self.KNOWN_FIELDS if isinstance(screensaver, dict) or screensaver is None \
+            else tuple(f for f in self.KNOWN_FIELDS if f != 'screensaver')
+        self.extra = _extras(data, known)
         self._explicit = {f for f in self.KNOWN_FIELDS if f in data}
 
     def to_dict(self) -> Dict[str, Any]:
@@ -318,11 +441,128 @@ class Settings:
                                ('lock_verification_delay',
                                 DEFAULT_LOCK_VERIFICATION_DELAY),
                                ('double_press_interval',
-                                DEFAULT_DOUBLE_PRESS_INTERVAL)):
+                                DEFAULT_DOUBLE_PRESS_INTERVAL),
+                               ('long_press_duration',
+                                DEFAULT_LONG_PRESS_DURATION)):
             value = getattr(self, field)
             if value != default or field in self._explicit:
                 result[field] = value
+        screensaver = self.screensaver.to_dict()
+        if screensaver or ('screensaver' in self._explicit and 'screensaver' not in result):
+            result['screensaver'] = screensaver
         return result
+
+
+def _actions_of(key_def: KeyDefinition) -> List[Dict[str, Any]]:
+    return [action for field_name in ACTION_FIELDS for action in getattr(key_def, field_name)
+            if isinstance(action, dict)]
+
+
+@dataclass
+class KeyUsage:
+    """Where a key is reachable from: layout slots, and other keys' CHANGE_KEY actions."""
+    layouts: List[str] = field(default_factory=list)
+    changed_to_by: List[str] = field(default_factory=list)
+
+    @property
+    def unused(self) -> bool:
+        return not self.layouts and not self.changed_to_by
+
+
+@dataclass
+class LayoutUsage:
+    """How a layout is reached: as the default, by window rules, or by CHANGE_LAYOUT keys."""
+    is_default: bool = False
+    rules: List[str] = field(default_factory=list)
+    keys: List[str] = field(default_factory=list)
+
+    @property
+    def reachable(self) -> bool:
+        return self.is_default or bool(self.rules) or bool(self.keys)
+
+
+def _layout_target(action: Dict[str, Any]) -> Optional[str]:
+    """The layout a CHANGE_LAYOUT action switches to, in either of its spellings."""
+    value = action.get('CHANGE_LAYOUT')
+    if isinstance(value, dict):
+        value = value.get('layout')
+    return value if isinstance(value, str) else None
+
+
+def _retarget_layout(action: Dict[str, Any], new_name: str) -> None:
+    if isinstance(action['CHANGE_LAYOUT'], dict):
+        action['CHANGE_LAYOUT']['layout'] = new_name
+    else:
+        action['CHANGE_LAYOUT'] = new_name
+
+
+def _unique_name(base: str, taken) -> str:
+    name, n = base, 1
+    while name in taken:
+        n += 1
+        name = f"{base}{n}"
+    return name
+
+
+def _renamed(mapping: Dict[str, Any], old: str, new: str) -> Dict[str, Any]:
+    """The mapping with one key renamed in place; the file keeps its order."""
+    return {new if name == old else name: value for name, value in mapping.items()}
+
+
+def _rebase_path(path, old_dir: str, new_dir: str):
+    """
+    A relative icon path from old_dir re-expressed for new_dir.
+
+    Absolute, ~ and $VAR paths mean the same file from anywhere and are left
+    as written, as is anything that is not a non-empty string.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return path
+    if os.path.isabs(os.path.expanduser(os.path.expandvars(path.strip()))):
+        return path
+    return relativize_icon_path(resolve_icon_path(path, old_dir), new_dir)
+
+
+def _rebase_key_paths(key_def: "KeyDefinition", old_dir: str, new_dir: str) -> None:
+    """
+    Rebase every relative path a key carries, in place.
+
+    The same set the runtime resolves (expand_icon_paths): the icon, the
+    widget state images, and the images CHANGE_KEY_IMAGE and CHANGE_KEY_TEXT
+    swap in.
+    """
+    key_def.icon = _rebase_path(key_def.icon, old_dir, new_dir)
+    if isinstance(key_def.state_icons, dict):
+        key_def.state_icons = {state: _rebase_path(path, old_dir, new_dir)
+                               for state, path in key_def.state_icons.items()}
+    for field_name in ACTION_FIELDS:
+        actions = getattr(key_def, field_name)
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            for name, param in list(action.items()):
+                action_type = name.upper() if isinstance(name, str) else name
+                if action_type == 'CHANGE_KEY_IMAGE':
+                    action[name] = _rebase_path(param, old_dir, new_dir)
+                elif action_type == 'CHANGE_KEY_TEXT' and isinstance(param, dict) \
+                        and 'icon' in param:
+                    param['icon'] = _rebase_path(param['icon'], old_dir, new_dir)
+
+
+def _fsync_directory(directory: str) -> None:
+    """Make a rename in directory durable; not every filesystem allows it."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 class ConfigDocument:
@@ -466,9 +706,25 @@ class ConfigDocument:
         target = os.path.abspath(target)
         directory = os.path.dirname(target) or '.'
         os.makedirs(directory, exist_ok=True)
+        # Written through a symlinked config rather than over the link.
+        real_target = os.path.realpath(target)
+        real_directory = os.path.dirname(real_target)
+
+        # Relative icon paths mean the config file's directory, so a Save As
+        # elsewhere must rewrite them or every icon breaks. Kept to put back
+        # should the write fail and the document stay where it was.
+        old_dir = os.path.abspath(self.config_dir)
+        original_keys = None
+        original_folder = self.settings.screensaver.folder
+        if old_dir != directory:
+            original_keys = copy.deepcopy(self.keys)
+            for key_def in self.keys.values():
+                _rebase_key_paths(key_def, old_dir, directory)
+            if isinstance(original_folder, str) and original_folder.strip():
+                self.settings.screensaver.folder = _rebase_path(original_folder, old_dir, directory)
 
         handle = tempfile.NamedTemporaryFile(
-            mode='w', dir=directory, prefix='.config-', suffix='.yml',
+            mode='w', dir=real_directory, prefix='.config-', suffix='.yml',
             delete=False, encoding='utf-8')
         try:
             with handle:
@@ -476,28 +732,43 @@ class ConfigDocument:
                 # tags that safe_load() then refuses to read back.
                 yaml.safe_dump(self.to_dict(), handle, default_flow_style=False,
                                sort_keys=False, allow_unicode=True)
-            os.replace(handle.name, target)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.path.exists(real_target):
+                shutil.copymode(real_target, handle.name)
+            os.replace(handle.name, real_target)
+            _fsync_directory(real_directory)
         except BaseException:
             try:
                 os.unlink(handle.name)
             except OSError:
                 pass
+            if original_keys is not None:
+                self.keys = original_keys
+                self.settings.screensaver.folder = original_folder
             raise
 
         self._path = target
         self._dirty = False
+        # The file on disk now holds the normalised layouts.
+        for layout in self.layouts.values():
+            layout.load_issues = []
 
     # ── validation ────────────────────────────────────────────────────────
 
-    def validate(self) -> List[str]:
+    def validate(self, widgets=None) -> List[str]:
         """
         Check the document against the runtime's rules without raising.
+
+        Args:
+            widgets: Widget catalog to check widget options against
 
         Returns:
             Problems found, empty when the configuration is valid
         """
-        return ConfigurationManager.collect_issues(
-            self.to_dict()['streamdock'], self._validation_path)
+        loaded = [issue for layout in self.layouts.values() for issue in layout.load_issues]
+        return loaded + ConfigurationManager.collect_issues(
+            self.to_dict()['streamdock'], self._validation_path, widgets)
 
     def to_stream_dock_config(self) -> StreamDockConfig:
         """
@@ -554,6 +825,188 @@ class ConfigDocument:
     def remove_key(self, key_name: str) -> None:
         """Remove a key definition if present."""
         self.keys.pop(key_name, None)
+
+    def key_usage(self, key_name: str) -> KeyUsage:
+        """Layouts placing the key, and keys whose CHANGE_KEY swaps it in."""
+        usage = KeyUsage()
+        for layout_name, layout in self.layouts.items():
+            if key_name in layout.keys.values():
+                usage.layouts.append(layout_name)
+        for other_name, other in self.keys.items():
+            if other_name != key_name and any(
+                    action.get('CHANGE_KEY') == key_name for action in _actions_of(other)):
+                usage.changed_to_by.append(other_name)
+        return usage
+
+    def all_key_usage(self) -> Dict[str, KeyUsage]:
+        """key_usage for every key, in one pass over layouts and actions."""
+        usage = {name: KeyUsage() for name in self.keys}
+        for layout_name, layout in self.layouts.items():
+            for key_name in dict.fromkeys(name for name in layout.keys.values()
+                                          if isinstance(name, str)):
+                if key_name in usage:
+                    usage[key_name].layouts.append(layout_name)
+        for other_name, other in self.keys.items():
+            targets = dict.fromkeys(action['CHANGE_KEY'] for action in _actions_of(other)
+                                    if isinstance(action.get('CHANGE_KEY'), str))
+            for target in targets:
+                if target in usage and target != other_name:
+                    usage[target].changed_to_by.append(other_name)
+        return usage
+
+    def replace_key(self, old_name: str, key_def: KeyDefinition) -> None:
+        """
+        Store an edited key; a new name follows it into every layout and CHANGE_KEY.
+
+        Without that a rename orphans the slots showing it and turns the
+        actions that swap it in into references to nothing.
+        """
+        new_name = key_def.name
+        if new_name != old_name:
+            for layout in self.layouts.values():
+                for position, name in list(layout.keys.items()):
+                    if name == old_name:
+                        layout.keys[position] = new_name
+            for other in self.keys.values():
+                for action in _actions_of(other):
+                    if action.get('CHANGE_KEY') == old_name:
+                        action['CHANGE_KEY'] = new_name
+            self.keys.pop(old_name, None)
+        self.add_key(new_name, key_def)
+
+    def delete_key(self, key_name: str) -> None:
+        """Remove a key with its layout slots and the CHANGE_KEY actions that target it."""
+        for layout in self.layouts.values():
+            for position, name in list(layout.keys.items()):
+                if name == key_name:
+                    layout.remove_key_at_position(position)
+        for other in self.keys.values():
+            for field_name in ACTION_FIELDS:
+                setattr(other, field_name, [
+                    action for action in getattr(other, field_name)
+                    if not (isinstance(action, dict) and action.get('CHANGE_KEY') == key_name)])
+        self.remove_key(key_name)
+
+    def duplicate_key(self, key_name: str) -> str:
+        """Copy a key under the first free ``<name>Copy``/``<name>Copy2``…; returns the new name."""
+        new_name, n = f"{key_name}Copy", 1
+        while new_name in self.keys:
+            n += 1
+            new_name = f"{key_name}Copy{n}"
+        self.add_key(new_name, KeyDefinition(new_name, copy.deepcopy(self.keys[key_name].to_dict())))
+        return new_name
+
+    # ── layouts ───────────────────────────────────────────────────────────
+
+    def layout_usage(self, layout_name: str) -> LayoutUsage:
+        layout = self.layouts.get(layout_name)
+        return LayoutUsage(
+            is_default=bool(layout and layout.is_default),
+            rules=[name for name, rule in self.window_rules.items() if rule.layout == layout_name],
+            keys=[name for name, key_def in self.keys.items()
+                  if any(_layout_target(action) == layout_name for action in _actions_of(key_def))])
+
+    def all_layout_usage(self) -> Dict[str, LayoutUsage]:
+        """layout_usage for every layout, in one pass over rules and actions."""
+        usage = {name: LayoutUsage(is_default=bool(layout.is_default))
+                 for name, layout in self.layouts.items()}
+        for rule_name, rule in self.window_rules.items():
+            if rule.layout in usage:
+                usage[rule.layout].rules.append(rule_name)
+        for key_name, key_def in self.keys.items():
+            targets = dict.fromkeys(_layout_target(action) for action in _actions_of(key_def))
+            for target in targets:
+                if target in usage:
+                    usage[target].keys.append(key_name)
+        return usage
+
+    def rename_layout(self, old_name: str, new_name: str) -> None:
+        """Rename a layout where it stands, and repoint its rules and CHANGE_LAYOUT actions."""
+        if new_name == old_name or old_name not in self.layouts:
+            return
+        self.layouts = _renamed(self.layouts, old_name, new_name)
+        self.layouts[new_name].name = new_name
+        for key_def in self.keys.values():
+            for action in _actions_of(key_def):
+                if _layout_target(action) == old_name:
+                    _retarget_layout(action, new_name)
+        for rule in self.window_rules.values():
+            if rule.layout == old_name:
+                rule.layout = new_name
+
+    def delete_layout(self, layout_name: str, move_rules_to: Optional[str] = None) -> None:
+        """
+        Remove a layout, and the CHANGE_LAYOUT actions that switch to it.
+
+        Its window rules move to ``move_rules_to``, or are deleted without
+        one: a rule naming a missing layout fails validation, so leaving it
+        would make the whole file unloadable.
+        """
+        for key_def in self.keys.values():
+            for field_name in ACTION_FIELDS:
+                setattr(key_def, field_name, [
+                    action for action in getattr(key_def, field_name)
+                    if not (isinstance(action, dict) and _layout_target(action) == layout_name)])
+        for rule_name, rule in list(self.window_rules.items()):
+            if rule.layout == layout_name:
+                if move_rules_to:
+                    rule.layout = move_rules_to
+                else:
+                    del self.window_rules[rule_name]
+        self.remove_layout(layout_name)
+
+    def keys_emptied_by_layout_delete(self, layout_name: str) -> List[str]:
+        """Keys whose every action switches to this layout: deleting it leaves them invalid."""
+        return [name for name, key_def in self.keys.items()
+                if (actions := _actions_of(key_def))
+                and all(_layout_target(action) == layout_name for action in actions)]
+
+    def duplicate_layout(self, layout_name: str) -> str:
+        """Copy a layout, placed right after it and never the default; returns the new name."""
+        source = self.layouts[layout_name]
+        new_name = _unique_name(f"{layout_name}Copy", self.layouts)
+        data = copy.deepcopy(source.to_dict())
+        data.pop('Default', None)
+        copied = Layout(new_name, data)
+        items = []
+        for name, layout in self.layouts.items():
+            items.append((name, layout))
+            if name == layout_name:
+                items.append((new_name, copied))
+        self.layouts = dict(items)
+        return new_name
+
+    # ── window rules ──────────────────────────────────────────────────────
+
+    def ordered_rules(self) -> List[WindowRule]:
+        """Rules in the order the runtime tries them: priority first, then file order."""
+        return sorted(self.window_rules.values(), key=lambda rule: -int(rule.priority or 0))
+
+    def set_rule_order(self, names: List[str]) -> None:
+        """
+        Make the rules be tried in this order.
+
+        The runtime sorts by priority but keeps file order among equals, so
+        the file order alone can carry it; priorities are cleared rather
+        than renumbered, which would stamp a number on every rule in the file.
+        """
+        rules = [self.window_rules[name] for name in names if name in self.window_rules]
+        rules += [rule for name, rule in self.window_rules.items() if name not in names]
+        for rule in rules:
+            rule.priority = 0
+        self.window_rules = {rule.name: rule for rule in rules}
+
+    def rename_rule(self, old_name: str, new_name: str) -> None:
+        if new_name == old_name or old_name not in self.window_rules:
+            return
+        self.window_rules = _renamed(self.window_rules, old_name, new_name)
+        self.window_rules[new_name].name = new_name
+
+    def suggest_rule_name(self, pattern: str, exclude: Optional[str] = None) -> str:
+        """A readable unique name from the first pattern: 'jetbrains-idea' -> 'JetbrainsIdeaRule'."""
+        words = ''.join(ch if ch.isalnum() else ' ' for ch in pattern.split(',')[0]).split()
+        base = ''.join(word[:1].upper() + word[1:] for word in words) or 'Window'
+        return _unique_name(f"{base}Rule", [name for name in self.window_rules if name != exclude])
 
     def add_layout(self, layout_name: str, layout: Layout) -> None:
         """Add or replace a layout."""

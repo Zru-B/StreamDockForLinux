@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from StreamDock.transport.hid_transport import HIDTransport
 
-from .hardware_interface import DeviceInfo, HardwareInterface, InputEvent
+from .hardware_interface import DeviceInfo, HardwareInterface
 
 logger = logging.getLogger(__name__)
 
@@ -203,63 +203,6 @@ class USBHardware(HardwareInterface):
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error setting brightness: %s", e, exc_info=True)
             return False
-
-    def send_image(self, image_data: bytes, button_index: int) -> bool:
-        """
-        Send an image to a specific button.
-
-        Delegates to HIDTransport.set_key_img().
-        """
-        if not self.is_connected():
-            logger.warning("Cannot send image: no device connected")
-            return False
-
-        try:
-            logger.debug("Sending image to button %d", button_index)
-            result = self._transport.set_key_img(image_data, len(image_data), button_index)
-
-            if result == 1:
-                logger.debug("Successfully sent image to button %d", button_index)
-                return True
-
-            logger.warning("Failed to send image to button %d", button_index)
-            return False
-
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error("Error sending image to button %d: %s", button_index, e, exc_info=True)
-            return False
-
-    def read_input(self, timeout_ms: int = 0) -> Optional[InputEvent]:
-        """
-        Read an input event from the device.
-
-        Wraps HIDTransport.read_() and converts to InputEvent.
-        """
-        if not self.is_connected():
-            return None
-
-        try:
-            # HIDTransport.read_() returns tuple: (raw_bytes, ack, ok, key, status)
-            data = self._transport.read_(513, timeout_ms)
-
-            if data is None:
-                return None
-
-            _, _, _, key, _ = data
-
-            # key >= 0 indicates a valid button press
-            if key >= 0:
-                logger.debug("Button %d pressed", key)
-                return InputEvent(
-                    button_index=key,
-                    event_type='press'
-                )
-
-            return None
-
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error("Error reading input: %s", e, exc_info=True)
-            return None
 
     def __getattr__(self, name: str):
         """

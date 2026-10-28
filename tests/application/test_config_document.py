@@ -13,6 +13,8 @@ import yaml
 
 from StreamDock.application.config_document import (
     DEFAULT_BRIGHTNESS,
+    DEFAULT_DOUBLE_PRESS_INTERVAL,
+    DEFAULT_LONG_PRESS_DURATION,
     ConfigDocument,
     KeyDefinition,
     Layout,
@@ -118,15 +120,17 @@ class TestRoundTrip:
             'on_press_actions': [{'KEY_PRESS': 'a'}]}}}
         assert reload(workdir, source)['keys']['Key1']['text_position'] == 'top'
 
-    def test_preserves_all_three_action_lists(self, workdir):
+    def test_preserves_all_four_action_lists(self, workdir):
         source = {**BASE, 'keys': {'Key1': {
             'text': 'A',
             'on_press_actions': [{'KEY_PRESS': 'a'}],
             'on_release_actions': [{'KEY_PRESS': 'b'}],
-            'on_double_press_actions': [{'KEY_PRESS': 'c'}]}}}
+            'on_double_press_actions': [{'KEY_PRESS': 'c'}],
+            'on_long_press_actions': [{'KEY_PRESS': 'd'}]}}}
         key = reload(workdir, source)['keys']['Key1']
         assert key['on_release_actions'] == [{'KEY_PRESS': 'b'}]
         assert key['on_double_press_actions'] == [{'KEY_PRESS': 'c'}]
+        assert key['on_long_press_actions'] == [{'KEY_PRESS': 'd'}]
 
     def test_preserves_layout_key_positions(self, workdir):
         source = {**BASE, 'layouts': {'Main': {
@@ -164,6 +168,20 @@ class TestRoundTrip:
 
         assert reload(workdir, source)['settings'] == {'brightness': 30}
 
+    def test_explicit_default_long_press_duration_is_kept(self, workdir):
+        source = {**BASE, 'settings': {'long_press_duration': DEFAULT_LONG_PRESS_DURATION}}
+
+        assert reload(workdir, source)['settings'] == source['settings']
+
+    def test_changed_long_press_duration_is_written(self, workdir):
+        path = write_config(workdir, BASE)
+        document = ConfigDocument.load(path)
+        document.settings.long_press_duration = 1.25
+        document.save()
+
+        with open(path) as f:
+            assert yaml.safe_load(f)['streamdock']['settings']['long_press_duration'] == 1.25
+
     def test_a_saved_config_still_validates(self, workdir):
         path = write_config(workdir, BASE)
         document = ConfigDocument.load(path)
@@ -178,6 +196,14 @@ class TestDefaults:
         from StreamDock.application.configuration_manager import StreamDockConfig
         assert DEFAULT_BRIGHTNESS == StreamDockConfig().brightness
 
+    def test_gesture_timing_defaults_match_the_runtime_and_the_device(self):
+        from StreamDock.application.configuration_manager import StreamDockConfig
+        from StreamDock.devices import stream_dock
+        assert DEFAULT_LONG_PRESS_DURATION == StreamDockConfig().long_press_duration \
+            == stream_dock.DEFAULT_LONG_PRESS_DURATION
+        assert DEFAULT_DOUBLE_PRESS_INTERVAL == StreamDockConfig().double_press_interval \
+            == stream_dock.DEFAULT_DOUBLE_PRESS_INTERVAL
+
     def test_new_empty_has_no_path(self):
         document = ConfigDocument.new_empty()
         assert document.path is None
@@ -185,11 +211,12 @@ class TestDefaults:
 
 
 class TestKeyDefinition:
-    """Icon and text are mutually exclusive, matching the runtime validator."""
+    """Serialising one key definition."""
 
-    def test_icon_wins_when_both_are_set(self):
+    def test_an_icon_keeps_its_text_label(self):
+        """The runtime draws the text over the icon; saving used to drop it."""
         key = KeyDefinition('K', {'icon': 'a.png', 'text': 'A'})
-        assert key.to_dict() == {'icon': 'a.png'}
+        assert key.to_dict() == {'icon': 'a.png', 'text': 'A'}
 
     def test_text_key_writes_its_styling(self):
         result = KeyDefinition('K', {'text': 'A', 'font_size': 30}).to_dict()
@@ -240,6 +267,61 @@ class TestSave:
         assert not document.dirty
 
 
+class TestSaveAsElsewhere:
+    """Relative paths mean the config's directory, so moving the file rebases them."""
+
+    SOURCE = {**BASE, 'keys': {
+        'Key1': {'icon': 'icons/a.png',
+                 'on_press_actions': [{'CHANGE_KEY_IMAGE': 'icons/b.png'},
+                                      {'CHANGE_KEY_TEXT': {'text': 'x', 'icon': 'icons/c.png'}}]},
+        'W': {'widget': 'clock', 'icon': '/abs/base.png',
+              'state_icons': {'on': 'icons/on.png', 'off': '~/off.png'}},
+    }}
+
+    def saved_elsewhere(self, workdir):
+        """From workdir/sub up to workdir: the icons stay under the new directory."""
+        os.makedirs(os.path.join(workdir, 'sub'))
+        document = ConfigDocument.load(
+            write_config(os.path.join(workdir, 'sub'), self.SOURCE))
+        target = os.path.join(workdir, 'moved.yml')
+        document.save(target)
+        with open(target) as f:
+            return document, yaml.safe_load(f)['streamdock']['keys']
+
+    def test_relative_paths_point_at_the_same_files(self, workdir):
+        _, keys = self.saved_elsewhere(workdir)
+
+        assert keys['Key1']['icon'] == 'sub/icons/a.png'
+        assert keys['Key1']['on_press_actions'][0]['CHANGE_KEY_IMAGE'] == 'sub/icons/b.png'
+        assert keys['Key1']['on_press_actions'][1]['CHANGE_KEY_TEXT']['icon'] == 'sub/icons/c.png'
+        assert keys['W']['state_icons']['on'] == 'sub/icons/on.png'
+
+    def test_a_path_outside_the_new_directory_becomes_absolute(self, workdir):
+        """relativize_icon_path's rule: nothing is stored as ../"""
+        document = ConfigDocument.load(write_config(workdir, self.SOURCE))
+        target = os.path.join(workdir, 'other', 'moved.yml')
+
+        document.save(target)
+
+        assert document.keys['Key1'].icon == os.path.join(workdir, 'icons', 'a.png')
+
+    def test_absolute_and_home_paths_are_left_alone(self, workdir):
+        _, keys = self.saved_elsewhere(workdir)
+
+        assert keys['W']['icon'] == '/abs/base.png'
+        assert keys['W']['state_icons']['off'] == '~/off.png'
+
+    def test_the_document_follows_so_a_second_save_is_stable(self, workdir):
+        document, _ = self.saved_elsewhere(workdir)
+        document.save()
+
+        with open(document.path) as f:
+            assert yaml.safe_load(f)['streamdock']['keys']['Key1']['icon'] == 'sub/icons/a.png'
+
+    def test_saving_in_place_changes_nothing(self, workdir):
+        assert reload(workdir, self.SOURCE)['keys']['Key1']['icon'] == 'icons/a.png'
+
+
 class TestLoadErrors:
     """Failures are reported, not swallowed."""
 
@@ -283,3 +365,81 @@ class TestValidationBridge:
 
         assert config.keys_config['Key1']['icon'] == icon
         assert document.keys['Key1'].icon == 'icon.png'
+
+
+class TestIconWithLabel:
+    """An icon key may carry text drawn over it; the runtime draws both."""
+
+    def test_the_label_and_its_style_are_written(self):
+        key_def = KeyDefinition("Web", {"icon": "web.png"})
+        key_def.text = "Web"
+        key_def.text_position = "top"
+        key_def.font_size = 14
+
+        assert key_def.to_dict() == {"icon": "web.png", "text": "Web",
+                                     "font_size": 14, "text_position": "top"}
+
+    def test_an_unchanged_file_does_not_churn(self):
+        data = {"icon": "web.png", "text": "Web", "bold": True, "text_position": "bottom"}
+
+        assert KeyDefinition("Web", data).to_dict() == data
+
+    def test_style_without_a_label_is_not_written(self):
+        """No label, nothing to style: an icon key stays as small as before."""
+        key_def = KeyDefinition("Web", {"icon": "web.png"})
+        key_def.text_color = "red"
+
+        assert key_def.to_dict() == {"icon": "web.png"}
+
+
+class TestSaveHardening:
+    """Saving must not break the file's link, permissions or durability."""
+
+    def test_a_symlinked_config_is_written_through(self, workdir):
+        real = os.path.join(workdir, "real.yml")
+        link = os.path.join(workdir, "config.yml")
+        ConfigDocument.new_empty().save(real)
+        os.symlink(real, link)
+        doc = ConfigDocument.load(link)
+        doc.settings.brightness = 77
+
+        doc.save()
+
+        assert os.path.islink(link)
+        assert ConfigDocument.load(real).settings.brightness == 77
+
+    def test_the_file_mode_is_kept(self, workdir):
+        path = os.path.join(workdir, "config.yml")
+        ConfigDocument.new_empty().save(path)
+        os.chmod(path, 0o640)
+
+        ConfigDocument.load(path).save()
+
+        assert os.stat(path).st_mode & 0o777 == 0o640
+
+
+class TestLayoutLoadIssues:
+    """What the model normalises away on load must still be reported, as the runtime would."""
+
+    @pytest.mark.parametrize("keys, wording", [
+        ([{1: "K"}, "junk"], "must be a dictionary"),
+        ([{1: "K"}, {1: "K"}], "duplicate key number 1"),
+        ([{"3": "K"}], "invalid key number '3'"),
+    ])
+    def test_it_is_reported_by_validate(self, keys, wording):
+        doc = ConfigDocument.from_dict({
+            "keys": {"K": {"text": "k", "on_press_actions": [{"KEY_PRESS": "a"}]}},
+            "layouts": {"Main": {"Default": True, "keys": keys}},
+        })
+
+        assert any(wording in issue for issue in doc.validate())
+
+    def test_a_save_writes_the_normalised_layout_and_forgets_the_issue(self, workdir):
+        doc = ConfigDocument.from_dict({
+            "keys": {"K": {"text": "k", "on_press_actions": [{"KEY_PRESS": "a"}]}},
+            "layouts": {"Main": {"Default": True, "keys": [{"3": "K"}]}},
+        })
+
+        doc.save(os.path.join(workdir, "config.yml"))
+
+        assert doc.validate() == []

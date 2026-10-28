@@ -5,7 +5,7 @@ See README.md in this directory for layer rules and key abstractions.
 """
 
 from .device_registry import DeviceRegistry, TrackedDevice
-from .hardware_interface import DeviceInfo, HardwareInterface, InputEvent
+from .hardware_interface import DeviceInfo, HardwareInterface
 from .linux_system_interface import LinuxSystemInterface
 from .linux_window_manager import LinuxWindowManager
 from .system_interface import SystemInterface, WindowInfo
@@ -13,7 +13,7 @@ from .usb_hardware import USBHardware
 from .window_interface import WindowInterface
 
 __all__ = [
-    'HardwareInterface', 'DeviceInfo', 'InputEvent', 'USBHardware',
+    'HardwareInterface', 'DeviceInfo', 'USBHardware',
     'SystemInterface', 'WindowInfo', 'WindowInterface',
     'LinuxSystemInterface', 'LinuxWindowManager',
     'DeviceRegistry', 'TrackedDevice',

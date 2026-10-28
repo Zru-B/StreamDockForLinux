@@ -20,9 +20,16 @@ This tool identifies missing system binaries (like `xdotool` or `kdotool`) and P
 
 **Solutions:**
 1.  **Check connection:** `lsusb | grep -i hotspot` (or `mirabox`).
-2.  **Verify udev rules:** Ensure you followed the [Device Setup Guide](device_setup.md).
-3.  **Check Group:** Run `groups` and ensure your user is in `plugdev`.
-4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`.
+2.  **Verify udev rules:** Ensure you ran `scripts/install.sh` and that
+    `/etc/udev/rules.d/70-streamdock.rules` exists (see [Installation](installation.md#device-permissions--launcher-linux)).
+    A leftover `99-streamdock.rules` from an older install runs too late for
+    its `uaccess` tag to apply on hotplug; rerun the script to replace it.
+3.  **Check the ACL:** find the deck with `lsusb -d 6603:1006` (Bus `BBB`
+    Device `DDD`) and run `getfacl /dev/bus/usb/BBB/DDD` (and `getfacl /dev/hidrawN`
+    for its hidraw nodes). The owner stays `root`; there should be a
+    `user:<you>:rw-` entry. It is only granted to a user with an active
+    session on the local seat, so it is absent over SSH.
+4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`, then replug.
 
 ## Mouse Keys / Cursor Issues
 
@@ -35,7 +42,20 @@ This tool identifies missing system binaries (like `xdotool` or `kdotool`) and P
 The device has multiple HID interfaces. Linux sometimes misinterprets one as a generic keyboard and activates the "Mouse Keys" accessibility feature during device initialization.
 
 **Fix:**
-1.  **Update udev rules:** The rules provided in the [Device Setup Guide](device_setup.md) include specific directives (`LIBINPUT_IGNORE_DEVICE`, `HID_GENERIC unbind`) to prevent this.
+1.  **Stop the system treating the deck as an input device.** Add these lines
+    to `/etc/udev/rules.d/70-streamdock.rules` (after the ones
+    `scripts/install.sh` put there; rerunning the script overwrites the file,
+    so add them again afterwards), then run
+    `sudo udevadm control --reload-rules && sudo udevadm trigger` and replug:
+
+    ```udev
+    # Keep every interface of the deck away from the input subsystem
+    SUBSYSTEMS=="usb", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", ENV{ID_INPUT}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_MOUSE}="0", ENV{ID_INPUT_TABLET}="0", ENV{ID_INPUT_TOUCHPAD}="0", ENV{ID_INPUT_JOYSTICK}="0"
+    SUBSYSTEM=="input", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", ENV{ID_INPUT}="0", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG-="uaccess"
+    KERNEL=="event*", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", MODE="0000", GROUP="root"
+    # Unbind the generic HID driver so it never becomes a keyboard/mouse
+    SUBSYSTEM=="hid", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/hid/drivers/hid-generic/unbind || true'"
+    ```
 2.  **Disable Mouse Keys:**
     *   **KDE:** System Settings → Accessibility → Mouse Navigation → Uncheck "Activate with Shift key".
     *   **GNOME:** Settings → Accessibility → Pointing & Clicking → Turn off "Mouse Keys".
@@ -65,7 +85,7 @@ The device has multiple HID interfaces. Linux sometimes misinterprets one as a g
 
 **Fix for "device doesn't wake":**
 - Check the application logs for errors during unlock.
-- If fallback is consistently failing, ensure udev rules allow device access (see [Device Setup Guide](device_setup.md)).
+- If fallback is consistently failing, ensure udev rules allow device access (see [Installation](installation.md#device-permissions--launcher-linux)).
 
 ## Configuration Errors
 

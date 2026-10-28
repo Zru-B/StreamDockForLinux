@@ -178,7 +178,7 @@ class TestConcurrencyAndStability(unittest.TestCase):
             yield None
 
         gen = data_generator()
-        device.read = lambda: next(gen)
+        device.read = lambda **kwargs: next(gen)
 
         # Start a reader thread manually if not already running (open starts it)
         # But we replaced 'read' after open, which might be too late if thread cached it?
@@ -297,7 +297,7 @@ class TestTransportWriteSerialization(unittest.TestCase):
             time.sleep(0.001)
             with self.guard:
                 self.active.remove(name)
-            return len(packet)
+            return True
 
         self.transport._write_packet = fake_write_packet
 

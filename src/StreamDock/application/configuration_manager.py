@@ -8,12 +8,16 @@ extracted from ConfigLoader to be infrastructure-independent.
 import copy
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import yaml
 
+from streamdock_sdk.options import OptionError, resolve_options
 from StreamDock.business_logic.action_type import ActionType
+from StreamDock.business_logic.screensaver import ScreensaverConfig, screensaver_problem
+from StreamDock.widgets.appearance import appearance_config_problems
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,8 @@ class StreamDockConfig:
         lock_monitor_enabled: Whether lock monitoring is enabled
         lock_verification_delay: Seconds to verify lock state
         double_press_interval: Time window for double-press detection
+        long_press_duration: Hold time after which a press counts as a long press
+        screensaver: Lock-screen slideshow settings, folder already absolute
         keys_config: Raw key definitions from YAML
         layouts_config: Raw layout definitions from YAML
         window_rules_config: Raw window rule definitions from YAML
@@ -46,15 +52,22 @@ class StreamDockConfig:
     lock_monitor_enabled: bool = True
     lock_verification_delay: float = 2.0
     double_press_interval: float = 0.3
+    long_press_duration: float = 0.5
+    screensaver: ScreensaverConfig = field(default_factory=ScreensaverConfig)
     keys_config: Dict[str, Dict] = field(default_factory=dict)
     layouts_config: Dict[str, Dict] = field(default_factory=dict)
     window_rules_config: Dict[str, Dict] = field(default_factory=dict)
     raw_config: Dict[str, Any] = field(default_factory=dict)
 
 
-VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions']
+VALID_ACTIONS = ['on_press_actions', 'on_release_actions', 'on_double_press_actions',
+                 'on_long_press_actions']
 
 ICON_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')
+
+# The device ignores anything dimmer than this, so neither the editor nor the
+# brightness keys go below it.
+MIN_BRIGHTNESS = 15
 
 # A key is 112x112 px, so anything outside this cannot render usefully.
 MIN_FONT_SIZE = 1
@@ -168,8 +181,37 @@ def expand_icon_paths(streamdock: Dict[str, Any], config_dir: str) -> None:
         config_dir: Directory containing the config file
     """
     for key_def in streamdock.get('keys', {}).values():
+        if isinstance(key_def, dict):
+            for action_key in VALID_ACTIONS:
+                _expand_action_image_paths(key_def.get(action_key), config_dir)
         if isinstance(key_def, dict) and isinstance(key_def.get('icon'), str):
             key_def['icon'] = resolve_icon_path(key_def['icon'], config_dir)
+        if isinstance(key_def, dict) and isinstance(key_def.get('state_icons'), dict):
+            key_def['state_icons'] = {
+                state: resolve_icon_path(path, config_dir) if isinstance(path, str) else path
+                for state, path in key_def['state_icons'].items()
+            }
+
+
+def _expand_action_image_paths(actions: Any, config_dir: str) -> None:
+    """
+    Resolve the image paths CHANGE_KEY_IMAGE and CHANGE_KEY_TEXT carry.
+
+    They are icons too, so a relative one must mean the config directory, not
+    wherever the process happened to be started from.
+    """
+    if not isinstance(actions, list):
+        return
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        for name, param in list(action.items()):
+            action_type = name.upper() if isinstance(name, str) else name
+            if action_type == 'CHANGE_KEY_IMAGE' and isinstance(param, str) and param.strip():
+                action[name] = resolve_icon_path(param, config_dir)
+            elif (action_type == 'CHANGE_KEY_TEXT' and isinstance(param, dict)
+                  and isinstance(param.get('icon'), str) and param['icon'].strip()):
+                param['icon'] = resolve_icon_path(param['icon'], config_dir)
 
 
 class ConfigurationManager:
@@ -194,14 +236,17 @@ class ConfigurationManager:
     - Zero orchestration dependencies
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, widgets=None):
         """
         Initialize configuration manager.
 
         Args:
             config_path: Path to YAML configuration file
+            widgets: Widget catalog (anything with get(widget_id) -> spec);
+                without one, widget keys are checked for shape only
         """
         self._config_path = config_path
+        self._widgets = widgets
         self._raw_config: Optional[Dict] = None
 
     @property
@@ -210,7 +255,7 @@ class ConfigurationManager:
         return os.path.dirname(os.path.abspath(self._config_path))
 
     @classmethod
-    def from_data(cls, streamdock: Dict[str, Any], config_path: str) -> "ConfigurationManager":
+    def from_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> "ConfigurationManager":
         """
         Build a manager around an in-memory configuration.
 
@@ -225,12 +270,12 @@ class ConfigurationManager:
         Returns:
             A manager whose validate()/parse() operate on the given data
         """
-        manager = cls(config_path)
+        manager = cls(config_path, widgets)
         manager._raw_config = streamdock
         return manager
 
     @classmethod
-    def parse_data(cls, streamdock: Dict[str, Any], config_path: str) -> StreamDockConfig:
+    def parse_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> StreamDockConfig:
         """
         Validate and parse an in-memory configuration.
 
@@ -244,12 +289,12 @@ class ConfigurationManager:
         Raises:
             ConfigValidationError: If validation fails
         """
-        manager = cls.from_data(streamdock, config_path)
+        manager = cls.from_data(streamdock, config_path, widgets)
         manager._validate_config()
         return manager._parse_config()
 
     @classmethod
-    def validate_data(cls, streamdock: Dict[str, Any], config_path: str) -> None:
+    def validate_data(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> None:
         """
         Validate an in-memory configuration.
 
@@ -260,10 +305,10 @@ class ConfigurationManager:
         Raises:
             ConfigValidationError: If validation fails
         """
-        cls.from_data(streamdock, config_path)._validate_config()
+        cls.from_data(streamdock, config_path, widgets)._validate_config()
 
     @classmethod
-    def collect_issues(cls, streamdock: Dict[str, Any], config_path: str) -> List[str]:
+    def collect_issues(cls, streamdock: Dict[str, Any], config_path: str, widgets=None) -> List[str]:
         """
         Validate without raising, for reporting in a UI.
 
@@ -277,7 +322,7 @@ class ConfigurationManager:
             Problems found, empty when the configuration is valid
         """
         try:
-            cls.validate_data(streamdock, config_path)
+            cls.validate_data(streamdock, config_path, widgets)
         except ConfigValidationError as e:
             return [str(e)]
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -385,6 +430,18 @@ class ConfigurationManager:
                     "double_press_interval must be a number between 0 and 2.0 (seconds)"
                 )
 
+        if 'long_press_duration' in settings:
+            duration = settings['long_press_duration']
+            if not isinstance(duration, (int, float)) or duration < 0.1 or duration > 5.0:
+                raise ConfigValidationError(
+                    "long_press_duration must be a number between 0.1 and 5.0 (seconds)"
+                )
+
+        if 'screensaver' in settings:
+            problem = screensaver_problem(settings['screensaver'])
+            if problem:
+                raise ConfigValidationError(problem)
+
     def _validate_keys(self) -> None:
         """
         Validate keys section of configuration.
@@ -404,18 +461,17 @@ class ConfigurationManager:
             if not isinstance(key_def, dict):
                 raise ConfigValidationError(f"Key '{key_name}' definition must be a dictionary")
 
-            # Check required fields - either 'icon' or 'text'
+            # Check required fields - 'widget', or 'icon' and/or 'text' (text
+            # over an icon is drawn as an overlay)
             has_icon = 'icon' in key_def
             has_text = 'text' in key_def
+            has_widget = 'widget' in key_def
 
-            if not has_icon and not has_text:
+            if has_widget or any(f in key_def for f in ('widget_options', 'state_icons', 'badge')):
+                self._validate_widget(key_name, key_def)
+            elif not has_icon and not has_text:
                 raise ConfigValidationError(
                     f"Key '{key_name}' must have either 'icon' or 'text' field"
-                )
-
-            if has_icon and has_text:
-                raise ConfigValidationError(
-                    f"Key '{key_name}' cannot have both 'icon' and 'text' fields"
                 )
 
             # Validate and expand icon path
@@ -458,14 +514,72 @@ class ConfigurationManager:
                         f"Use any of {valid_actions_str} instead."
                     )
 
-            # Validate at least one action exists
-            if not any(action_key in key_def for action_key in VALID_ACTIONS):
+            # A widget is useful as a display alone; other keys need an action.
+            if not has_widget and not any(action_key in key_def for action_key in VALID_ACTIONS):
                 raise ConfigValidationError(f"Key '{key_name}' must have at least one action")
 
             # Validate each action list
             for action_key in VALID_ACTIONS:
                 if action_key in key_def:
                     self._validate_actions(key_def[action_key], f"Key '{key_name}' {action_key}")
+
+    def _validate_widget(self, key_name: str, key_def: Dict) -> None:
+        """
+        Validate a widget key.
+
+        A widget this install doesn't know (say, uninstalled since the config
+        was written) is only logged: the key shows an error tile and the rest
+        of the configuration still loads. A known widget's options must match
+        its schema, since a mistyped value would reach the widget's code.
+        """
+        if 'widget' not in key_def:
+            for field_name in ('widget_options', 'state_icons', 'badge'):
+                if field_name in key_def:
+                    raise ConfigValidationError(f"Key '{key_name}' has '{field_name}' but no 'widget'")
+        if 'text' in key_def:
+            raise ConfigValidationError(f"Key '{key_name}' cannot combine 'widget' with 'text'")
+        widget_id = key_def['widget']
+        if not isinstance(widget_id, str) or not widget_id.strip():
+            raise ConfigValidationError(f"Key '{key_name}' widget must be a widget id")
+        options = key_def.get('widget_options') or {}
+        if not isinstance(options, dict) or not all(isinstance(k, str) for k in options):
+            raise ConfigValidationError(f"Key '{key_name}' widget_options must be a mapping of option names")
+
+        for action_key in VALID_ACTIONS:
+            for action in key_def.get(action_key) or []:
+                if isinstance(action, dict) and {'CHANGE_KEY_IMAGE', 'CHANGE_KEY_TEXT'} & set(action):
+                    logger.warning("Key '%s': the widget's next frame replaces what %s draws",
+                                   key_name, action_key)
+
+        spec = self._widgets.get(widget_id) if self._widgets is not None else None
+        problems = appearance_config_problems(key_name, key_def, spec.states if spec else None,
+                                              spec.supports_badge if spec else None)
+        if problems:
+            raise ConfigValidationError(problems[0])
+        for state, path in (key_def.get('state_icons') or {}).items():
+            self._validate_image_file(f"Image for state '{state}' of key '{key_name}'", path)
+
+        if self._widgets is None:
+            return
+        if spec is None:
+            logger.warning("Key '%s' uses widget '%s', which is not installed", key_name, widget_id)
+            return
+        try:
+            _, warnings = resolve_options(spec.options, options)
+        except OptionError as e:
+            raise ConfigValidationError(f"Key '{key_name}' widget option {e}") from e
+        for warning in warnings:
+            logger.warning("Key '%s': %s", key_name, warning)
+
+    def _validate_image_file(self, label: str, path: Any) -> None:
+        """An image path as the icon rules check it; ``label`` starts each error."""
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigValidationError(f"{label} must be a file path")
+        resolved = resolve_icon_path(path, self._config_dir)
+        if not os.path.isfile(resolved):
+            raise ConfigValidationError(f"{label} not found: {resolved}")
+        if not resolved.lower().endswith(ICON_EXTENSIONS):
+            raise ConfigValidationError(f"{label} must be an image file")
 
     def _validate_and_expand_icon_path(self, key_name: str, key_def: Dict) -> None:
         """
@@ -519,37 +633,93 @@ class ConfigurationManager:
         if not isinstance(actions, list):
             raise ConfigValidationError(f"{context}: actions must be a list")
 
+        # An empty list reads as configured but does nothing when pressed.
+        if not actions:
+            raise ConfigValidationError(f"{context} must have at least one action")
+
         for i, action in enumerate(actions):
-            if not isinstance(action, (dict, str)):
+            # A bare string (`- KEY_PRESS`) has no parameter and the runtime
+            # skipped it silently, so the key looked configured but did nothing.
+            if not isinstance(action, dict):
                 raise ConfigValidationError(
-                    f"{context}[{i}]: action must be a dictionary or string"
+                    f"{context}[{i}] must be a mapping like {{ACTION: value}}"
                 )
 
-            if isinstance(action, dict):
-                # Get the action type (the key in the dict)
-                if len(action) != 1:
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: action dict must have exactly one key-value pair"
-                    )
+            if len(action) != 1:
+                raise ConfigValidationError(
+                    f"{context}[{i}]: action dict must have exactly one key-value pair"
+                )
 
-                action_type_str = list(action.keys())[0]
+            action_type_str, parameter = next(iter(action.items()))
 
-                # `- on: x` and `- 1: x` both parse to a non-string name.
-                if not isinstance(action_type_str, str):
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: action type must be text, "
-                        f"not {type(action_type_str).__name__}"
-                    )
+            # `- on: x` and `- 1: x` both parse to a non-string name.
+            if not isinstance(action_type_str, str):
+                raise ConfigValidationError(
+                    f"{context}[{i}]: action type must be text, "
+                    f"not {type(action_type_str).__name__}"
+                )
 
-                # Validate action type exists
-                try:
-                    ActionType[action_type_str.upper()]
-                except KeyError:
-                    valid_types = ', '.join([t.name for t in ActionType])
-                    raise ConfigValidationError(
-                        f"{context}[{i}]: invalid action type '{action_type_str}'. "
-                        f"Valid types: {valid_types}"
-                    )
+            try:
+                action_type = ActionType[action_type_str.upper()]
+            except KeyError:
+                valid_types = ', '.join([t.name for t in ActionType])
+                raise ConfigValidationError(
+                    f"{context}[{i}]: invalid action type '{action_type_str}'. "
+                    f"Valid types: {valid_types}"
+                )
+
+            self._validate_action_parameter(action_type, parameter, f"{context}[{i}] {action_type.name}")
+
+    def _validate_action_parameter(self, action_type: ActionType, parameter: Any, label: str) -> None:
+        """
+        Check a parameter against what its handler accepts.
+
+        The handlers log and give up on a wrong parameter, so without this a
+        typo only shows up as a key that silently does nothing when pressed.
+        """
+        if action_type is ActionType.WAIT:
+            if isinstance(parameter, bool) or not isinstance(parameter, (int, float)) or parameter < 0:
+                raise ConfigValidationError(f"{label} must be a number of seconds, 0 or more")
+
+        elif action_type in (ActionType.KEY_PRESS, ActionType.EXECUTE_COMMAND):
+            if not isinstance(parameter, str) or not parameter.strip():
+                raise ConfigValidationError(f"{label} must be a non-empty string")
+
+        elif action_type is ActionType.TYPE_TEXT:
+            # Whitespace is legitimate text to type, so only '' is empty.
+            if not isinstance(parameter, str) or not parameter:
+                raise ConfigValidationError(f"{label} must be a non-empty string")
+
+        elif action_type is ActionType.CHANGE_LAYOUT:
+            layout = parameter.get('layout') if isinstance(parameter, dict) else parameter
+            if not isinstance(layout, str) or not layout:
+                raise ConfigValidationError(
+                    f"{label} must be a layout name, or a mapping with a 'layout' name")
+            layouts = self._raw_config.get('layouts')
+            if isinstance(layouts, dict) and layout not in layouts:
+                raise ConfigValidationError(f"{label} references undefined layout: '{layout}'")
+
+        elif action_type is ActionType.CHANGE_KEY_IMAGE:
+            self._validate_image_file(f"{label} image", parameter)
+
+        elif action_type is ActionType.CHANGE_KEY_TEXT:
+            if isinstance(parameter, dict):
+                if parameter.get('icon'):
+                    self._validate_image_file(f"{label} icon", parameter['icon'])
+            elif not isinstance(parameter, str):
+                raise ConfigValidationError(f"{label} must be a text or a mapping with 'text'")
+
+        elif action_type is ActionType.CHANGE_KEY:
+            # A key name (what the editor writes) or, in older configs, an image path.
+            if not (isinstance(parameter, dict) or (isinstance(parameter, str) and parameter.strip())):
+                raise ConfigValidationError(f"{label} must be a key name")
+
+        elif action_type is ActionType.DBUS:
+            if isinstance(parameter, dict):
+                if not isinstance(parameter.get('action'), str):
+                    raise ConfigValidationError(f"{label} mapping must have an 'action' name")
+            elif not isinstance(parameter, str) or not parameter.strip():
+                raise ConfigValidationError(f"{label} must be a command or a mapping with 'action'")
 
     def _validate_layouts(self) -> None:
         """
@@ -702,6 +872,24 @@ class ConfigurationManager:
                     raise ConfigValidationError(
                         f"Window rule '{rule_name}': 'is_regex' must be a boolean"
                     )
+                if rule_def['is_regex']:
+                    patterns = window_name if isinstance(window_name, list) else [window_name]
+                    for pattern in patterns:
+                        try:
+                            re.compile(pattern)
+                        except re.error as e:
+                            raise ConfigValidationError(
+                                f"Window rule '{rule_name}': invalid regular expression "
+                                f"{pattern!r}: {e}") from e
+
+            # The layout manager sorts on priority, so a string would crash the
+            # sort and true would quietly count as 1.
+            if 'priority' in rule_def:
+                priority = rule_def['priority']
+                if isinstance(priority, bool) or not isinstance(priority, int):
+                    raise ConfigValidationError(
+                        f"Window rule '{rule_name}': 'priority' must be a whole number"
+                    )
 
             # Validate match_field (optional)
             if 'match_field' in rule_def:
@@ -730,6 +918,10 @@ class ConfigurationManager:
         lock_monitor_enabled = settings.get('lock_monitor', True)
         lock_verification_delay = float(settings.get('lock_verification_delay', 2.0))
         double_press_interval = float(settings.get('double_press_interval', 0.3))
+        long_press_duration = float(settings.get('long_press_duration', 0.5))
+        screensaver = ScreensaverConfig.from_dict(
+            settings.get('screensaver'),
+            lambda folder: resolve_icon_path(folder, self._config_dir))
 
         # Find default layout
         default_layout_name = "default"
@@ -744,6 +936,8 @@ class ConfigurationManager:
             lock_monitor_enabled=lock_monitor_enabled,
             lock_verification_delay=lock_verification_delay,
             double_press_interval=double_press_interval,
+            long_press_duration=long_press_duration,
+            screensaver=screensaver,
             keys_config=raw_config.get('keys', {}),
             layouts_config=raw_config.get('layouts', {}),
             window_rules_config=raw_config.get('windows_rules', {}),

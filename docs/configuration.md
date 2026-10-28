@@ -42,12 +42,58 @@ settings:
   lock_monitor: true               # Auto turn off when computer locked, default: true
   lock_verification_delay: 2.0     # Seconds to wait before confirming lock, default: 2.0
   double_press_interval: 0.3       # Time window in seconds for double-press detection
+  long_press_duration: 0.5         # Seconds a key must be held to count as a long press
 ```
 
 - **brightness:** Controls the LED brightness of the device.
 - **lock_monitor:** Requires `dbus-python`. Turns off screen when system is locked.
 - **lock_verification_delay:** Time to wait before confirming a lock event (0.1-30s). Prevents false lock detection when user aborts lock screen. Higher values are more reliable but slower to respond.
 - **double_press_interval:** Valid range 0.1-2.0s. Lower is faster but harder to trigger.
+- **long_press_duration:** Valid range 0.1-5.0s. Only affects keys that have `on_long_press_actions`.
+
+Both timings can also be changed in the editor under **Advanced Settings**.
+
+### Screensaver
+
+Instead of turning off when the computer locks, the deck can show a slideshow:
+each picture is spread over all 15 keys. The keys do nothing while the computer
+is locked.
+
+The picture is laid out over the whole front panel: 13.5 mm visible key
+screens, 5.25 mm apart (an 18.75 mm key pitch).
+Each key shows only the part of the picture under its own screen, so lines
+run straight across the panel instead of jumping the gaps. The picture keeps
+its proportions and is centre-cropped to the panel's roughly 16:9 shape.
+
+```yaml
+settings:
+  screensaver:
+    enabled: true
+    source: folder                 # "folder" or "online", default: folder
+    folder: "~/Pictures/Wallpapers" # required for source: folder
+    shuffle: true                  # random order (folder only), default: true
+    provider: picsum               # online only: "picsum" or "bing", default: picsum
+    interval: 10                   # seconds between pictures (2-3600), default: 10
+    turn_off_after: 30             # minutes until the deck turns off (0-1440), 0 = never
+    brightness: 30                 # brightness during the slideshow (0-100), default: unchanged
+```
+
+- **folder:** Searched with its subfolders for JPEG, PNG, BMP, GIF and WebP
+  pictures, and searched again after each full round so new pictures show up.
+  A relative path is resolved against the config file's directory.
+- **provider:** Free services that need no account:
+  `picsum` shows a new random photo from [Lorem Picsum](https://picsum.photos)
+  each time; `bing` cycles through Bing's picture of the day for the last two
+  weeks. Downloads are kept in `~/.cache/streamdock/screensaver/` (at most
+  100 per service), so the slideshow carries on from them when the network is
+  down.
+- **brightness:** Leave it out to keep the brightness the deck had when the
+  computer locked. Either way, unlocking brings that brightness back.
+- **turn_off_after:** When it runs out the deck turns off as it would have
+  without a screensaver. It also turns off straight away if there is nothing to
+  show (an empty folder, or no network and nothing downloaded yet).
+
+The same options are in the editor under **Settings → Screensaver**.
 
 ---
 
@@ -75,7 +121,7 @@ keys:
     icon: "../img/settings.png"      # Optional
     text: "Settings"                # Optional
     text_color: "white"             # Optional (color name or hex)
-    background_color: "black"       # Optional (used for text-only mode)
+    background_color: "black"       # Optional (text-only background, or behind a transparent icon)
     font_size: 20                   # Optional (pixels)
     bold: true                      # Optional
     text_position: "bottom"         # Optional: "top", "center", "bottom" (default: bottom)
@@ -83,11 +129,40 @@ keys:
       - "EXECUTE_COMMAND": ["systemsettings"]
 ```
 
-> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image. If no icon is present, the text is centred by default.
+With both `icon` and `text`, the icon fills the key and the text is drawn over it:
+`text`, `text_position`, `text_color`, `font_size` and `bold` all apply, and
+`background_color` shows through transparent parts of the icon. With `text` alone
+the text is always centred on `background_color`, and `text_position` has no effect.
+
+> **Note:** If an icon is present, `text_position: "bottom"` is usually recommended to avoid obscuring the main image.
+
+### Widget Keys
+
+A widget key draws itself at runtime: a clock, the date, CPU load, the microphone's mute state. Use `widget` instead of `icon` or `text`:
+
+```yaml
+keys:
+  Clock:
+    widget: digital_clock
+    widget_options:
+      format: 12h
+```
+
+A widget key needs no actions, but can have any of them. It can also show your own images per state (`state_icons`), or a base `icon` with the widget's badge (an unread count, say) in a corner:
+
+```yaml
+keys:
+  Slack:
+    widget: slack_notifications
+    icon: img/slack.png
+    badge: { position: top_right }
+```
+
+See [Widgets](widgets.md) for the built-in widgets, their states and badges, and installing or writing your own.
 
 ### Action Triggers
 
-Keys support three trigger types:
+Keys support four trigger types:
 
 ```yaml
 MyKey:
@@ -98,7 +173,29 @@ MyKey:
     - "TYPE_TEXT": "Released"
   on_double_press_actions:  # Triggered on double-click
     - "KEY_PRESS": "CTRL+C"
+  on_long_press_actions:    # Triggered once the key is held for long_press_duration
+    - "KEY_PRESS": "CTRL+V"
 ```
+
+Adding a double-press or long-press trigger changes when the other triggers run, because
+the key has to wait to find out which gesture it is:
+
+- **Double press:** the press and release actions are delayed by `double_press_interval`.
+  If a second press arrives within that window after the release, only the double-press
+  actions run.
+- **Long press:** the press actions run when the key is released, not when it goes down,
+  and only if it was released before `long_press_duration`. If the key is held that long,
+  the long-press actions run while it is still down, and releasing it runs nothing.
+- **Both:** a tap waits out the double-press window and then runs press followed by release.
+  A hold runs the long press, and a double tap runs the double press.
+
+Keys with only press and release actions are unaffected and still fire immediately.
+
+Every action list you include must hold at least one action, and each action is a
+mapping of one action name to its parameter (`- KEY_PRESS: "CTRL+C"`, not a bare
+`- KEY_PRESS`). Action names are case-insensitive. Parameters are checked when the
+configuration loads: for example `WAIT` needs a number of seconds, `CHANGE_LAYOUT` an
+existing layout, and `CHANGE_KEY` the name of another key.
 
 For a list of all available actions, see the [Actions Reference](actions_reference.md).
 
@@ -131,7 +228,7 @@ layouts:
 ```
 
 - **Key numbers:** 1-15 (Top-left to Bottom-right).
-- **Empty keys:** Use `null` or `~` to clear a key.
+- **Empty keys:** Use `null` or `~` to clear a key: when the layout is applied, that button is blanked and its actions from the previous layout are removed.
 - **clear_all:** If `true`, wipes the screen before drawing this layout. Useful for clean transitions.
 
 ---
@@ -174,6 +271,11 @@ windows_rules:
 - `class` (default): Application class name (e.g., `firefox`, `Code`).
 - `title`: Window title bar text.
 - `raw`: Raw window info string.
+
+**Order:** the first matching rule wins. Rules are tried by `priority`
+(optional whole number, higher first, default `0`; anything else is rejected), then in the order they appear
+in the file. The editor's Window Rules panel lists them in that order; dragging
+a rule to a new place rewrites the file order and clears `priority`.
 
 **Requirements:**
 - **X11:** `xdotool`

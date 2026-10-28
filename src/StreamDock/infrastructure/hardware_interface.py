@@ -6,10 +6,9 @@ allowing different implementations (USB, Mock, etc.) while keeping the
 rest of the application hardware-agnostic.
 """
 
-import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List
 
 
 @dataclass
@@ -44,23 +43,6 @@ class DeviceInfo:
         This ID remains constant even if the USB path changes.
         """
         return f"{self.vendor_id:04x}:{self.product_id:04x}:{self.serial_number}"
-
-
-@dataclass
-class InputEvent:
-    """
-    Input event from a hardware device.
-
-    Represents a button press or release event from the StreamDock hardware.
-
-    Attributes:
-        button_index: Zero-based button index (0-14 for 15-key device)
-        event_type: Type of event ('press' or 'release')
-        timestamp: Time when event was captured
-    """
-    button_index: int
-    event_type: str  # 'press' or 'release'
-    timestamp: float = field(default_factory=time.time)
 
 
 class HardwareInterface(ABC):
@@ -153,43 +135,5 @@ class HardwareInterface(ABC):
             - Values outside 0-100 should be clamped
             - Returns False if no device is open
             - Brightness change should be immediate
-        """
-        ...
-
-    @abstractmethod
-    def send_image(self, image_data: bytes, button_index: int) -> bool:
-        """
-        Send an image to a specific button.
-
-        Args:
-            image_data: Raw image data in the format expected by the device
-            button_index: Button index (0-based)
-
-        Returns:
-            True if image was sent successfully, False otherwise
-
-        Design Contract:
-            - Returns False if no device is open
-            - Returns False if button_index is out of range
-            - Image format is device-specific (caller's responsibility)
-        """
-        ...
-
-    @abstractmethod
-    def read_input(self, timeout_ms: int = 0) -> Optional[InputEvent]:
-        """
-        Read an input event from the device.
-
-        Args:
-            timeout_ms: Timeout in milliseconds (0 = non-blocking, -1 = infinite)
-
-        Returns:
-            InputEvent if a button was pressed, None if timeout or no event
-
-        Design Contract:
-            - Returns None on timeout (not an error)
-            - Returns None if no device is open
-            - Blocking behavior when timeout_ms = -1
-            - Non-blocking when timeout_ms = 0
         """
         ...

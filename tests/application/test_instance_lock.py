@@ -112,6 +112,40 @@ class TestDefaultLockPath:
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
         assert default_lock_path() == os.path.join(str(tmp_path), "streamdock.lock")
 
-    def test_falls_back_to_a_per_user_tmp_file(self, monkeypatch):
+    def test_falls_back_to_a_private_cache_dir(self, tmp_path, monkeypatch):
+        """/tmp is shared: another user could plant the file or a symlink first."""
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        assert default_lock_path() == f"/tmp/streamdock-{os.getuid()}.lock"
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        path = default_lock_path()
+
+        cache_dir = os.path.join(str(tmp_path), ".cache", "streamdock")
+        assert path == os.path.join(cache_dir, "streamdock.lock")
+        assert os.stat(cache_dir).st_mode & 0o777 == 0o700
+
+
+class TestHostileLockFile:
+    """A lock file someone else prepared must not be opened or trusted."""
+
+    def test_a_symlink_is_not_followed(self, tmp_path):
+        target = tmp_path / "elsewhere"
+        target.write_text("precious")
+        link = tmp_path / "test.lock"
+        link.symlink_to(target)
+
+        assert InstanceLock(str(link)).acquire() is True
+
+        assert target.read_text() == "precious"
+
+    def test_a_directory_is_not_used(self, tmp_path):
+        path = tmp_path / "test.lock"
+        path.mkdir()
+        lock = InstanceLock(str(path))
+
+        assert lock.acquire() is True
+        assert lock._fd is None
+
+    def test_the_file_is_private(self, lock_path):
+        InstanceLock(lock_path).acquire()
+
+        assert os.stat(lock_path).st_mode & 0o777 == 0o600

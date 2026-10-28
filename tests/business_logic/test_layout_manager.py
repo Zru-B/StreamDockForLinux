@@ -304,3 +304,15 @@ class TestLayoutManager:
         # Test unknown
         unknown = WindowInfo(title="", class_="unknown", raw="")
         assert manager.select_layout(unknown) == "default"
+
+
+class TestLongWindowValues:
+    """Titles are set by any program, and every rule runs against them on each poll."""
+
+    def test_matching_stops_at_the_length_cap(self):
+        from StreamDock.business_logic.layout_manager import MAX_MATCH_LENGTH, window_matches
+        from StreamDock.domain.Models import WindowInfo
+        window = WindowInfo(title="x" * MAX_MATCH_LENGTH + "secret", class_="c", raw="")
+
+        assert not window_matches(window, "secret", "title")
+        assert window_matches(window, "xxx", "title")

@@ -13,6 +13,7 @@ import errno
 import fcntl
 import logging
 import os
+import stat
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,19 @@ def default_lock_path() -> str:
 
     Returns:
         A path under XDG_RUNTIME_DIR when available (cleaned up at logout),
-        otherwise a per-user file in /tmp.
+        otherwise one in a private ~/.cache/streamdock. Not /tmp: any user
+        can create a file there first, by name or as a symlink, and so
+        either block the lock or have it opened somewhere else.
     """
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if runtime_dir and os.path.isdir(runtime_dir):
         return os.path.join(runtime_dir, LOCK_NAME)
-    return os.path.join("/tmp", f"streamdock-{os.getuid()}.lock")
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "streamdock")
+    try:
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+    except OSError as e:
+        logger.warning("Could not create %s: %s", cache_dir, e)
+    return os.path.join(cache_dir, LOCK_NAME)
 
 
 class InstanceLock:
@@ -61,16 +69,25 @@ class InstanceLock:
 
         Returns:
             True if this process now holds it, False if another process does.
-            Also True if locking is unsupported on this filesystem - refusing
-            to start would be worse than the race it prevents.
+            Also True, with a warning, if the lock file cannot be used -
+            refusing to start would be worse than the race it prevents.
         """
         if self._fd is not None:
             return True
 
         try:
-            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
+            fd = os.open(self._path,
+                         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         except OSError as e:
-            logger.warning("Could not open lock file %s: %s", self._path, e)
+            logger.warning("Could not open lock file %s (%s); running without the "
+                           "single-instance guard", self._path, e)
+            return True
+
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            logger.warning("Lock file %s is not a regular file owned by this user; "
+                           "running without the single-instance guard", self._path)
             return True
 
         try:
@@ -80,7 +97,8 @@ class InstanceLock:
             if e.errno in (errno.EACCES, errno.EAGAIN):
                 logger.debug("Lock %s is held by another process", self._path)
                 return False
-            logger.warning("Could not lock %s: %s", self._path, e)
+            logger.warning("Could not lock %s (%s); running without the "
+                           "single-instance guard", self._path, e)
             return True
 
         os.ftruncate(fd, 0)
@@ -98,7 +116,8 @@ class InstanceLock:
             acquire() returned False.
         """
         try:
-            with open(self._path, 'r') as f:
+            fd = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, 'r') as f:
                 return int(f.read().strip())
         except (OSError, ValueError):
             return None

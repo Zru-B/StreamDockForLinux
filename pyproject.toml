@@ -50,7 +50,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["StreamDock*"]
+include = ["StreamDock*", "streamdock_sdk*"]
 
 [tool.setuptools.package-data]
 "StreamDock" = ["*.yml", "*.yaml"]
@@ -70,4 +70,4 @@ qt_api = "pyqt6"
 profile = "black"
 line_length = 120
 src_paths = ["src"]
-known_first_party = ["StreamDock"]
+known_first_party = ["StreamDock", "streamdock_sdk"]

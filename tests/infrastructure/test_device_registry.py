@@ -62,7 +62,12 @@ class TestDeviceRegistry:
         
         assert len(devices) == 1
         assert registry.get_device_count() == 1
-        mock_device_class.assert_called_once_with(mock_hardware, device_info)
+        # StreamDock.__init__ indexes devInfo['path'] etc.; a DeviceInfo would raise.
+        mock_device_class.assert_called_once_with(mock_hardware, {
+            'vendor_id': device_info.vendor_id,
+            'product_id': device_info.product_id,
+            'path': device_info.path,
+        })
     
     def test_enumerate_and_register_multiple_devices(self, registry, mock_hardware, mock_device_class):
         """Design contract: Multiple devices can be registered."""

@@ -45,10 +45,10 @@ def device_key(device: DeviceInfo) -> str:
     """
     Build a selector key that is unique among the attached devices.
 
-    DeviceInfo.device_id is VID:PID:serial, but this hardware reports an empty
-    serial, so two identical docks share one id. Fall back to the USB path in
-    that case - it is unique while both are plugged in, which is all a device
-    picker needs.
+    DeviceInfo.device_id is VID:PID:serial, which also survives moving the dock
+    to another USB port. A dock that reports no serial would share that id
+    with its twin, so fall back to the USB path then - it is unique while both
+    are plugged in, which is all a device picker needs.
 
     Args:
         device: Discovered device

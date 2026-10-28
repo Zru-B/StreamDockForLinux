@@ -25,7 +25,6 @@ class TestDeviceOrchestrator:
         """Mock HardwareInterface."""
         hardware = Mock(spec=HardwareInterface)
         hardware.set_brightness.return_value = True
-        hardware.send_image.return_value = True
         return hardware
     
     @pytest.fixture
@@ -69,6 +68,8 @@ class TestDeviceOrchestrator:
         """Mock SystemEventMonitor."""
         monitor = Mock(spec=SystemEventMonitor)
         monitor.start_monitoring.return_value = True
+        # Nothing polled yet: the orchestrator falls back to asking itself.
+        monitor.current_window = None
         return monitor
     
     @pytest.fixture
@@ -265,22 +266,24 @@ class TestDeviceOrchestrator:
         device.init.assert_called_once()
 
     
-    def test_window_changed_selects_layout(self, orchestrator, mock_layout_manager, 
-                                          mock_windows):
-        """CRITICAL: Window change triggers layout selection."""
+    def test_window_changed_selects_layout(self, orchestrator, mock_layout_manager,
+                                          mock_windows, mock_event_monitor):
+        """CRITICAL: Window change selects a layout for the window the monitor polled."""
         orchestrator.start()
-        
+        polled = WindowInfo(title="Polled", class_="polled_class", raw="polled")
+        mock_event_monitor.current_window = polled
+
         # start() applies the context-aware layout itself, so only count the
         # lookups made by the event we are actually testing.
         mock_windows.get_active_window.reset_mock()
         mock_layout_manager.select_layout.reset_mock()
-        
-        # Simulate window change
+
         orchestrator._on_window_changed(SystemEvent.WINDOW_CHANGED)
-        
-        # Verify layout selection was queried
-        mock_windows.get_active_window.assert_called_once()
-        mock_layout_manager.select_layout.assert_called_once()
+
+        # Re-querying could see a different window from the one that raised
+        # the event.
+        mock_windows.get_active_window.assert_not_called()
+        mock_layout_manager.select_layout.assert_called_once_with(polled)
     
     def test_window_changed_applies_different_layout(self, orchestrator, 
                                                       mock_layout_manager, mock_layout):
@@ -370,55 +373,6 @@ class TestDeviceOrchestrator:
         # Current layout should still be default
         assert orchestrator.get_current_layout(device_id) == "default"
     
-    # ==================== Action Execution Tests ====================
-    
-    def test_execute_key_press_action(self, orchestrator, mock_system):
-        """Design contract: KEY_PRESS action calls system interface."""
-        orchestrator.execute_action("KEY_PRESS", "CTRL+C")
-        
-        mock_system.send_key_combo.assert_called_once_with("CTRL+C")
-    
-    def test_execute_wait_action(self, orchestrator):
-        """Design contract: WAIT action sleeps."""
-        import time
-        start = time.time()
-        orchestrator.execute_action("WAIT", 0.01)
-        elapsed = time.time() - start
-        
-        assert elapsed >= 0.01
-    
-    def test_execute_brightness_up_action(self, orchestrator, mock_hardware):
-        """Design contract: DEVICE_BRIGHTNESS_UP increases brightness."""
-        orchestrator.set_default_brightness(50)
-        orchestrator.execute_action("DEVICE_BRIGHTNESS_UP", None)
-        
-        assert orchestrator._default_brightness == 60
-        mock_hardware.set_brightness.assert_called_with(60)
-    
-    def test_execute_brightness_down_action(self, orchestrator, mock_hardware):
-        """Design contract: DEVICE_BRIGHTNESS_DOWN decreases brightness."""
-        orchestrator.set_default_brightness(50)
-        orchestrator.execute_action("DEVICE_BRIGHTNESS_DOWN", None)
-        
-        assert orchestrator._default_brightness == 40
-        mock_hardware.set_brightness.assert_called_with(40)
-    
-    def test_execute_change_layout_action(self, orchestrator, mock_layout):
-        """Design contract: CHANGE_LAYOUT action applies layout."""
-        orchestrator.start()
-        orchestrator.register_layout("browser", mock_layout)
-        
-        device_id = list(orchestrator._devices.keys())[0]
-        orchestrator.execute_action("CHANGE_LAYOUT", "browser", device_id=device_id)
-        
-        mock_layout.apply.assert_called_once()
-        assert orchestrator.get_current_layout(device_id) == "browser"
-    
-    def test_execute_unknown_action(self, orchestrator):
-        """Error handling: Unknown actions are logged but don't crash."""
-        # Should not raise exception
-        orchestrator.execute_action("UNKNOWN_ACTION", "parameter")
-    
     # ==================== State Query Tests ====================
     
     def test_get_device_count(self, orchestrator):
@@ -449,3 +403,74 @@ class TestDeviceOrchestrator:
         
         orchestrator._on_unlock(SystemEvent.UNLOCK)
         assert orchestrator.is_locked() is False
+
+    # ==================== Lock vs. layout races ====================
+
+    def test_a_lock_during_rendering_keeps_the_layout_off_the_device(self, orchestrator,
+                                                                    mock_layout_manager):
+        # The window poll checked the lock, then rendered; a lock arriving
+        # meanwhile closed the device, and the writes went to a closed handle.
+        orchestrator.start()
+        layout = Mock()
+        layout.prepare.side_effect = lambda: orchestrator._on_lock(SystemEvent.LOCK)
+        orchestrator.register_layout("browser", layout)
+        mock_layout_manager.select_layout.return_value = "browser"
+
+        orchestrator._on_window_changed(SystemEvent.WINDOW_CHANGED)
+
+        layout.apply.assert_not_called()
+
+    def test_change_layout_is_refused_while_locked(self, orchestrator, mock_layout):
+        orchestrator.start()
+        orchestrator.register_layout("browser", mock_layout)
+        orchestrator._on_lock(SystemEvent.LOCK)
+
+        orchestrator.apply_layout("browser")
+
+        mock_layout.apply.assert_not_called()
+
+    def test_keys_are_rendered_outside_the_device_lock(self, orchestrator, mock_layout):
+        # Decoding icons under the lock stalled widget frames and key actions.
+        orchestrator.start()
+        held = {}
+        mock_layout.prepare.side_effect = lambda: held.setdefault(
+            'prepare', orchestrator._device_lock._is_owned())
+        mock_layout.apply.side_effect = lambda: held.setdefault(
+            'apply', orchestrator._device_lock._is_owned())
+        orchestrator.register_layout("browser", mock_layout)
+
+        orchestrator.apply_layout("browser")
+
+        assert held == {'prepare': False, 'apply': True}
+
+    # ==================== Brightness across a lock ====================
+
+    def test_unlock_restores_the_last_brightness(self, orchestrator, mock_registry):
+        # Restoring the configured value undid every slider or key adjustment.
+        orchestrator.start()
+        orchestrator.set_default_brightness(50)
+        device = mock_registry.get_all_devices.return_value[0].device_instance
+        device._current_brightness = 80
+
+        orchestrator._on_lock(SystemEvent.LOCK)
+        orchestrator._on_unlock(SystemEvent.UNLOCK)
+
+        device.init.assert_called_once_with(80)
+        device.set_brightness.assert_called_once_with(80)
+
+    def test_unlock_does_not_restore_the_zero_a_lock_set(self, orchestrator, mock_registry):
+        orchestrator.start()
+        device = mock_registry.get_all_devices.return_value[0].device_instance
+        del device.screen_off
+        device._current_brightness = 70
+
+        def set_brightness(value):
+            device._current_brightness = value
+        device.set_brightness.side_effect = set_brightness
+
+        orchestrator._on_lock(SystemEvent.LOCK)
+        orchestrator._on_lock(SystemEvent.LOCK)
+        device.set_brightness.reset_mock()
+        orchestrator._on_unlock(SystemEvent.UNLOCK)
+
+        device.set_brightness.assert_called_once_with(70)

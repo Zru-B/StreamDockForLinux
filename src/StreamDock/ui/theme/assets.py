@@ -10,7 +10,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ _TEMPLATE = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" '
              'width="16" height="16">{body}</svg>')
 
 _written: Dict[str, str] = {}
+_private_dir: Optional[Path] = None
 
 
 def glyph_path(name: str, color: str) -> str:
@@ -72,9 +73,20 @@ def glyph_path(name: str, color: str) -> str:
     try:
         directory.mkdir(parents=True, exist_ok=True)
         # Rewritten every session: a truncated file from a previous crash
-        # would otherwise be cached for good.
-        path.write_text(_TEMPLATE.format(body=body.format(color=color)),
-                        encoding='utf-8')
+        # would otherwise be cached for good. Written beside and renamed over
+        # it, so a reader never sees half a file and a planted symlink is
+        # replaced rather than written through.
+        fd, temporary = tempfile.mkstemp(dir=directory, prefix=f".{key}-", suffix=".svg")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                handle.write(_TEMPLATE.format(body=body.format(color=color)))
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         logger.warning("Could not write theme glyph %s: %s", key, e)
         return ''
@@ -89,8 +101,10 @@ def _cache_dir() -> Path:
     Where rendered glyphs live.
 
     Returns:
-        A writable directory, falling back to the system temporary one
+        A writable directory. The fallback is private to this user: a fixed
+        name under /tmp could be created first by anyone else.
     """
+    global _private_dir  # pylint: disable=global-statement
     base = os.environ.get('XDG_CACHE_HOME') or os.path.join(Path.home(), '.cache')
     try:
         candidate = Path(base)
@@ -98,4 +112,9 @@ def _cache_dir() -> Path:
             return candidate / 'streamdock' / 'theme'
     except OSError:  # pragma: no cover - an unreadable home is exotic
         pass
-    return Path(tempfile.gettempdir()) / 'streamdock-theme'
+    runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if runtime and os.path.isdir(runtime):
+        return Path(runtime) / 'streamdock-theme'
+    if _private_dir is None:
+        _private_dir = Path(tempfile.mkdtemp(prefix='streamdock-theme-'))
+    return _private_dir

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -25,6 +26,25 @@ from PyQt6.QtWidgets import (
 from StreamDock.ui.theme import Flavor, button_icon, current_theme
 
 CANCEL_TEXT = "Cancel"
+
+
+def plain_message_box(parent, icon: QMessageBox.Icon, title: str, text: str,
+                      informative: str = "") -> QMessageBox:
+    """
+    A message box that shows its text literally.
+
+    QMessageBox guesses rich text from a leading tag, so an exception, a
+    device string or a window title could otherwise inject markup and links.
+    """
+    box = QMessageBox(parent)
+    box.setIcon(icon)
+    box.setWindowTitle(title)
+    box.setText(text)
+    if informative:
+        box.setInformativeText(informative)
+    for label in box.findChildren(QLabel):
+        label.setTextFormat(Qt.TextFormat.PlainText)
+    return box
 
 
 def make_button(text: str, role: str = "") -> QPushButton:
@@ -72,6 +92,10 @@ class ThemedDialog(QDialog):
         super().__init__(parent)
         if title:
             self.setWindowTitle(title)
+        # Parented to the main window, a closed dialog otherwise lives as long
+        # as the window does - every edit leaked one. exec() defers the
+        # deletion; see there.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         metrics = current_theme().metrics
         self._outer = QVBoxLayout(self)
@@ -88,6 +112,23 @@ class ThemedDialog(QDialog):
 
         self.affirmative_button: Optional[QPushButton] = None
         self.cancel_button: Optional[QPushButton] = None
+
+    def exec(self) -> int:
+        """
+        Run the dialog modally; it is deleted once control is back in the event loop.
+
+        QDialog.exec() deletes a WA_DeleteOnClose dialog before it returns, so
+        the caller could not read what was entered - every editor reads its
+        fields right after exec(). The deletion is deferred instead, which
+        still frees the dialog.
+        """
+        delete_on_close = self.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        try:
+            return super().exec()
+        finally:
+            if delete_on_close:
+                self.deleteLater()
 
     @property
     def content_layout(self) -> QVBoxLayout:

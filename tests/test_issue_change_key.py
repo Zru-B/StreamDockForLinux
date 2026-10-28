@@ -31,18 +31,21 @@ class TestChangeKeyCrash(unittest.TestCase):
         """
         device = MagicMock()
         action_executor = ActionExecutor(MagicMock(), MagicMock())
+        action_executor._system = MagicMock()
         config = {
             'image': '/path/to/icon.png',
-            'actions': [{'foo': 'bar'}] # Mock action list
+            'actions': [{'type_text': 'hi'}],
         }
         action = (ActionType.CHANGE_KEY, config)
-        
-        # Execute with key_number context
+
         action_executor.execute_action(action, device=device, key_number=3)
-        
-        # Verification
+
         device.set_key_image.assert_called_with(3, '/path/to/icon.png')
-        device.set_per_key_callback.assert_called()
+        # The raw YAML actions are parsed and the key can run them: it was once
+        # built without an executor and with unparsed dicts, so pressing did nothing.
+        on_press = device.set_per_key_callback.call_args.kwargs['on_press']
+        on_press(device, 3)
+        action_executor._system.type_text.assert_called_once_with('hi')
 
 if __name__ == '__main__':
     unittest.main()

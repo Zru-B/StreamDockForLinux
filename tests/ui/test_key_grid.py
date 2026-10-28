@@ -15,7 +15,7 @@ from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 from StreamDock.ui.main_window import MainWindow
-from StreamDock.ui.widgets import KeySquare
+from StreamDock.ui.widgets import KEY_MIME_TYPE, KeySquare
 
 
 CONFIG = {"streamdock": {
@@ -45,22 +45,54 @@ def square(qtbot):
     return s
 
 
+def key_mime(payload) -> QMimeData:
+    mime = QMimeData()
+    mime.setData(KEY_MIME_TYPE, str(payload).encode())
+    return mime
+
+
+def square_at(square, position: int):
+    """The square at `position` in the same window, the drag's source widget."""
+    for other in square.window().findChildren(KeySquare):
+        if other.position == position:
+            return other
+    return square if square.position == position else None
+
+
+class _Drop(QDropEvent):
+    """A drop whose source() is a given widget, as Qt reports for an in-app drag."""
+
+    def __init__(self, source, mime):
+        super().__init__(QPointF(10, 10), Qt.DropAction.MoveAction, mime,
+                         Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self._source = source
+        # The event does not own its mime data; keep it alive for the call.
+        self._mime = mime
+
+    def source(self):
+        return self._source
+
+
+class _DragEnter(QDragEnterEvent):
+    def __init__(self, source, mime):
+        super().__init__(QPoint(10, 10), Qt.DropAction.MoveAction, mime,
+                         Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self._source = source
+        # The event does not own its mime data; keep it alive for the call.
+        self._mime = mime
+
+    def source(self):
+        return self._source
+
+
 def drop_on(square, source: int) -> None:
     """Drop the key from `source` onto this square."""
-    mime = QMimeData()
-    mime.setText(str(source))
-    square.dropEvent(QDropEvent(
-        QPointF(10, 10), Qt.DropAction.MoveAction, mime,
-        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    square.dropEvent(_Drop(square_at(square, source), key_mime(source)))
 
 
-def drag_over(square, source: int) -> QDragEnterEvent:
+def drag_over(square, source: int, source_widget=None) -> QDragEnterEvent:
     """Hover a drag from `source` over this square, and report the event."""
-    mime = QMimeData()
-    mime.setText(str(source))
-    event = QDragEnterEvent(
-        QPoint(10, 10), Qt.DropAction.MoveAction, mime,
-        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    event = _DragEnter(source_widget or square_at(square, source), key_mime(source))
     square.dragEnterEvent(event)
     return event
 
@@ -73,20 +105,18 @@ class TestWhatASquareWillTake:
     """A square reads the drag before deciding to light up."""
 
     def test_a_key_from_another_square_is_taken(self, square):
-        mime = QMimeData()
-        mime.setText("7")
-
-        assert square.dragged_position(mime) == 7
+        assert square.dragged_position(key_mime(7)) == 7
 
     def test_a_key_dropped_back_on_itself_is_not(self, square):
-        mime = QMimeData()
-        mime.setText(str(square.position))
-
-        assert square.dragged_position(mime) is None
+        assert square.dragged_position(key_mime(square.position)) is None
 
     def test_something_that_is_not_a_position_is_not(self, square):
+        assert square.dragged_position(key_mime("a file from elsewhere")) is None
+
+    def test_plain_text_from_another_application_is_not(self, square):
+        """A number dragged from a text editor used to move a key."""
         mime = QMimeData()
-        mime.setText("a file from elsewhere")
+        mime.setText("7")
 
         assert square.dragged_position(mime) is None
 
@@ -115,6 +145,14 @@ class TestHoverFeedback:
 
     def test_a_square_refuses_a_drag_from_itself(self, square):
         event = drag_over(square, square.position)
+
+        assert not event.isAccepted()
+
+    def test_a_drag_from_another_window_is_refused(self, window, qtbot):
+        stranger = KeySquare(1)
+        qtbot.addWidget(stranger)
+
+        event = drag_over(window.key_squares[1], 1, source_widget=stranger)
 
         assert not event.isAccepted()
 
@@ -170,4 +208,15 @@ class TestDroppingOnTheGrid:
         drop_on(window.key_squares[8], 3)
 
         assert window.current_layout.keys[3] == "Ghost"
+        assert not window.modified
+
+    def test_a_position_outside_the_grid_is_ignored(self, window):
+        """A layout may hold position 20; drawing or moving it must not index past the grid."""
+        window.current_layout.keys[20] = "KeyA"
+        window.modified = False
+
+        window.on_key_moved(20, 3)
+        window.show_key_at(20)
+
+        assert window.current_layout.keys[20] == "KeyA"
         assert not window.modified

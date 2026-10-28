@@ -1,0 +1,21 @@
+# StreamDock (HOTSPOTEKUSB) udev rules
+#
+# Do NOT copy this file manually — use scripts/install.sh instead.
+#
+# What this file does:
+#   Tags the device nodes "uaccess" so systemd-logind grants the user logged in
+#   at the local seat an ACL on them. The application then opens the device via
+#   libhidapi without root and without joining any group.
+#
+# The "70-" prefix matters: the tag must be set before 73-seat-late.rules
+# applies the ACLs. From a later file (e.g. 99-) it is ignored on hotplug.
+#
+# The application is launched from its desktop entry, not by udev.
+
+# USB device node (libhidapi-libusb backend)
+SUBSYSTEM=="usb", ATTR{idVendor}=="6603", ATTR{idProduct}=="1006", \
+    TAG+="uaccess"
+
+# hidraw node (libhidapi-hidraw / pyusb backend)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", \
+    TAG+="uaccess"

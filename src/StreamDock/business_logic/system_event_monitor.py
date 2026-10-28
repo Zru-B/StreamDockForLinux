@@ -9,6 +9,7 @@ No infrastructure dependencies - uses SystemInterface abstraction.
 import logging
 import threading
 import time
+from collections import deque
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
@@ -16,6 +17,11 @@ from StreamDock.infrastructure.system_interface import SystemInterface
 from StreamDock.infrastructure.window_interface import WindowInterface
 
 logger = logging.getLogger(__name__)
+
+RECENT_WINDOW_COUNT = 15
+
+# Never equal to a polled window key, so the next poll always dispatches.
+_WINDOW_UNKNOWN = object()
 
 
 class SystemEvent(Enum):
@@ -78,15 +84,35 @@ class SystemEventMonitor:
             'last_event_time': 0.0
         }
 
-        # Lock verification state (handles aborted lock scenario)
+        # Lock verification state (handles aborted lock scenario). The timer
+        # stays set until its verification has finished, including the poll,
+        # so a signal arriving mid-poll still sees a lock being verified.
         self._pending_verification: Optional[threading.Timer] = None
-        self._processing = False  # Concurrent processing guard
+        # Guards the lock state, the verification timer and the dispatch
+        # queue: signals arrive on the D-Bus thread, verification on a timer.
+        self._state_lock = threading.Lock()
+        # Bumped on every lock-state signal; a verification that finds it
+        # changed after its poll is stale and must not dispatch.
+        self._generation = 0
+        # Handlers run one event at a time. A signal arriving while they run
+        # is queued here (only the newest counts) rather than dropped, so the
+        # final state always reaches the handlers.
+        self._queued_event: Optional[SystemEvent] = None
+        self._dispatching = False
 
         # Window polling state
         self._window_poll_thread: Optional[threading.Thread] = None
         self._window_poll_running = False
         self._window_poll_interval = 0.5  # seconds
-        self._last_window_class: Optional[str] = None
+        # Class and title: a browser switching tabs keeps its class, and both
+        # title-based layout rules and widgets watching for a web app need it.
+        self._last_window_key: object = None
+        self._current_window = None
+        # Recently focused windows, newest last, for the rule editor's picker:
+        # by the time the user is editing a rule, the window they mean has
+        # already lost focus to the editor.
+        self._recent_windows: deque = deque(maxlen=RECENT_WINDOW_COUNT)
+        self._recent_lock = threading.Lock()
 
         logger.debug("SystemEventMonitor initialized with verification_delay=%.1fs",
                     verification_delay)
@@ -156,7 +182,10 @@ class SystemEventMonitor:
             # the debounce check in _on_lock_state_changed would see
             # current_locked==False==is_locked and swallow the subsequent
             # unlock signal, leaving the orchestrator stuck in the wrong state.
-            self._current_state['is_locked'] = self._system.poll_lock_state()
+            # None means the state could not be read: keep the one we have.
+            polled = self._system.poll_lock_state()
+            if polled is not None:
+                self._current_state['is_locked'] = bool(polled)
             if self._current_state['is_locked']:
                 logger.info("Lock state initialised: system is currently locked")
 
@@ -183,7 +212,10 @@ class SystemEventMonitor:
             - Safe to call even if not monitoring
             - Safe to call multiple times
         """
-        self._cancel_pending_verification()
+        with self._state_lock:
+            # Also invalidates a verification already past its timer.
+            self._generation += 1
+            self._cancel_pending_verification()
         self._stop_window_polling()
 
         try:
@@ -215,18 +247,23 @@ class SystemEventMonitor:
         """Poll the active window and fire WINDOW_CHANGED when it changes."""
         while self._window_poll_running:
             try:
-                # Suppress window change dispatches if we are currently 
-                # verifying a system lock (OS lock screens grab focus during this delay)
-                if self._pending_verification is not None:
+                # Suppress window change dispatches while a lock is being
+                # verified or is in force: the lock screen holds focus, and
+                # the first poll after unlocking must report the real window
+                # even if it is the one focused before the lock.
+                if self._pending_verification is not None or self._current_state['is_locked']:
+                    self._last_window_key = _WINDOW_UNKNOWN
                     time.sleep(self._window_poll_interval)
                     continue
 
                 window_info = self._windows.get_active_window()
-                current_class = window_info.class_ if window_info else None
+                key = (window_info.class_, window_info.title) if window_info else None
 
-                if current_class != self._last_window_class:
-                    self._last_window_class = current_class
-                    logger.debug("Window changed: %s", current_class)
+                if key != self._last_window_key:
+                    self._last_window_key = key
+                    self._current_window = window_info
+                    self._remember_window(window_info)
+                    logger.debug("Window changed: %s", key[0] if key else None)
                     self._dispatch_event(SystemEvent.WINDOW_CHANGED)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.exception("Error in window poll loop: %s", e)
@@ -235,105 +272,121 @@ class SystemEventMonitor:
 
     def _on_lock_state_changed(self, is_locked: bool) -> None:
         """
-        PURE BUSINESS LOGIC: Handle lock state change event from system.
+        Handle a lock state change signal from the system.
 
-        This is the core business logic extracted from LockMonitor:
-        - For lock events: Schedules verification (handles abort scenario)
-        - For unlock events: Processes immediately and cancels pending locks
-        - Includes debouncing to ignore duplicate events
-        - Includes concurrency guard to prevent race conditions
-
-        Design:
-        - Lock verification handles the case where user aborts lock by moving mouse
-        - Unlock always cancels pending verification (user aborted lock)
-        - Debouncing prevents duplicate event processing
+        - Lock: schedules a verification, since the user can abort a lock by
+          moving the mouse before it completes.
+        - Unlock: cancels any pending verification and dispatches immediately.
+        - A signal repeating the current state is ignored, except an unlock
+          while a lock is being verified (the aborted-lock case).
 
         Args:
             is_locked: True if screen locked, False if unlocked
         """
-       # Prevent concurrent processing first
-        if self._processing:
-            logger.debug("Already processing state change, ignoring")
-            return
+        with self._state_lock:
+            self._generation += 1
+            current_locked = self._current_state['is_locked']
+            verifying = self._pending_verification is not None
+            if current_locked == is_locked and not (not is_locked and verifying):
+                logger.debug("Lock state unchanged (%s), ignoring duplicate signal", is_locked)
+                return
 
-        # Debounce: Ignore if state hasn't changed
-        # Special case: If there's a pending verification and we get unlock, allow it through
-        # (this handles the abort scenario where user cancels lock before verification)
-        current_locked = self._current_state['is_locked']
-        if current_locked == is_locked and not (not is_locked and self._pending_verification):
-            logger.debug("Lock state unchanged (%s), ignoring duplicate signal", is_locked)
-            return
-
-        if is_locked:
-            # Lock event: Schedule verification instead of immediate dispatch
-            # This handles race condition where user aborts lock by moving mouse
-            self._cancel_pending_verification()
-            logger.debug("Lock signal received, scheduling verification in %.1fs",
-                         self._verification_delay)
-
-            self._pending_verification = threading.Timer(
-                self._verification_delay,
-                self._verify_and_dispatch_lock
-            )
-            self._pending_verification.daemon = True
-            self._pending_verification.start()
-
-        else:
-            # Unlock event: Cancel any pending lock verification and dispatch immediately
-            # No verification needed for unlock - process immediately
             self._cancel_pending_verification()
 
-            self._processing = True
-            try:
-                self._current_state['is_locked'] = False
-                self._current_state['last_event_time'] = time.time()
-                logger.info("🔓 Unlock event confirmed")
-                self._dispatch_event(SystemEvent.UNLOCK)
-            finally:
-                self._processing = False
+            if is_locked:
+                logger.debug("Lock signal received, scheduling verification in %.1fs",
+                             self._verification_delay)
+                self._pending_verification = threading.Timer(
+                    self._verification_delay,
+                    self._verify_and_dispatch_lock,
+                    args=(self._generation,)
+                )
+                self._pending_verification.daemon = True
+                self._pending_verification.start()
+                return
 
-    def _verify_and_dispatch_lock(self) -> None:
+            self._current_state['is_locked'] = False
+            self._current_state['last_event_time'] = time.time()
+            self._queued_event = SystemEvent.UNLOCK
+            logger.info("🔓 Unlock event confirmed")
+
+        self._run_queued_events()
+
+    def _verify_and_dispatch_lock(self, generation: Optional[int] = None) -> None:
         """
-        PURE BUSINESS LOGIC: Verify lock state and dispatch if confirmed.
+        Verify the lock state after the delay and dispatch LOCK if confirmed.
 
-        This method handles the race condition where a lock event fires but
-        the user aborts the lock by moving the mouse before it completes.
+        Handles the user aborting a lock by moving the mouse before it
+        completes: the poll then reports unlocked and nothing is dispatched.
+        Any lock-state signal arriving while the poll runs supersedes it.
 
-        Process:
-        1. Poll SystemInterface to get actual lock state
-        2. If actually locked: Dispatch LOCK event
-        3. If not locked: Ignore (lock was aborted by user)
-
-        Design:
-        - Extracted from LockMonitor._verify_and_handle_lock
-        - Pure business logic - uses SystemInterface for polling
-        - Fail-safe: if poll fails, assume locked
+        Args:
+            generation: Signal generation that scheduled this verification;
+                None means the latest one
         """
         try:
-            self._pending_verification = None  # Timer has fired
+            with self._state_lock:
+                if generation is None:
+                    generation = self._generation
+                elif generation != self._generation:
+                    return
 
-            # Poll system to confirm actual lock state
             actual_locked = self._system.poll_lock_state()
 
-            if actual_locked:
-                # Lock confirmed - dispatch event to handlers
-                logger.info("🔒 Lock verification confirmed - screen is locked")
+            with self._state_lock:
+                if generation != self._generation:
+                    logger.info("🔒 Lock state changed during verification, discarding its result")
+                    return
+                self._pending_verification = None
 
-                self._processing = True
-                try:
-                    self._current_state['is_locked'] = True
-                    self._current_state['last_event_time'] = time.time()
-                    self._dispatch_event(SystemEvent.LOCK)
-                finally:
-                    self._processing = False
-            else:
-                # Lock was aborted - ignore
-                logger.info("🔒 Lock was aborted (user activity detected), ignoring lock event")
-                self._current_state['is_locked'] = False
+                # Only a definite "unlocked" aborts. An unreadable state
+                # (None) keeps the signal's word for it: failing open would
+                # leave the deck lit and usable on a locked screen.
+                if actual_locked is False:
+                    logger.info("🔒 Lock was aborted (user activity detected), ignoring lock event")
+                    self._current_state['is_locked'] = False
+                    return
+
+                if actual_locked is None:
+                    logger.warning("🔒 Lock state could not be verified - assuming locked")
+                else:
+                    logger.info("🔒 Lock verification confirmed - screen is locked")
+                self._current_state['is_locked'] = True
+                self._current_state['last_event_time'] = time.time()
+                self._queued_event = SystemEvent.LOCK
+
+            self._run_queued_events()
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.exception("Error during lock verification: %s", e)
-            self._processing = False
+
+    def _run_queued_events(self) -> None:
+        """
+        Dispatch queued lock events one at a time.
+
+        Whoever finds no dispatch running becomes the dispatcher and keeps
+        going until the queue is empty; anyone else just leaves its event
+        queued. So a signal arriving during a slow handler is delivered right
+        after it instead of being lost.
+        """
+        with self._state_lock:
+            if self._dispatching:
+                return
+            self._dispatching = True
+
+        try:
+            while True:
+                with self._state_lock:
+                    event = self._queued_event
+                    self._queued_event = None
+                    if event is None:
+                        self._dispatching = False
+                        return
+                self._dispatch_event(event)
+        except BaseException:
+            with self._state_lock:
+                self._dispatching = False
+            raise
 
     def _dispatch_event(self, event: SystemEvent) -> None:
         """
@@ -377,6 +430,41 @@ class SystemEventMonitor:
             self._pending_verification.cancel()
             self._pending_verification = None
             logger.debug("Cancelled pending lock verification timer")
+
+    def _remember_window(self, window_info) -> None:
+        if window_info is None or not (window_info.class_ or window_info.title):
+            return
+        key = (window_info.class_, window_info.title)
+        with self._recent_lock:
+            for existing in list(self._recent_windows):
+                if (existing.class_, existing.title) == key:
+                    self._recent_windows.remove(existing)
+            self._recent_windows.append(window_info)
+
+    @property
+    def recent_windows(self) -> list:
+        """Recently focused windows (WindowInfo), newest first, without repeats."""
+        with self._recent_lock:
+            return list(reversed(self._recent_windows))
+
+    def seed_window(self, window_info) -> None:
+        """
+        Record a window already acted on before monitoring starts.
+
+        The application applies the layout for the focused window itself at
+        startup; seeded here, the first poll does not report that same window
+        as a change and render the layout a second time.
+        """
+        if window_info is None:
+            return
+        self._current_window = window_info
+        self._last_window_key = (window_info.class_, window_info.title)
+        self._remember_window(window_info)
+
+    @property
+    def current_window(self):
+        """The focused window as last polled (a WindowInfo), or None."""
+        return self._current_window
 
     def is_locked(self) -> bool:
         """

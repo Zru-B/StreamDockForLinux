@@ -24,7 +24,6 @@ class TestWindowLayoutSwitch:
         """Mock hardware interface."""
         hardware = Mock()
         hardware.set_brightness = Mock()
-        hardware.send_image = Mock()
         hardware.clear_device = Mock()
         return hardware
     

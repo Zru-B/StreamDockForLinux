@@ -7,6 +7,7 @@ reads the result through :func:`get_colors` and :func:`current_theme`, so a
 switch reaches the whole application by re-reading one object.
 """
 
+import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from StreamDock.ui.theme.detection import (
     KDE_DEFAULT_FONT_SIZE,
     Flavor,
     Scheme,
+    _scheme_from_qt,
     detect_flavor,
     detect_scheme,
     read_kde_font,
@@ -71,10 +73,13 @@ class Theme:  # pylint: disable=too-many-instance-attributes
     metrics: Metrics
     stylesheet: str
 
-    @property
+    @functools.cached_property
     def colors(self) -> Dict[str, str]:
         """
         The palette as the mapping the widgets index into.
+
+        Built once per theme: every COLORS[...] lookup lands here, and
+        asdict() on each was a deep copy of the whole palette.
 
         Returns:
             Role name to ``#rrggbb``
@@ -164,6 +169,8 @@ class ThemeManager(QObject):
         self._scheme_pref: str = AUTO
         self._theme: Optional[Theme] = None
         self._style: Optional[QStyle] = None
+        # What Qt said about light and dark when the theme was last resolved.
+        self._qt_scheme: Optional[Scheme] = None
 
     # ── reading ───────────────────────────────────────────────────────────
 
@@ -243,15 +250,22 @@ class ThemeManager(QObject):
         self.changed.emit()
         return self._theme
 
-    def refresh(self) -> bool:
+    def refresh(self, force: bool = False) -> bool:
         """
         Re-read the desktop and repaint if anything about it moved.
 
-        Called when the session reports a light/dark switch.
+        Called when the session reports a light/dark switch. Resolving asks
+        GSettings in a subprocess per setting, so a report that changes
+        nothing Qt can see is not worth one unless forced.
+
+        Args:
+            force: Re-read even though Qt reports the same scheme
 
         Returns:
             True when the theme changed
         """
+        if not force and self._theme is not None and _scheme_from_qt() == self._qt_scheme:
+            return False
         return self.set_preferences()
 
     # ── internals ─────────────────────────────────────────────────────────
@@ -266,6 +280,7 @@ class ThemeManager(QObject):
         Returns:
             A freshly built theme
         """
+        self._qt_scheme = _scheme_from_qt()
         forced_flavor = _as_flavor(self._flavor_pref)
         flavor = forced_flavor or detect_flavor()
 

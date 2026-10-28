@@ -60,7 +60,7 @@ pip install -r requirements.txt
 Or manually:
 
 ```bash
-pip install pillow pyyaml cairosvg pyudev PyQt6 dbus-python PyGObject
+pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 dbus-python PyGObject
 ```
 
 ### Package Details
@@ -73,7 +73,7 @@ pip install pillow pyyaml cairosvg pyudev PyQt6 dbus-python PyGObject
 - `PyQt6` - Configuration editor GUI
 
 **System wrappers (require system libraries):**
-- `dbus-python` - D-Bus communication (for Media control & Lock monitor)
+- `dbus-python` - D-Bus communication (for Media control, Lock monitor and the Do Not Disturb widget on KDE)
 - `PyGObject` - GLib main loop (for Lock monitor)
 
 ---
@@ -125,15 +125,30 @@ This installs:
 
 | File | Destination | Purpose |
 |---|---|---|
-| `contrib/99-streamdock.rules` | `/etc/udev/rules.d/` | Grants the `plugdev` group access to the USB and hidraw nodes |
+| `contrib/70-streamdock.rules` | `/etc/udev/rules.d/` | Tags the USB and hidraw nodes `uaccess`, so the user at the local seat can open them |
 | `contrib/streamdock.desktop.template` | `~/.local/share/applications/streamdock.desktop` | Application launcher (paths filled in by the script) |
 | `contrib/streamdock.svg` | `~/.local/share/icons/hicolor/scalable/apps/` | Launcher and tray icon |
 
-You also need to be in the `plugdev` group; the script tells you if you are not:
+No group membership is needed: systemd-logind gives whoever is logged in at
+the local seat an ACL on the device. The file must sort before
+`73-seat-late.rules`, which applies those ACLs, hence the `70-` prefix. The
+script also removes the `99-streamdock.rules` that earlier versions installed.
+
+To check it worked, unplug and replug the deck, then:
 
 ```bash
-sudo usermod -aG plugdev $USER   # then log out and back in
+lsusb -d 6603:1006               # the deck (HOTSPOTEKUSB): note Bus BBB Device DDD
+getfacl /dev/bus/usb/BBB/DDD     # owner root, plus a user:<you>:rw- entry
+getfacl /dev/hidrawN             # same for its hidraw node(s), if any
 ```
+
+The app talks to the USB node (libhidapi's libusb backend); `ls -l` on it
+shows `root root` with a `+` marking the ACL.
+
+If your deck reports a different vendor/product ID in `lsusb`, change the
+two IDs in `contrib/70-streamdock.rules` before running the script. If the
+deck moves the mouse pointer or triggers Mouse Keys, see
+[Troubleshooting](troubleshooting.md#mouse-keys--cursor-issues).
 
 ### Starting at login
 

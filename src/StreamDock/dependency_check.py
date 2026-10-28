@@ -4,7 +4,7 @@ Checks for both system binaries and Python packages.
 """
 import copy
 import ctypes
-import importlib
+import importlib.metadata
 import importlib.util
 import logging
 import os
@@ -26,11 +26,16 @@ class Dependency:
     version: Optional[str] = None
     feature: Optional[str] = None
     aliases: Optional[List[str]] = None  # alternative binary names to probe
+    distribution: Optional[str] = None  # installed distribution, for the version
 
 class DependencyChecker:
     """Checks for system and Python dependencies."""
 
-    def __init__(self):
+    def __init__(self, headless: bool = False):
+        """
+        Args:
+            headless: The GUI will not start, so PyQt6 is optional
+        """
         self.system_tools_templates = [
             Dependency(
                 "xdotool", "System Tool", "X11 key emulation and window manipulation",
@@ -89,13 +94,20 @@ class DependencyChecker:
         ]
 
         self.python_packages_templates = [
-            Dependency("PIL", "Required", "Image processing", display_name="Pillow", check_type="python"),
-            Dependency("yaml", "Required", "YAML configuration parsing", display_name="PyYAML", check_type="python"),
-            Dependency("cairosvg", "Required", "SVG image support", check_type="python"),
-            Dependency("pyudev", "Required", "USB device monitoring", check_type="python"),
-            Dependency("PyQt6", "Required", "GUI and event loop", check_type="python"),
-            Dependency("dbus", "Optional", "D-Bus python bindings", check_type="python", feature="Lock monitor (KDE)"),
-            Dependency("gi", "Optional", "GObject introspection", check_type="python", feature="Lock monitor (GNOME)"),
+            Dependency("PIL", "Required", "Image processing", display_name="Pillow", check_type="python",
+                       distribution="Pillow"),
+            Dependency("yaml", "Required", "YAML configuration parsing", display_name="PyYAML", check_type="python",
+                       distribution="PyYAML"),
+            Dependency("cairosvg", "Required", "SVG image support", check_type="python",
+                       distribution="CairoSVG"),
+            Dependency("pyudev", "Required", "USB device monitoring", check_type="python",
+                       distribution="pyudev"),
+            Dependency("PyQt6", "Optional" if headless else "Required", "GUI and event loop",
+                       check_type="python", feature="The configuration GUI", distribution="PyQt6"),
+            Dependency("dbus", "Optional", "D-Bus python bindings", check_type="python", feature="Lock monitor (KDE)",
+                       distribution="dbus-python"),
+            Dependency("gi", "Optional", "GObject introspection", check_type="python", feature="Lock monitor (GNOME)",
+                       distribution="PyGObject"),
         ]
 
         self._hidapi_candidate_libs = [
@@ -136,24 +148,23 @@ class DependencyChecker:
         return False, None
 
     def _check_python_package(self, dep: Dependency) -> bool:
-        """Check if a Python package is installed."""
-        package_name = dep.name
+        """
+        Check if a Python package is installed, without importing it.
+
+        This runs on every start; importing PyQt6, gi and cairosvg just to
+        read a version cost more than the rest of startup.
+        """
         try:
-            spec = importlib.util.find_spec(package_name)
-            if spec is None:
+            if importlib.util.find_spec(dep.name) is None:
                 return False
-
-            # Try to get version
-            try:
-                module = importlib.import_module(package_name)
-                # Some packages might not have __version__ or it might be in metadata
-                dep.version = getattr(module, '__version__', 'unknown')
-            except Exception:  # pylint: disable=broad-exception-caught
-                pass
-
-            return True
-        except (ImportError, TypeError):
+        except (ImportError, ValueError):
             return False
+
+        try:
+            dep.version = importlib.metadata.version(dep.distribution or dep.name)
+        except importlib.metadata.PackageNotFoundError:
+            dep.version = 'unknown'
+        return True
 
     def _detect_distro_family(self) -> str:
         """Detect Linux distro family for package hint generation."""

@@ -118,6 +118,7 @@ class DeviceBar(QWidget):
 
         self.status_label = QLabel()
         self.status_label.setObjectName("connectionStatus")
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setMinimumWidth(96)
         self._layout.addWidget(self.status_label)
 
@@ -300,6 +301,9 @@ class DeviceBar(QWidget):
             self.connect_button.setIcon(
                 themed_icon(*ICONS['disconnect' if self._connected else 'connect']))
         self._update_buttons()
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def set_needs_apply(self, needs_apply: bool) -> None:
         """
