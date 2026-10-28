@@ -3,6 +3,7 @@
 Custom widgets for StreamDock Configuration Editor
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Optional, Tuple
@@ -14,6 +15,14 @@ from StreamDock.application.config_document import (
     KeyDefinition,
 )
 from StreamDock.application.configuration_manager import resolve_icon_path
+from StreamDock.domain.device_geometry import (
+    KEY_COLUMNS,
+    KEY_GAP_PIXELS,
+    KEY_PIXELS,
+    KEY_ROWS,
+    KEYCAP_BORDER_PIXELS,
+    PIXELS_PER_MM,
+)
 from StreamDock.image_helpers.pil_helper import render_key_image
 from StreamDock.ui.styles import get_colors
 from StreamDock.ui.theme import Flavor, current_theme, theme_manager, themed_icon
@@ -50,6 +59,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -606,6 +616,57 @@ class KeySquare(QFrame):
 SIDEBAR_CAPTION_ROLE = Qt.ItemDataRole.UserRole + 1
 # A palette name ('warning', 'danger') for a caption reporting a problem.
 SIDEBAR_PROBLEM_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class DevicePanel(QWidget):
+    """
+    The key grid at the device's own proportions.
+
+    Keys sit as far apart as their screens do on the deck, relative to the
+    112px they are drawn at, and each gets the outline of its transparent
+    keycap, so what lines up here lines up on the device - a screensaver
+    picture, or an image split over several keys.
+    """
+
+    # A keycap's corner, in millimetres.
+    KEYCAP_RADIUS_MM = 1.5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.grid = QGridLayout(self)
+        border = math.ceil(KEYCAP_BORDER_PIXELS)
+        self.grid.setContentsMargins(border, border, border, border)
+        self.grid.setSpacing(round(KEY_GAP_PIXELS))
+        theme_manager().changed.connect(self.update)
+
+    def add_key(self, square: QWidget, position: int) -> None:
+        """Place a key by its device number, 1 at the top left."""
+        row, column = divmod(position - 1, KEY_COLUMNS)
+        self.grid.addWidget(square, row, column)
+
+    def keycap_rects(self) -> list:
+        """Where each keycap outline is drawn, one per key in the grid."""
+        rects = []
+        for index in range(self.grid.count()):
+            widget = self.grid.itemAt(index).widget()
+            if widget is not None:
+                rects.append(QRectF(widget.geometry()).adjusted(
+                    -KEYCAP_BORDER_PIXELS, -KEYCAP_BORDER_PIXELS,
+                    KEYCAP_BORDER_PIXELS, KEYCAP_BORDER_PIXELS))
+        return rects
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        border = QColor(COLORS['border_strong'])
+        fill = QColor(COLORS['border'])
+        fill.setAlpha(90)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(fill)
+        radius = self.KEYCAP_RADIUS_MM * PIXELS_PER_MM
+        for rect in self.keycap_rects():
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        painter.end()
 
 
 class SidebarRowDelegate(QStyledItemDelegate):

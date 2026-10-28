@@ -53,6 +53,48 @@ settings:
 
 Both timings can also be changed in the editor under **Advanced Settings**.
 
+### Screensaver
+
+Instead of turning off when the computer locks, the deck can show a slideshow:
+each picture is spread over all 15 keys. The keys do nothing while the computer
+is locked.
+
+The picture is laid out over the whole front panel: 13.5 mm visible key
+screens, 5.25 mm apart (an 18.75 mm key pitch).
+Each key shows only the part of the picture under its own screen, so lines
+run straight across the panel instead of jumping the gaps. The picture keeps
+its proportions and is centre-cropped to the panel's roughly 16:9 shape.
+
+```yaml
+settings:
+  screensaver:
+    enabled: true
+    source: folder                 # "folder" or "online", default: folder
+    folder: "~/Pictures/Wallpapers" # required for source: folder
+    shuffle: true                  # random order (folder only), default: true
+    provider: picsum               # online only: "picsum" or "bing", default: picsum
+    interval: 10                   # seconds between pictures (2-3600), default: 10
+    turn_off_after: 30             # minutes until the deck turns off (0-1440), 0 = never
+    brightness: 30                 # brightness during the slideshow (0-100), default: unchanged
+```
+
+- **folder:** Searched with its subfolders for JPEG, PNG, BMP, GIF and WebP
+  pictures, and searched again after each full round so new pictures show up.
+  A relative path is resolved against the config file's directory.
+- **provider:** Free services that need no account:
+  `picsum` shows a new random photo from [Lorem Picsum](https://picsum.photos)
+  each time; `bing` cycles through Bing's picture of the day for the last two
+  weeks. Downloads are kept in `~/.cache/streamdock/screensaver/` (at most
+  100 per service), so the slideshow carries on from them when the network is
+  down.
+- **brightness:** Leave it out to keep the brightness the deck had when the
+  computer locked. Either way, unlocking brings that brightness back.
+- **turn_off_after:** When it runs out the deck turns off as it would have
+  without a screensaver. It also turns off straight away if there is nothing to
+  show (an empty folder, or no network and nothing downloaded yet).
+
+The same options are in the editor under **Settings → Screensaver**.
+
 ---
 
 ## Keys

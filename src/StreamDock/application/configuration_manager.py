@@ -16,6 +16,7 @@ import yaml
 
 from streamdock_sdk.options import OptionError, resolve_options
 from StreamDock.business_logic.action_type import ActionType
+from StreamDock.business_logic.screensaver import ScreensaverConfig, screensaver_problem
 from StreamDock.widgets.appearance import appearance_config_problems
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class StreamDockConfig:
         lock_verification_delay: Seconds to verify lock state
         double_press_interval: Time window for double-press detection
         long_press_duration: Hold time after which a press counts as a long press
+        screensaver: Lock-screen slideshow settings, folder already absolute
         keys_config: Raw key definitions from YAML
         layouts_config: Raw layout definitions from YAML
         window_rules_config: Raw window rule definitions from YAML
@@ -51,6 +53,7 @@ class StreamDockConfig:
     lock_verification_delay: float = 2.0
     double_press_interval: float = 0.3
     long_press_duration: float = 0.5
+    screensaver: ScreensaverConfig = field(default_factory=ScreensaverConfig)
     keys_config: Dict[str, Dict] = field(default_factory=dict)
     layouts_config: Dict[str, Dict] = field(default_factory=dict)
     window_rules_config: Dict[str, Dict] = field(default_factory=dict)
@@ -433,6 +436,11 @@ class ConfigurationManager:
                 raise ConfigValidationError(
                     "long_press_duration must be a number between 0.1 and 5.0 (seconds)"
                 )
+
+        if 'screensaver' in settings:
+            problem = screensaver_problem(settings['screensaver'])
+            if problem:
+                raise ConfigValidationError(problem)
 
     def _validate_keys(self) -> None:
         """
@@ -911,6 +919,9 @@ class ConfigurationManager:
         lock_verification_delay = float(settings.get('lock_verification_delay', 2.0))
         double_press_interval = float(settings.get('double_press_interval', 0.3))
         long_press_duration = float(settings.get('long_press_duration', 0.5))
+        screensaver = ScreensaverConfig.from_dict(
+            settings.get('screensaver'),
+            lambda folder: resolve_icon_path(folder, self._config_dir))
 
         # Find default layout
         default_layout_name = "default"
@@ -926,6 +937,7 @@ class ConfigurationManager:
             lock_verification_delay=lock_verification_delay,
             double_press_interval=double_press_interval,
             long_press_duration=long_press_duration,
+            screensaver=screensaver,
             keys_config=raw_config.get('keys', {}),
             layouts_config=raw_config.get('layouts', {}),
             window_rules_config=raw_config.get('windows_rules', {}),

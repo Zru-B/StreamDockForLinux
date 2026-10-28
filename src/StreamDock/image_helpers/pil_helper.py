@@ -3,7 +3,7 @@ import io
 import logging
 import os
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -462,3 +462,30 @@ def to_native_seondscreen_format(dock, image):
 
 def to_native_touchscreen_format(dock, image):
     return _to_native_format(image, dock.touchscreen_image_format())
+
+
+def tile_image(image, columns, rows, tile_size, gap=0.0):
+    """
+    Crop a picture to fill a grid of keys and cut it into one tile per key.
+
+    The picture is scaled to cover the whole grid, gaps included, and
+    centre-cropped, so it keeps its proportions. The strips that fall in the
+    gaps are dropped: they are behind the bezels. Tiles come back row by row,
+    top-left first, which is key 1 onwards.
+
+    :param tile_size: (width, height) of one key in pixels
+    :param gap: pixels between neighbouring keys; fractional, so the rounding
+                does not add up across the row
+    """
+    width, height = tile_size
+    canvas_size = (round(columns * width + (columns - 1) * gap),
+                   round(rows * height + (rows - 1) * gap))
+    canvas = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGB"),
+                          canvas_size, Image.LANCZOS)
+    tiles = []
+    for row in range(rows):
+        top = round(row * (height + gap))
+        for column in range(columns):
+            left = round(column * (width + gap))
+            tiles.append(canvas.crop((left, top, left + width, top + height)))
+    return tiles

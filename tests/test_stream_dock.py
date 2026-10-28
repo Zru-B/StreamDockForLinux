@@ -518,5 +518,57 @@ class TestStreamDock293V3Brightness(unittest.TestCase):
         self.assertEqual(self.device._current_brightness, DEFAULT_BRIGHTNESS)
 
 
+
+class TestSuspendedInput(unittest.TestCase):
+    """While the screensaver runs on a locked computer, no key may act."""
+
+    def setUp(self):
+        self.device = ConcreteStreamDock(MagicMock(), {'vendor_id': 1, 'product_id': 2,
+                                                       'path': 'p'})
+        self.pressed = MagicMock()
+        self.device.set_per_key_callback(15, on_press=self.pressed)
+        self.global_callback = MagicMock()
+        self.device.set_key_callback(self.global_callback)
+
+    def _feed_one_press(self):
+        report = bytearray([0] * 13)
+        report[9] = 5
+        report[10] = 1
+        reports = [report]
+
+        def read(*args, **kwargs):
+            if not reports:
+                self.device.run_read_thread = False
+                return None
+            return reports.pop()
+
+        self.device.read = read
+        self.device.run_read_thread = True
+        self.device._read()
+
+    def test_a_press_while_suspended_is_dropped(self):
+        self.device.suspend_input()
+
+        self._feed_one_press()
+
+        self.assertTrue(self.device._event_queue.empty())
+        self.assertTrue(self.device.input_suspended)
+
+    def test_suspending_drops_work_already_queued(self):
+        self.device._event_queue.put((self.pressed, (self.device, 15)))
+
+        self.device.suspend_input()
+
+        self.assertTrue(self.device._event_queue.empty())
+
+    def test_keys_work_again_after_resume(self):
+        self.device.suspend_input()
+        self.device.resume_input()
+
+        self._feed_one_press()
+
+        self.assertFalse(self.device._event_queue.empty())
+
+
 if __name__ == '__main__':
     unittest.main()

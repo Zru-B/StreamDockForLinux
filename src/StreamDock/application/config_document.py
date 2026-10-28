@@ -26,6 +26,7 @@ from StreamDock.application.configuration_manager import (
     relativize_icon_path,
     resolve_icon_path,
 )
+from StreamDock.business_logic import screensaver as screensaver_defaults
 
 # Single source of truth. The editor used to default to 15 and the runtime to
 # 50, so a config written by the editor changed brightness on first save.
@@ -341,11 +342,63 @@ class WindowRule:
         return [self.window_name] if self.window_name else []
 
 
+class ScreensaverSettings:
+    """The 'settings.screensaver' section, written back only as far as it was changed."""
+
+    DEFAULTS = {
+        'enabled': False,
+        'source': screensaver_defaults.SOURCE_FOLDER,
+        'folder': '',
+        'provider': screensaver_defaults.DEFAULT_PROVIDER,
+        'interval': screensaver_defaults.DEFAULT_INTERVAL,
+        'turn_off_after': screensaver_defaults.DEFAULT_TURN_OFF_AFTER,
+        'shuffle': True,
+        'brightness': None,
+    }
+
+    def __init__(self, data: Optional[Dict[str, Any]] = None):
+        self.enabled: bool = False
+        self.source: str = screensaver_defaults.SOURCE_FOLDER
+        self.folder: str = ''
+        self.provider: str = screensaver_defaults.DEFAULT_PROVIDER
+        self.interval: float = screensaver_defaults.DEFAULT_INTERVAL
+        self.turn_off_after: float = screensaver_defaults.DEFAULT_TURN_OFF_AFTER
+        self.shuffle: bool = True
+        self.brightness: Optional[int] = None
+        self.extra: Dict[str, Any] = {}
+        self._explicit: set = set()
+        if data:
+            self.load_from_dict(data)
+
+    def load_from_dict(self, data: Dict[str, Any]) -> None:
+        for name, default in self.DEFAULTS.items():
+            setattr(self, name, data.get(name, default))
+        self.extra = _extras(data, tuple(self.DEFAULTS))
+        self._explicit = {name for name in self.DEFAULTS if name in data}
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = dict(self.extra)
+        for name, default in self.DEFAULTS.items():
+            value = getattr(self, name)
+            if value != default or name in self._explicit:
+                result[name] = value
+        return result
+
+    def update(self, values: Dict[str, Any]) -> bool:
+        """Take the dialog's values; True if any of them differs."""
+        changed = False
+        for name, value in values.items():
+            if getattr(self, name) != value:
+                setattr(self, name, value)
+                changed = True
+        return changed
+
+
 class Settings:
     """The 'settings' section."""
 
     KNOWN_FIELDS = ('brightness', 'lock_monitor', 'lock_verification_delay',
-                    'double_press_interval', 'long_press_duration')
+                    'double_press_interval', 'long_press_duration', 'screensaver')
 
     def __init__(self, data: Optional[Dict[str, Any]] = None):
         self.brightness: int = DEFAULT_BRIGHTNESS
@@ -353,6 +406,7 @@ class Settings:
         self.lock_verification_delay: float = DEFAULT_LOCK_VERIFICATION_DELAY
         self.double_press_interval: float = DEFAULT_DOUBLE_PRESS_INTERVAL
         self.long_press_duration: float = DEFAULT_LONG_PRESS_DURATION
+        self.screensaver = ScreensaverSettings()
         self.extra: Dict[str, Any] = {}
         # Settings the source file spelled out, so opening and saving does not
         # add entries the user never wrote.
@@ -371,7 +425,12 @@ class Settings:
             'double_press_interval', DEFAULT_DOUBLE_PRESS_INTERVAL)
         self.long_press_duration = data.get(
             'long_press_duration', DEFAULT_LONG_PRESS_DURATION)
-        self.extra = _extras(data, self.KNOWN_FIELDS)
+        screensaver = data.get('screensaver')
+        self.screensaver = ScreensaverSettings(screensaver if isinstance(screensaver, dict) else None)
+        # Anything but a mapping is kept verbatim, for validation to report.
+        known = self.KNOWN_FIELDS if isinstance(screensaver, dict) or screensaver is None \
+            else tuple(f for f in self.KNOWN_FIELDS if f != 'screensaver')
+        self.extra = _extras(data, known)
         self._explicit = {f for f in self.KNOWN_FIELDS if f in data}
 
     def to_dict(self) -> Dict[str, Any]:
@@ -388,6 +447,9 @@ class Settings:
             value = getattr(self, field)
             if value != default or field in self._explicit:
                 result[field] = value
+        screensaver = self.screensaver.to_dict()
+        if screensaver or ('screensaver' in self._explicit and 'screensaver' not in result):
+            result['screensaver'] = screensaver
         return result
 
 
@@ -653,10 +715,13 @@ class ConfigDocument:
         # should the write fail and the document stay where it was.
         old_dir = os.path.abspath(self.config_dir)
         original_keys = None
+        original_folder = self.settings.screensaver.folder
         if old_dir != directory:
             original_keys = copy.deepcopy(self.keys)
             for key_def in self.keys.values():
                 _rebase_key_paths(key_def, old_dir, directory)
+            if isinstance(original_folder, str) and original_folder.strip():
+                self.settings.screensaver.folder = _rebase_path(original_folder, old_dir, directory)
 
         handle = tempfile.NamedTemporaryFile(
             mode='w', dir=real_directory, prefix='.config-', suffix='.yml',
@@ -680,6 +745,7 @@ class ConfigDocument:
                 pass
             if original_keys is not None:
                 self.keys = original_keys
+                self.settings.screensaver.folder = original_folder
             raise
 
         self._path = target
