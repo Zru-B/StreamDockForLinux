@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/uninstall.sh — Remove StreamDock system integration files.
 #
-# Removes the udev rule, the desktop entry and its icon.
+# Removes the udev rule, the desktop and autostart entries and the icon.
 #
 # Requires sudo for system-level operations.
 
@@ -22,7 +22,8 @@ sudo udevadm control --reload-rules
 # ── Desktop entry ───────────────────────────────────────────────────────────
 
 echo "[2/3] Removing launcher"
-rm -f "$APPLICATIONS_DIR/streamdock.desktop"
+rm -f "$APPLICATIONS_DIR/streamdock.desktop" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/streamdock.desktop"
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPLICATIONS_DIR" >/dev/null 2>&1 || true
 fi
