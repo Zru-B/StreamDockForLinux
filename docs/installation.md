@@ -193,3 +193,7 @@ scripts/streamdock-launcher.sh --minimized
 ```bash
 ./scripts/uninstall.sh
 ```
+
+This removes the udev rule, the menu and autostart entries, the icon and the
+launcher log. Add `--no-udev` to keep the udev rule and skip sudo. Your
+configuration files are not touched.
