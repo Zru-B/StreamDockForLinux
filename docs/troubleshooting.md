@@ -31,6 +31,20 @@ This tool identifies missing system binaries (like `xdotool` or `kdotool`) and P
     session on the local seat, so it is absent over SSH.
 4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`, then replug.
 
+## App Starts From the Terminal but Not From the Menu
+
+**Symptoms:**
+- `python main.py` works in Konsole, but the menu entry does nothing.
+
+**Cause:** the menu does not see your terminal's activated venv, pyenv or
+`PATH`, so it runs a Python without StreamDock's packages and the error is
+never shown.
+
+**Solution:** from the terminal where `python main.py` works, run
+`./scripts/install.sh --no-udev --python "$(command -v python)"` (see
+[Application menu launcher](installation.md#application-menu-launcher)). If
+it still fails, read `~/.local/state/streamdock/launcher.log`.
+
 ## Mouse Keys / Cursor Issues
 
 **Symptoms:**

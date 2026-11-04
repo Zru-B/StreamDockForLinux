@@ -129,6 +129,10 @@ This installs:
 | `contrib/streamdock.desktop.template` | `~/.local/share/applications/streamdock.desktop` | Application launcher (paths filled in by the script) |
 | `contrib/streamdock.svg` | `~/.local/share/icons/hicolor/scalable/apps/` | Launcher and tray icon |
 
+Options: `--no-udev` installs only the launcher and icon (no sudo),
+`--autostart` also starts StreamDock minimized at login, and `--python PATH`
+picks the interpreter (see below).
+
 No group membership is needed: systemd-logind gives whoever is logged in at
 the local seat an ACL on the device. The file must sort before
 `73-seat-late.rules`, which applies those ACLs, hence the `70-` prefix. The
@@ -150,14 +154,38 @@ two IDs in `contrib/70-streamdock.rules` before running the script. If the
 deck moves the mouse pointer or triggers Mouse Keys, see
 [Troubleshooting](troubleshooting.md#mouse-keys--cursor-issues).
 
-### Starting at login
+### Application menu launcher
 
-StreamDock is a normal desktop application, so use your desktop's own
-autostart settings to launch it at login. Add `--minimized` to start it
-straight into the system tray:
+The launcher runs `scripts/streamdock-launcher.sh`, which starts `src/main.py`
+with the interpreter that `install.sh` resolved and logs its output to
+`~/.local/state/streamdock/launcher.log`. If the app fails to start you get a
+desktop notification pointing at that log.
+
+A menu entry does not run in your terminal's environment: an activated venv,
+pyenv, or anything your `~/.bashrc` adds to `PATH` is not there. So a
+hand-written entry with `Exec=python main.py` usually picks up the system
+Python, which lacks PyQt6 and the other packages, and exits silently. By
+default `install.sh` uses the project's `venv/` or `.venv/`. If you run
+StreamDock with some other `python` (a venv elsewhere, pyenv, conda), run the
+installer from the same terminal where `python main.py` works:
 
 ```bash
-python src/main.py --minimized
+./scripts/install.sh --no-udev --python "$(command -v python)"
+```
+
+The installer checks that interpreter can import StreamDock's dependencies
+before it writes the entry. Re-run it whenever you move the project or
+recreate the venv.
+
+### Starting at login
+
+Run `./scripts/install.sh --autostart` to add
+`~/.config/autostart/streamdock.desktop`, which starts StreamDock straight
+into the system tray (`--minimized`). You can also use your desktop's own
+autostart settings with:
+
+```bash
+scripts/streamdock-launcher.sh --minimized
 ```
 
 ### Uninstall
@@ -165,3 +193,7 @@ python src/main.py --minimized
 ```bash
 ./scripts/uninstall.sh
 ```
+
+This removes the udev rule, the menu and autostart entries, the icon and the
+launcher log. Add `--no-udev` to keep the udev rule and skip sudo. Your
+configuration files are not touched.
