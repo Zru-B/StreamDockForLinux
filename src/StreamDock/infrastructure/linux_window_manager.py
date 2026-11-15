@@ -390,12 +390,13 @@ class LinuxWindowManager(WindowInterface):
 
     def _kdotool_get_active_window(self) -> Optional[WindowInfo]:
         """
-        One chained kdotool call per poll; it prints the id, the title and the
-        class on separate lines (getactivewindow itself prints nothing when chained).
+        One chained kdotool call per poll; it prints the title, the class and the
+        id on separate lines. kdotool has no getwindowid: a getactivewindow prints
+        the id only when it is the last command, so it is repeated at the end.
         """
         try:
             r = subprocess.run(
-                ["kdotool", "getactivewindow", "getwindowid", "getwindowname", "getwindowclassname"],
+                ["kdotool", "getactivewindow", "getwindowname", "getwindowclassname", "getactivewindow"],
                 capture_output=True, text=True, timeout=1, check=False,
             )
         except subprocess.TimeoutExpired:
@@ -408,11 +409,11 @@ class LinuxWindowManager(WindowInterface):
                 logger.debug("kdotool getactivewindow failed: %s", (r.stderr or "").strip())
             return None
         lines = r.stdout.rstrip("\n").split("\n")
-        if len(lines) < 3 or not lines[0].strip():
+        if len(lines) < 3 or not lines[-1].strip():
             return None
-        window_id = lines[0].strip()
-        class_raw = lines[-1].strip()
-        title = "\n".join(lines[1:-1]).strip()
+        window_id = lines[-1].strip()
+        class_raw = lines[-2].strip()
+        title = "\n".join(lines[:-2]).strip()
         if class_raw:
             class_ = self.normalize_class_name(class_raw, title)
         else:
