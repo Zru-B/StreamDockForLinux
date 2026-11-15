@@ -138,7 +138,7 @@ class TestHaircrossSafety:
 
         mock_run.side_effect = [
             _run(0, "1"),                        # is_kdotool_available probe
-            _run(0, "999\nFirefox\nfirefox\n"),  # chained id/name/class
+            _run(0, "Firefox\nfirefox\n999\n"),  # chained name/class/id
         ]
 
         result = manager.get_active_window()
@@ -184,7 +184,7 @@ class TestGetActiveWindowResults:
         mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
         mock_run.side_effect = [
             _run(0, "1"),
-            _run(0, "{abc-123}\nFirefox - GitHub\nfirefox\n"),
+            _run(0, "Firefox - GitHub\nfirefox\n{abc-123}\n"),
         ]
         result = manager.get_active_window()
         assert result is not None
@@ -318,13 +318,28 @@ class TestActiveWindowPolling:
     def test_kdotool_poll_is_a_single_process(self, mock_run, mock_which, manager):
         # Guards three kdotool processes per 0.5 s poll.
         mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
-        mock_run.return_value = _run(0, "{id}\nTitle\nfirefox\n")
+        mock_run.return_value = _run(0, "Title\nfirefox\n{id}\n")
         manager.is_kdotool_available()
         mock_run.reset_mock()
 
         manager.get_active_window()
 
         assert mock_run.call_count == 1
+
+    @patch(f"{MODULE}.shutil.which")
+    @patch(f"{MODULE}.subprocess.run")
+    def test_kdotool_poll_uses_only_existing_commands(self, mock_run, mock_which, manager):
+        # Guards `getwindowid`, which kdotool lacks: every poll failed and none fell back.
+        mock_which.side_effect = lambda n: "/usr/bin/kdotool" if n == "kdotool" else None
+        mock_run.return_value = _run(0, "Title\nfirefox\n{id}\n")
+        manager.is_kdotool_available()
+        mock_run.reset_mock()
+
+        manager.get_active_window()
+
+        assert mock_run.call_args.args[0] == [
+            "kdotool", "getactivewindow", "getwindowname", "getwindowclassname", "getactivewindow",
+        ]
 
     @patch(f"{MODULE}.shutil.which")
     @patch(f"{MODULE}.subprocess.run")
@@ -388,7 +403,7 @@ class TestActiveWindowPolling:
 
         mock_clock.return_value = 1000.0 + 61
         mock_run.side_effect = None
-        mock_run.return_value = _run(0, "{id}\nTitle\nfirefox\n")
+        mock_run.return_value = _run(0, "Title\nfirefox\n{id}\n")
 
         result = manager.get_active_window()
 
