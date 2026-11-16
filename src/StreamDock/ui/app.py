@@ -8,9 +8,10 @@ the receiver lives on another thread, so nothing here blocks the UI.
 
 import logging
 import os
+import signal
 import sys
 import traceback
-from typing import Optional
+from typing import Callable, Optional
 
 from PyQt6.QtCore import QMetaObject, QThread, QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QSystemTrayIcon
@@ -35,6 +36,10 @@ logger = logging.getLogger(__name__)
 APP_DISPLAY_NAME = "StreamDock"
 # How often to try for the device again while another process holds it.
 LOCK_RETRY_MS = 5000
+
+# How often the event loop hands control back to Python, so a Ctrl+C from the
+# terminal is noticed: Python runs signal handlers only between bytecodes.
+SIGNAL_POLL_MS = 200
 
 # Set to 0 to keep Qt's own file dialogs on Plasma instead of the desktop's.
 PORTAL_DIALOGS_ENV = "STREAMDOCK_PORTAL_DIALOGS"
@@ -110,6 +115,31 @@ def install_exception_hook(parent_provider=lambda: None) -> None:
     sys.excepthook = hook
 
 
+def quit_on_interrupt(request_quit: Callable[[], None]) -> QTimer:
+    """
+    Quit on Ctrl+C from the terminal, the way the tray's Quit does.
+
+    While Qt waits for events, Python never runs, so its SIGINT handler does
+    not either; the returned timer wakes the interpreter to let it. A second
+    Ctrl+C gets the default action and kills the process, in case the quit
+    itself hangs. Keep a reference to the timer for as long as it should run.
+
+    Args:
+        request_quit: Starts an orderly quit
+    """
+    def on_interrupt(_signum, _frame):
+        logger.info("Interrupted; quitting (Ctrl+C again to force)")
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        request_quit()
+
+    signal.signal(signal.SIGINT, on_interrupt)
+    timer = QTimer()
+    timer.setInterval(SIGNAL_POLL_MS)
+    timer.timeout.connect(lambda: None)
+    timer.start()
+    return timer
+
+
 class StreamDockGui:
     """Owns the GUI process: window, tray, and the device worker thread."""
 
@@ -140,6 +170,7 @@ class StreamDockGui:
         self._guard: Optional[SingleInstanceGuard] = None
         self._lock = InstanceLock()
         self._lock_timer: Optional[QTimer] = None
+        self._interrupt_timer: Optional[QTimer] = None
 
     def run(self) -> int:
         """
@@ -170,6 +201,7 @@ class StreamDockGui:
         self._build_tray()
         self._build_service()
         self._connect_signals()
+        self._interrupt_timer = quit_on_interrupt(self._window.request_quit)
 
         if not self._lock.acquire():
             self._warn_device_in_use()
