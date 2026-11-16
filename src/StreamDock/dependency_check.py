@@ -108,6 +108,8 @@ class DependencyChecker:
                        distribution="dbus-python"),
             Dependency("gi", "Optional", "GObject introspection", check_type="python", feature="Lock monitor (GNOME)",
                        distribution="PyGObject"),
+            Dependency("evdev", "Optional", "Virtual keyboard on /dev/uinput", display_name="python-evdev",
+                       check_type="python", feature="Key actions on Wayland", distribution="evdev"),
         ]
 
         self._hidapi_candidate_libs = [

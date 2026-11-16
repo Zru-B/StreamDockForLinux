@@ -15,8 +15,11 @@ sudo pacman -S python python-pip hidapi libusb
 # For keyboard automation (X11)
 sudo pacman -S xdotool
 
-# For keyboard automation (Wayland/KDE)
+# For window detection (Wayland/KDE)
 yay -S kdotool-git
+
+# For keys on Wayland (optional, see Keys on Wayland below)
+sudo pacman -S python-evdev
 
 # For audio control
 sudo pacman -S pulseaudio-utils
@@ -36,6 +39,9 @@ sudo apt install python3-pip libhidapi-libusb0 libusb-1.0-0-dev
 
 # For keyboard automation (X11)
 sudo apt install xdotool
+
+# For keys on Wayland (optional, see Keys on Wayland below)
+sudo apt install python3-evdev
 
 # For audio control
 sudo apt install pulseaudio-utils
@@ -60,7 +66,7 @@ pip install -r requirements.txt
 Or manually:
 
 ```bash
-pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 dbus-python PyGObject
+pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 evdev dbus-python PyGObject
 ```
 
 ### Package Details
@@ -71,6 +77,11 @@ pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 dbus-python PyGObject
 - `cairosvg` - SVG to PNG conversion
 - `pyudev` - Device hotplug monitoring
 - `PyQt6` - Configuration editor GUI
+
+**Optional:**
+- `evdev` - Virtual keyboard for `KEY_PRESS` and `TYPE_TEXT` on Wayland, where
+  xdotool reaches only XWayland windows. Needs the udev rule from
+  `scripts/install.sh` (see [Keys on Wayland](#keys-on-wayland)).
 
 **System wrappers (require system libraries):**
 - `dbus-python` - D-Bus communication (for Media control, Lock monitor and the Do Not Disturb widget on KDE)
@@ -125,7 +136,7 @@ This installs:
 
 | File | Destination | Purpose |
 |---|---|---|
-| `contrib/70-streamdock.rules` | `/etc/udev/rules.d/` | Tags the USB and hidraw nodes `uaccess`, so the user at the local seat can open them |
+| `contrib/70-streamdock.rules` | `/etc/udev/rules.d/` | Tags the USB and hidraw nodes and `/dev/uinput` `uaccess`, so the user at the local seat can open them |
 | `contrib/streamdock.desktop.template` | `~/.local/share/applications/streamdock.desktop` | Application launcher (paths filled in by the script) |
 | `contrib/streamdock.svg` | `~/.local/share/icons/hicolor/scalable/apps/` | Launcher and tray icon |
 
@@ -134,12 +145,29 @@ the local seat an ACL on the device. The file must sort before
 `73-seat-late.rules`, which applies those ACLs, hence the `70-` prefix. The
 script also removes the `99-streamdock.rules` that earlier versions installed.
 
+### Keys on Wayland
+
+On a Wayland session, `KEY_PRESS` and `TYPE_TEXT` go through a virtual
+keyboard the app creates on `/dev/uinput`; xdotool would reach only XWayland
+windows. This needs the `evdev` package (in `requirements.txt`) and the
+`/dev/uinput` line of `70-streamdock.rules`. Without either, the app logs a
+warning once and falls back to xdotool.
+
+- The keys are sent as key codes, so the active keyboard layout decides what
+  they produce. Shortcuts and text assume a US layout: switch to it before
+  pressing a key that types text, and `TYPE_TEXT` refuses characters a US
+  keyboard can't type.
+- The rule lets any program you run create input devices, much as X11 lets any
+  program fake input. Leave it out if that's not acceptable; key actions then
+  reach only XWayland windows.
+
 To check it worked, unplug and replug the deck, then:
 
 ```bash
 lsusb -d 6603:1006               # the deck (HOTSPOTEKUSB): note Bus BBB Device DDD
 getfacl /dev/bus/usb/BBB/DDD     # owner root, plus a user:<you>:rw- entry
 getfacl /dev/hidrawN             # same for its hidraw node(s), if any
+getfacl /dev/uinput              # same, for keys on Wayland
 ```
 
 The app talks to the USB node (libhidapi's libusb backend); `ls -l` on it

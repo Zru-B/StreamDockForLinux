@@ -181,6 +181,10 @@ Use **Quit** — in the tray menu, under ☰, or *File > Quit* — to actually s
 the device screen, releases it, and exits. This is the only path that prompts
 about unsaved changes.
 
+Started from a terminal, Ctrl+C there does the same as **Quit**, prompt
+included. Press it a second time to kill the process at once, if quitting
+hangs.
+
 On desktops with no system tray (GNOME without an AppIndicator extension),
 closing the window quits instead, so the application can never become
 unreachable.

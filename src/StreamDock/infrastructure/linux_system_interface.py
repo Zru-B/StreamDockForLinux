@@ -7,6 +7,7 @@ are handled separately by ``LinuxWindowManager``.
 """
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from typing import Callable, Optional, Union
 from .system_interface import SystemInterface, WindowInfo
 from .window_interface import WindowInterface
 from .linux_window_manager import LinuxWindowManager
+from .uinput_keyboard import UinputKeyboard, UinputUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +27,33 @@ TYPE_TEXT_BASE_TIMEOUT = 5.0
 TYPE_TEXT_PER_CHAR_TIMEOUT = 0.015
 
 
+def is_wayland_session() -> bool:
+    """Whether the desktop session is Wayland (xdotool reaches only XWayland there)."""
+    return (os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            or bool(os.environ.get("WAYLAND_DISPLAY")))
+
+
 class LinuxSystemInterface(SystemInterface):
     """
     Linux implementation of SystemInterface.
 
-    Uses ``xdotool`` for input simulation, ``pactl`` for volume, ``pgrep``
-    for process checking, and ``dbus`` for screensaver lock monitoring.
+    Uses a uinput virtual keyboard on Wayland and ``xdotool`` otherwise for
+    input simulation, ``pactl`` for volume, ``pgrep`` for process checking,
+    and ``dbus`` for screensaver lock monitoring.
     """
 
-    def __init__(self) -> None:
-        """Initialise the Linux system interface."""
+    def __init__(self, keyboard: Optional[UinputKeyboard] = None) -> None:
+        """
+        Initialise the Linux system interface.
+
+        Args:
+            keyboard: Virtual keyboard for key actions. By default one is
+                made on a Wayland session; without it, xdotool is used.
+        """
+        if keyboard is None and is_wayland_session():
+            keyboard = UinputKeyboard()
+        self._keyboard = keyboard
+        self._uinput_warned = False
         self._lock_monitor_thread: Optional[threading.Thread] = None
         self._lock_monitor_callback: Optional[Callable[[bool], None]] = None
         self._lock_monitor_stop_event = threading.Event()
@@ -60,8 +79,32 @@ class LinuxSystemInterface(SystemInterface):
     # Input simulation                                                     #
     # ------------------------------------------------------------------ #
 
+    def _send_with_uinput(self, send: Callable[[UinputKeyboard], bool]) -> bool:
+        """
+        Run *send* on the virtual keyboard. False when there is none or it
+        failed, and the caller falls back to xdotool, which still reaches
+        XWayland windows.
+        """
+        if self._keyboard is None:
+            return False
+        try:
+            return send(self._keyboard)
+        except UinputUnavailable as exc:
+            if not self._uinput_warned:
+                logger.warning(
+                    "Wayland session, but %s; key actions reach only XWayland windows. "
+                    "Run scripts/install.sh (it installs the udev rule for /dev/uinput) "
+                    "and install python-evdev.", exc)
+                self._uinput_warned = True
+            return False
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("uinput keyboard failed: %s", exc)
+            return False
+
     def send_key_combo(self, key_sequence: str) -> bool:
-        """Send a keyboard shortcut via xdotool."""
+        """Send a keyboard shortcut via the uinput keyboard or xdotool."""
+        if self._send_with_uinput(lambda keyboard: keyboard.send_combo(key_sequence)):
+            return True
         try:
             subprocess.run(
                 ["xdotool", "key", key_sequence],
@@ -82,7 +125,9 @@ class LinuxSystemInterface(SystemInterface):
             return False
 
     def type_text(self, text: str) -> bool:
-        """Type *text* into the currently focused window via xdotool."""
+        """Type *text* into the focused window via the uinput keyboard or xdotool."""
+        if self._send_with_uinput(lambda keyboard: keyboard.type_text(text)):
+            return True
         try:
             # xdotool sometimes drops Shift modifiers when --clearmodifiers is used 
             # alongside a very short --delay (in milliseconds). Increasing delay and relying on native behavior.

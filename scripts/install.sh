@@ -2,7 +2,7 @@
 # scripts/install.sh — Install StreamDock system integration files.
 #
 # Sets up:
-#   /etc/udev/rules.d/70-streamdock.rules              USB device permissions
+#   /etc/udev/rules.d/70-streamdock.rules              USB device and /dev/uinput permissions
 #   ~/.local/share/applications/streamdock.desktop     application launcher
 #   ~/.local/share/icons/.../streamdock.svg            launcher icon
 #
@@ -59,6 +59,7 @@ fi
 sudo udevadm control --reload-rules
 # Trigger only the StreamDock device nodes — avoids re-processing everything
 sudo udevadm trigger --attr-match=idVendor=6603
+sudo udevadm trigger --subsystem-match=misc --sysname-match=uinput
 
 # ── Step 2: desktop entry ───────────────────────────────────────────────────
 

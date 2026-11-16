@@ -19,3 +19,11 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="6603", ATTR{idProduct}=="1006", \
 # hidraw node (libhidapi-hidraw / pyusb backend)
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="6603", ATTRS{idProduct}=="1006", \
     TAG+="uaccess"
+
+# /dev/uinput, for the virtual keyboard that sends key actions on Wayland
+# (xdotool reaches only XWayland windows there). Any program the logged-in
+# user runs can then create input devices, as X11 already lets it fake input.
+# static_node: /dev/uinput exists before its module loads, so the ACL is set
+# on it at boot.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", \
+    OPTIONS+="static_node=uinput"
