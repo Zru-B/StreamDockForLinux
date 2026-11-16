@@ -65,6 +65,9 @@ Simulate keyboard shortcuts.
 *   **The plus key:** write it as a trailing `+` after the separator, e.g. `"CTRL++"` (zoom in).
 *   **Other keys:** any X keysym name (e.g. `XF86AudioPlay`, `KP_Add`) is passed to `xdotool`
     as written; keysyms are case-sensitive.
+*   **Wayland:** keys go through a virtual keyboard instead of `xdotool`, which knows the
+    keys above, F1-F24, the keypad, punctuation and the media keys, on a US layout. See
+    [Keys on Wayland](installation.md#keys-on-wayland).
 
 ---
 
@@ -75,6 +78,9 @@ Type a string of text.
 - "TYPE_TEXT": "user@example.com"
 - "TYPE_TEXT": "MySecurePassword123"
 ```
+*   **Wayland:** typed on a US layout, so only characters a US keyboard has (and
+    newline and tab). Text with others is passed to `xdotool`, which reaches only XWayland
+    windows.
 
 ---
 

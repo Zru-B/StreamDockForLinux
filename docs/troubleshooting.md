@@ -31,6 +31,29 @@ This tool identifies missing system binaries (like `xdotool` or `kdotool`) and P
     session on the local seat, so it is absent over SSH.
 4.  **Reload Rules:** `sudo udevadm control --reload-rules && sudo udevadm trigger`, then replug.
 
+## Key Presses Do Nothing (Wayland)
+
+**Symptoms:** `KEY_PRESS` and `TYPE_TEXT` keys work in some apps (often Zoom)
+and do nothing in others, such as Konsole, Firefox or Slack.
+
+**Cause:** xdotool reaches only XWayland windows. On Wayland the app sends keys
+through a virtual keyboard on `/dev/uinput` instead, and the log says why when
+it can't:
+
+```bash
+journalctl --user -u streamdock.service | grep -i uinput
+```
+
+**Fix:**
+1. Install `evdev` into the app's virtual environment: `venv/bin/pip install evdev`.
+2. Run `scripts/install.sh`, or install just the rule:
+   `sudo install -m 644 contrib/70-streamdock.rules /etc/udev/rules.d/`, then
+   `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=misc --sysname-match=uinput`.
+3. Check with `getfacl /dev/uinput` that your user is listed, then restart the app.
+
+If keys arrive but produce the wrong characters, switch to a US keyboard layout
+(see [Keys on Wayland](installation.md#keys-on-wayland)).
+
 ## Mouse Keys / Cursor Issues
 
 **Symptoms:**

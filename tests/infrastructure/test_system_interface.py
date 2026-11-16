@@ -14,12 +14,23 @@ from StreamDock.domain.Models import WindowInfo
 from StreamDock.infrastructure.system_interface import SystemInterface
 from StreamDock.infrastructure.window_interface import WindowInterface
 from StreamDock.infrastructure.linux_system_interface import LinuxSystemInterface
+from StreamDock.infrastructure.uinput_keyboard import UinputKeyboard, UinputUnavailable
 
 LSI_MODULE = "StreamDock.infrastructure.linux_system_interface"
 
 
+def set_session(monkeypatch, session_type):
+    monkeypatch.setenv("XDG_SESSION_TYPE", session_type)
+    if session_type == "wayland":
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    else:
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+
 @pytest.fixture
-def system_interface():
+def system_interface(monkeypatch):
+    # An X11 session: key actions go through xdotool.
+    set_session(monkeypatch, "x11")
     return LinuxSystemInterface()
 
 
@@ -125,6 +136,67 @@ class TestInputSimulation:
         assert errors and 'curl' in errors[0]
         assert all('secret' not in m for m in errors)
         assert all(r.levelname == 'DEBUG' for r in caplog.records if 'Executing' in r.getMessage())
+
+
+class TestUinputKeyboardSelection:
+    """On Wayland, keys go through the uinput keyboard; xdotool is the fallback."""
+
+    def test_wayland_session_gets_a_uinput_keyboard(self, monkeypatch):
+        set_session(monkeypatch, "wayland")
+        assert isinstance(LinuxSystemInterface()._keyboard, UinputKeyboard)
+
+    def test_x11_session_has_none(self, system_interface):
+        assert system_interface._keyboard is None
+
+    @patch(f"{LSI_MODULE}.subprocess.run")
+    def test_key_combo_and_text_use_the_keyboard(self, mock_run):
+        keyboard = Mock(spec=UinputKeyboard)
+        keyboard.send_combo.return_value = True
+        keyboard.type_text.return_value = True
+        system = LinuxSystemInterface(keyboard=keyboard)
+
+        assert system.send_key_combo("ctrl+t") is True
+        assert system.type_text("Hi") is True
+
+        keyboard.send_combo.assert_called_once_with("ctrl+t")
+        keyboard.type_text.assert_called_once_with("Hi")
+        mock_run.assert_not_called()
+
+    @patch(f"{LSI_MODULE}.subprocess.run")
+    def test_falls_back_to_xdotool_and_warns_once(self, mock_run, caplog):
+        mock_run.return_value = Mock(returncode=0)
+        keyboard = Mock(spec=UinputKeyboard)
+        keyboard.send_combo.side_effect = UinputUnavailable("cannot open /dev/uinput")
+        system = LinuxSystemInterface(keyboard=keyboard)
+
+        with caplog.at_level("WARNING", logger=LSI_MODULE):
+            assert system.send_key_combo("ctrl+t") is True
+            assert system.send_key_combo("ctrl+w") is True
+
+        assert [c.args[0] for c in mock_run.call_args_list] == [
+            ["xdotool", "key", "ctrl+t"], ["xdotool", "key", "ctrl+w"]]
+        warnings = [r for r in caplog.records if "install.sh" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @patch(f"{LSI_MODULE}.subprocess.run")
+    def test_text_the_keyboard_cannot_type_goes_to_xdotool(self, mock_run):
+        mock_run.return_value = Mock(returncode=0)
+        keyboard = Mock(spec=UinputKeyboard)
+        keyboard.type_text.return_value = False
+        system = LinuxSystemInterface(keyboard=keyboard)
+
+        assert system.type_text("שלום") is True
+        assert mock_run.call_args.args[0][:2] == ["xdotool", "type"]
+
+    @patch(f"{LSI_MODULE}.subprocess.run")
+    def test_keyboard_error_falls_back(self, mock_run):
+        mock_run.return_value = Mock(returncode=0)
+        keyboard = Mock(spec=UinputKeyboard)
+        keyboard.send_combo.side_effect = OSError("No such device")
+        system = LinuxSystemInterface(keyboard=keyboard)
+
+        assert system.send_key_combo("F5") is True
+        mock_run.assert_called_once()
 
 
 # ==================== Lock Monitoring ====================
