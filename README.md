@@ -9,7 +9,9 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 - 🎯 **YAML Configuration** - Simple, readable config files.
 - 🪟 **Context-Aware** - Automatically switch layouts when you open Firefox, VSCode, or Spotify.
 - 🔒 **Secure** - Auto-lock monitor turns off the display when your session locks, or shows a slideshow screensaver across all keys (local folder or free online wallpapers) with the keys disabled.
-- 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME).
+- 🐧 **Linux Native** - Built for X11 and Wayland (KDE/GNOME). On Wayland,
+  key presses and typed text go through a virtual keyboard, so they reach
+  native Wayland apps too.
 - 🎭 **Desktop Native** - Wears Breeze on Plasma the way Plasma 6 applications
   do - toolbar, menu button, sidebar and status bar, in your own colour
   scheme, icons and font - and Adwaita on GNOME, header bar and all. It picks
@@ -38,6 +40,8 @@ StreamDock lets you define your entire deck configuration in a simple YAML file.
 3.  **Setup Device Permissions:**
     Run `./scripts/install.sh` to install the `udev` rule, launcher and icon
     (see [Device permissions](docs/installation.md#device-permissions--launcher-linux)).
+    The rule also opens `/dev/uinput` for key actions on Wayland
+    (see [Keys on Wayland](docs/installation.md#keys-on-wayland)).
 
 4.  **Run:**
     ```bash

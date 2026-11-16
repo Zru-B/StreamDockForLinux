@@ -18,6 +18,9 @@ sudo pacman -S xdotool
 # For window detection (Wayland/KDE)
 yay -S kdotool-git
 
+# For keys on Wayland (optional, see Keys on Wayland below)
+sudo pacman -S python-evdev
+
 # For audio control
 sudo pacman -S pulseaudio-utils
 
@@ -36,6 +39,9 @@ sudo apt install python3-pip libhidapi-libusb0 libusb-1.0-0-dev
 
 # For keyboard automation (X11)
 sudo apt install xdotool
+
+# For keys on Wayland (optional, see Keys on Wayland below)
+sudo apt install python3-evdev
 
 # For audio control
 sudo apt install pulseaudio-utils
@@ -60,7 +66,7 @@ pip install -r requirements.txt
 Or manually:
 
 ```bash
-pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 dbus-python PyGObject
+pip install pillow pyyaml "cairosvg>=2.7.0" pyudev PyQt6 evdev dbus-python PyGObject
 ```
 
 ### Package Details
@@ -161,6 +167,7 @@ To check it worked, unplug and replug the deck, then:
 lsusb -d 6603:1006               # the deck (HOTSPOTEKUSB): note Bus BBB Device DDD
 getfacl /dev/bus/usb/BBB/DDD     # owner root, plus a user:<you>:rw- entry
 getfacl /dev/hidrawN             # same for its hidraw node(s), if any
+getfacl /dev/uinput              # same, for keys on Wayland
 ```
 
 The app talks to the USB node (libhidapi's libusb backend); `ls -l` on it
